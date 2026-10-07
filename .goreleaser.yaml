@@ -1,0 +1,61 @@
+# goreleaser v2 — https://goreleaser.com
+#
+# Asset names and layout are a contract with scripts/install.sh and
+# internal/selfupdate: julienning_<version>_<os>_<arch>.tar.gz with the
+# `julienning` binary at the archive root, plus checksums.txt (sha256).
+version: 2
+
+project_name: julienning
+
+builds:
+  - id: julienning
+    main: ./cmd/julienning
+    binary: julienning
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/muratgozel/julienning/internal/version.Version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: julienning
+    ids: [julienning]
+    formats: [tar.gz]
+    name_template: "julienning_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: muratgozel
+    name: julienning
+  # vX.Y.Z-rc.1 tags become prereleases, which GitHub's /releases/latest
+  # (used by the installer and `julienning update`) skips.
+  prerelease: auto

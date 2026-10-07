@@ -1,0 +1,27 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "julienning",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-22",
+	"observability": {
+		"enabled": true
+	},
+	// Replace "id" with the id printed by `npm run kv:create` (see docs/CLOUDFLARE.md).
+	// Do NOT copy the `"remote": true` line wrangler prints: it would make
+	// `wrangler dev` and the test suite read and write the production namespace.
+	"kv_namespaces": [
+		{
+			"binding": "USAGE",
+			"id": "e8205fca9c8648a2bc96ee2ae57794e2"
+		}
+	],
+	// AUTH_TOKEN is a secret, never a var: `npx wrangler secret put AUTH_TOKEN`
+	// in production, `.dev.vars` (copied from .dev.vars.example, gitignored) locally.
+	"vars": {
+		"DEFAULT_TZ": "UTC",
+		// Safety net for claims whose SessionEnd hook never ran; the CLI releases
+		// claims itself, so this only needs to outlast a long working session.
+		"CLAIM_TTL_MIN": "720",
+		"ACTIVITY_TTL_MIN": "15"
+	}
+}

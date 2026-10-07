@@ -1,0 +1,16 @@
+# Build output
+bin/
+dist/
+
+# Worker
+worker/node_modules/
+worker/.wrangler/
+# Local Worker secrets; copy worker/.dev.vars.example. Never commit the team token.
+worker/.dev.vars
+worker/.dev.vars.*
+!worker/.dev.vars.example
+
+# Local env / noise
+.env
+*.log
+.DS_Store
