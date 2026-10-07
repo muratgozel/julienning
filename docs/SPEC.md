@@ -45,7 +45,7 @@ team-wide: it is stored with the allowlist entry in the Worker
 - **Rule** (`shell.ValidNickname`): `^[a-z0-9][a-z0-9._-]{0,31}$`. The CLI
   trims and lowercases input before validating; the Worker also lowercases,
   so uniqueness is case-insensitive.
-- **Default** (`defaultNickname`): the email's local part, lowercased, every
+- **Default** (`config.DefaultNickname`): the email's local part, lowercased, every
   character outside `[a-z0-9._-]` replaced by `-`, leading `.`/`_`/`-`
   dropped, cut to 32 (`claude1@x.io` → `claude1`, `john+team@x.io` →
   `john-team`). When nothing valid is left the user must pass one.
@@ -54,7 +54,12 @@ team-wide: it is stored with the allowlist entry in the Worker
   (Enter = default; an invalid answer is explained and asked again).
   Non-interactive setup uses `--nick EMAIL=NAME` (repeatable; validated up
   front: one name per email, one email per name) or the default;
-  `julienning share EMAIL [--nick NAME]` the flag or the default. Sharing an
+  `julienning share EMAIL [--nick NAME]` the flag or the default.
+  `new-config` asks before the login, when the email is not known yet:
+  `Nickname for this account [the email's name]: ` (Enter = the default,
+  decided at share time; an invalid answer or one the cached allowlist shows
+  as taken is explained and asked again), or takes `--nick NICK`; the share
+  itself happens on login (see new-config). Sharing an
   email that is already shared never changes its nickname (the Worker ignores
   the body's nickname); `share` then prints
   `claude1@x.io was already shared as alpha (rename with: julienning nick alpha NEW).`
@@ -145,7 +150,7 @@ integration"); dir-name aliases no longer exist.
 
 | File | Owner | Purpose |
 |------|-------|---------|
-| `config.json` | config | identity, remote, registered dirs, declined emails, name prefix |
+| `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, name prefix |
 | `current` | config | absolute path of the selected config dir |
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
 | `claims.json` | claims | emails this machine currently holds a claim on |
@@ -167,7 +172,9 @@ integration"); dir-name aliases no longer exist.
   "remote": { "url": "https://julienning.example.workers.dev", "token": "…" },
   "configs": [
     { "name": "default", "dir": "/Users/murat/.claude" },
-    { "name": "julienning1", "dir": "/Users/murat/.claude-julienning1" }
+    { "name": "julienning1", "dir": "/Users/murat/.claude-julienning1" },
+    { "name": "julienning2", "dir": "/Users/murat/.claude-julienning2",
+      "share_on_login": { "nickname": "delta" } }
   ],
   "declined_emails": ["me@personal.com"],
   "send_min_interval_sec": 300,
@@ -176,6 +183,11 @@ integration"); dir-name aliases no longer exist.
 }
 ```
 
+`share_on_login` is optional per dir: `new-config`'s pending share of the
+dir's first login (see new-config); `nickname` absent = the email's local
+part, decided at share time. It must pass the nickname rule (checked on load
+and save). It is removed once the share lands, the email turns out to be
+shared already, or the email is declined; `forget` drops it with the dir.
 `name_prefix` is optional (absent = `julienning`, `config.Prefix()`).
 `auto_update` is optional (absent = on; `cfg.AutoUpdateEnabled()`, which also
 honours `JULIENNING_AUTO_UPDATE`).
@@ -372,6 +384,15 @@ Idempotent. Steps, one status line each:
      --share EMAIL)`. A failed share is listed as `not shared (share failed:
      …)` and makes setup exit 1 after the remaining steps.
    - not logged in → listed; included only if already registered.
+   - a registered dir with a pending share from `new-config`
+     (`share_on_login`) whose email is not shared yet: offered as above,
+     with the mark's nickname as the default (the prompt's, and `--share`'s
+     when no `--nick` names it). Non-interactive runs leave it to the
+     session hooks unless `--share` names it. Sharing, declining, or finding
+     the email on the allowlist or in `declined_emails` clears the mark; a
+     failed share keeps it. Rows while it is pending: `not logged in
+     (registered as julienning3; shares on login)`, `not shared yet (shares
+     on login; registered as julienning3)`.
    Then shared accounts logged in here whose Worker record has no nickname
    are named (Nicknames, "Legacy records"), and every `--nick` that was not
    used is explained on a `Note:` line (not logged in here, Worker
@@ -470,7 +491,7 @@ on stderr and exit 1, which makes the function return 1.
 
 ### new-config / adopt / rename / login / configs
 
-- `new-config [--name NAME] [--copy-settings-from NAME] [--no-login]`:
+- `new-config [--name NAME] [--copy-settings-from NAME] [--nick NICK] [--no-share] [--no-login]`:
   without `--name`, creates `~/.claude-<prefix><N>` named `<prefix><N>` (dir
   and name share N: the smallest N ≥ 1 whose name is not registered and whose
   dir does not exist, up to 999). `--name foo` (or `.claude-foo`) →
@@ -478,17 +499,28 @@ on stderr and exit 1, which makes the function return 1.
   starts claude in the new dir (`launch.Exec`) so the user can sign in;
   `--no-login` (scripts) stops after registering. `--login` is accepted as a
   no-op for compatibility. Otherwise as v1.
+- **new-config is for team accounts: the account signed in is shared
+  automatically.** Unless `--no-share`, before creating anything the
+  nickname is settled: `--nick` (validated; usage error when invalid or
+  combined with `--no-share`; an error when the cached allowlist shows it
+  held by another email), else in a terminal the prompt from Nicknames, else
+  the default. It is stored on the registered dir as
+  `share_on_login: {nickname}` (`config.ShareOnLogin`, `""` = the email's
+  local part). The share happens on login, in claim reconciliation step 0
+  (Claims from sessions), and `setup` offers the dir with that nickname.
+  `--no-share` registers the dir without a mark (setup offers it as usual).
 - `adopt DIR [--name NAME]`: as v1 (register + patch); the name follows
   Config names unless `--name` is given.
 - `new-config` prints `Created ~/.claude-julienning3 (config
   "julienning3").`, then `Starting claude in it so you can sign in.` and
-  ``After signing in, run `julienning setup`: it offers to share the account
-  with the team.`` before the exec; when the exec fails (claude not on PATH)
-  the dir stays registered and the error ends with `; ~/.claude-julienning3
-  is created, sign in later with: julienning login julienning3`. With
-  `--no-login`: `Created …`, `Sign in: julienning login julienning3` and
-  `Then share the account with the team: julienning setup (or julienning
-  share EMAIL).` (no alias line). `adopt` prints `Adopted ~/.claude-x as
+  `The account you sign in with will be shared with the team as delta;
+  julienning does that automatically when your first session starts.`
+  (`as its email name` without a nickname; with `--no-share`: `This account
+  stays personal (not shared).`) before the exec; when the exec fails
+  (claude not on PATH) the dir stays registered and the error ends with
+  `; ~/.claude-julienning3 is created, sign in later with: julienning login
+  julienning3`. With `--no-login` the second line is `Sign in: julienning
+  login julienning3` instead (no alias line). `adopt` prints `Adopted ~/.claude-x as
   config "julienning4" (settings.json added).`.
 - `rename OLD NEW`: renames the internal label only (`nick` renames an
   account). NEW must be a valid config name not used by any registered dir;
@@ -501,9 +533,11 @@ on stderr and exit 1, which makes the function return 1.
 - `configs [--json]`: `*` current, NAME, NICK (nickname of the dir's current
   login when shared, else `-`), DIR (home-shortened), EMAIL (`(not logged
   in)` / `(unreadable)`), SHARED (`yes` / `no` / `?` when the cache is
-  empty). JSON: `{"configs": [{name, dir, email, nickname, logged_in,
-  shared, current, default, email_error?}]}` (`shared` null when the cache is
-  empty).
+  empty / `no (shares on login)` for a dir with a pending share whose login
+  is not shared yet; its NICK stays `-` until the share lands). JSON:
+  `{"configs": [{name, dir, email, nickname, logged_in, shared, current,
+  default, share_on_login, email_error?}]}` (`shared` null when the cache is
+  empty; `share_on_login` true exactly when SHARED says `shares on login`).
 
 ### share / unshare / nick
 
@@ -708,7 +742,9 @@ fields ignored), resolves the config dir (`claudecfg.ActiveDir`), and exits 0
 immediately after spawning a detached `julienning claim-sync` (Setsid,
 stdio to /dev/null). Hooks never print, never fail, never touch the network.
 `session-start` does nothing when julienning is not set up, the dir is not
-registered, or the email is not in `shared.json`. `session-end` only
+registered, the dir is not logged in, or the email is not in `shared.json`
+and the dir has no pending share (`share_on_login`; for such a dir an
+unreadable `shared.json` does not stop it either). `session-end` only
 requires a registered dir (the login may be gone after `/logout`); when the
 input lacks a session id, the ending session is identified by the registry
 entry whose pid is the hook's parent or grandparent. Only entries for which
@@ -720,6 +756,22 @@ allowed; `--starting` waits up to 2 s for the new session to appear in the
 registry). A SessionEnd with reason `clear` spawns nothing, because the
 process continues under a new session.
 
+0. Pending shares (`claims.ResolvePendingShares`): for every registered dir
+   with `share_on_login`, read its email. Not logged in → skip (retried
+   next run). On the allowlist (`shared.json`, else one `ListAccounts` per
+   run, which is saved as `shared.json` so step 3 does not replace it with a
+   listing that lags the share) → clear the mark. In `declined_emails` →
+   clear the mark, never share, report it. Otherwise `Share(email, nickname
+   or config.DefaultNickname(email), identity)`; success →
+   `sharedcache.AddWithNickname`, clear the mark. 409 → keep the mark and
+   report `config julienning3: nickname taken: "delta" belongs to another
+   team account; pick another with: julienning setup`; any other failure →
+   keep the mark, report, retry next run. Marks are cleared with
+   `config.UpdateDir` (re-read config.json, change that dir, save) so a
+   long-running process never undoes a concurrent config change. Messages
+   name config dirs and nicknames, never emails; claim-sync and the
+   send-usage child log them as `SHARE_FAILED` (throttled like the other
+   background codes), `accounts`/`next`/`use` print them as warnings.
 1. For every shared email logged in on this machine's registered dirs, count
    live sessions (`livesess.List` over all registered dirs logged into that
    email, excluding `--ending`).
@@ -736,14 +788,18 @@ process continues under a new session.
    (`selfupdate.AutoUpdateIfDue`, see Install layout and updates). A run that
    did not get the lock leaves it to the holder.
 
-The same reconciliation runs synchronously in `accounts`/`next`/`use`
-(without spawning) and in the send-usage child at most every 10 minutes,
-which cleans up after crashed sessions whose SessionEnd never ran.
+The same reconciliation (step 0 included, through `claims.Sync`) runs
+synchronously in `accounts`/`next`/`use` (without spawning) and in the
+send-usage child at most every 10 minutes, which cleans up after crashed
+sessions whose SessionEnd never ran. A pending share usually lands at the
+first SessionStart after the login, at the latest at that session's
+SessionEnd (which needs only a registered dir).
 
 ### statusline / send-usage
 
 As v1, plus: the gate is "config dir registered AND email in `shared.json`"
-(no network). The config dir is resolved via `claudecfg.ActiveDir` and the
+(no network); a pending share does not open it, so a new-config dir starts
+reporting once its share has landed in `shared.json`. The config dir is resolved via `claudecfg.ActiveDir` and the
 account file via `claudecfg.AccountFileForEnv` (an explicitly exported
 `CLAUDE_CONFIG_DIR=~/.claude` reads `~/.claude/.claude.json`). Every
 status-line error code is log-throttled. The

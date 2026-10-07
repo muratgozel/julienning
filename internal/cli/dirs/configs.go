@@ -27,10 +27,13 @@ type configRow struct {
 	Nickname string `json:"nickname"` // team nickname of Email; "" when none
 	LoggedIn bool   `json:"logged_in"`
 	// Shared is null when the allowlist cache is empty (never fetched).
-	Shared     *bool  `json:"shared"`
-	Current    bool   `json:"current"`
-	Default    bool   `json:"default"` // Claude's default dir (~/.claude)
-	EmailError string `json:"email_error,omitempty"`
+	Shared  *bool `json:"shared"`
+	Current bool  `json:"current"`
+	Default bool  `json:"default"` // Claude's default dir (~/.claude)
+	// ShareOnLogin is true while a share new-config asked for has not
+	// landed: the dir's next login is shared automatically.
+	ShareOnLogin bool   `json:"share_on_login"`
+	EmailError   string `json:"email_error,omitempty"`
 }
 
 func runConfigs(env cli.Env) error {
@@ -73,6 +76,7 @@ func runConfigs(env cli.Env) error {
 		if ok && cache.Contains(email) {
 			r.Nickname = cache.Nickname(email)
 		}
+		r.ShareOnLogin = cd.ShareOnLogin != nil && (r.Shared == nil || !*r.Shared)
 		rows = append(rows, r)
 	}
 
@@ -108,11 +112,13 @@ func runConfigs(env cli.Env) error {
 			email = "(not logged in)"
 		}
 		shared := "?"
-		if r.Shared != nil {
+		switch {
+		case r.ShareOnLogin:
+			shared = "no (shares on login)"
+		case r.Shared != nil && *r.Shared:
+			shared = "yes"
+		case r.Shared != nil:
 			shared = "no"
-			if *r.Shared {
-				shared = "yes"
-			}
 		}
 		nick := r.Nickname
 		if nick == "" {

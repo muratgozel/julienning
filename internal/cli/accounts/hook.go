@@ -88,7 +88,8 @@ func runHook(env cli.Env) error {
 		logf(usage.CodeAccountFile, "cannot resolve the config dir: "+err.Error())
 		return nil
 	}
-	if _, ok := cfg.FindByDir(dir); !ok {
+	cd, ok := cfg.FindByDir(dir)
+	if !ok {
 		logf(usage.CodeNotShared, "config dir is not registered with julienning")
 		return nil
 	}
@@ -114,7 +115,9 @@ func runHook(env cli.Env) error {
 			args = append(args, more...)
 		}
 	} else {
-		// Same gate as the status line: only a shared login may be claimed.
+		// Same gate as the status line: only a shared login may be claimed,
+		// except in a dir new-config marked ShareOnLogin, whose login
+		// claim-sync shares first (claims.ResolvePendingShares).
 		// The login is read from the file this Claude process uses, which is
 		// not the registered dir's when CLAUDE_CONFIG_DIR=~/.claude is set.
 		accountFile, err := claudecfg.AccountFileForEnv(envDir)
@@ -130,12 +133,13 @@ func runHook(env cli.Env) error {
 			logf(usage.CodeAccountFile, err.Error())
 			return nil
 		}
+		pending := cd.ShareOnLogin != nil
 		cache, err := sharedcache.Load()
-		if err != nil {
+		if err != nil && !pending {
 			logf(usage.CodeNotShared, "shared account cache is unreadable, treating the account as not shared: "+err.Error())
 			return nil
 		}
-		if !cache.Contains(email) {
+		if !pending && !cache.Contains(email) {
 			logf(usage.CodeNotShared, "account is not on the team allowlist (shared.json)")
 			return nil
 		}

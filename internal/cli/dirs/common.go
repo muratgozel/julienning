@@ -317,31 +317,9 @@ func normalizeNickname(s string) (string, error) {
 }
 
 // defaultNickname is the suggested nickname for an email: its local part
-// (claude1@x.io → claude1). Characters a nickname cannot hold become dashes
-// (john+team@x.io → john-team); "" when nothing valid is left.
-func defaultNickname(email string) string {
-	local := strings.ToLower(email)
-	if i := strings.LastIndex(local, "@"); i >= 0 {
-		local = local[:i]
-	}
-	var b strings.Builder
-	for _, r := range local {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('-')
-		}
-	}
-	n := strings.TrimLeft(b.String(), "._-")
-	if len(n) > 32 {
-		n = n[:32]
-	}
-	if !shell.ValidNickname(n) {
-		return ""
-	}
-	return n
-}
+// with invalid characters turned into dashes (config.DefaultNickname, the
+// rule the pending share on login uses too); "" when nothing valid is left.
+func defaultNickname(email string) string { return config.DefaultNickname(email) }
 
 // accountLabel renders an account as "nick (email)", or the bare email when
 // it has no nickname.

@@ -83,3 +83,36 @@ func TestAddWithNicknameAndLegacyFile(t *testing.T) {
 		t.Fatalf("remove: %+v", c)
 	}
 }
+
+func TestLocalAddSurvivesLaggingRefresh(t *testing.T) {
+	t.Setenv("JULIENNING_HOME", t.TempDir())
+	now := time.Now().UTC()
+	wall := now
+	old := nowFunc
+	t.Cleanup(func() { nowFunc = old })
+	nowFunc = func() time.Time { return wall }
+	if _, err := SaveEntries([]Entry{{Email: "a@x.io", Nickname: "a"}}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AddWithNickname("new@x.io", "newbie"); err != nil {
+		t.Fatal(err)
+	}
+	// A Worker listing that does not show the fresh share yet.
+	c, err := FromListing(&remote.Listing{Accounts: []remote.Account{{Email: "a@x.io", Nickname: "a"}}}, now)
+	if err != nil || !c.Contains("new@x.io") || c.Nickname("new@x.io") != "newbie" {
+		t.Fatalf("fresh share dropped by refresh: %+v %v", c, err)
+	}
+	// Once the grace period is over, the listing wins.
+	wall = now.Add(LocalAddGrace + time.Minute)
+	c, err = FromListing(&remote.Listing{Accounts: []remote.Account{{Email: "a@x.io", Nickname: "a"}}}, wall)
+	if err != nil || c.Contains("new@x.io") {
+		t.Fatalf("stale local add kept: %+v %v", c, err)
+	}
+	// Remove forgets the local add too.
+	AddWithNickname("gone@x.io", "g")
+	Remove("gone@x.io")
+	c, _ = FromListing(&remote.Listing{Accounts: []remote.Account{{Email: "a@x.io"}}}, wall)
+	if c.Contains("gone@x.io") {
+		t.Fatal("removed email resurrected")
+	}
+}

@@ -55,10 +55,12 @@ Get the **Worker URL** and the **team token** from your team lead, then:
    functions.
 
 4. More accounts later: `julienning new-config` creates a fresh Claude config
-   dir (`julienning<N>`, in `~/.claude-julienning<N>`) and starts Claude in it
-   so you can sign in with the next account. After signing in, run
-   `julienning setup` again: it offers to share the account, or picks it up
-   without asking if the team already shares that email.
+   dir (`julienning<N>`, in `~/.claude-julienning<N>`), asks for the
+   account's nickname (Enter takes the part before `@`) and starts Claude in
+   it so you can sign in with the next account. That account is shared with
+   the team automatically when your first session in it starts; nothing else
+   to run. `--nick NAME` answers the nickname question up front, and
+   `--no-share` keeps the account personal.
 
 ## Daily use
 

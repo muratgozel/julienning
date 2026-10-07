@@ -400,7 +400,20 @@ type sharer struct {
 	interactive bool
 	nicks       map[string]string // --nick EMAIL=NAME
 	used        map[string]bool   // emails whose --nick was applied
+	// pending maps an email to the nickname of a new-config pending share
+	// (config.ShareOnLogin) on a dir logged into it; "" stands for the
+	// email's local part. It is the default when no --nick is given.
+	pending     map[string]string
 	cacheWarned bool
+}
+
+// defaultFor is the nickname offered or used for email when no --nick
+// names it: the pending share's, else the email's local part.
+func (s *sharer) defaultFor(email string) string {
+	if n := s.pending[email]; n != "" {
+		return n
+	}
+	return defaultNickname(email)
 }
 
 // share adds email to the allowlist. The nickname is --nick, else asked for
@@ -414,7 +427,7 @@ func (s *sharer) share(email string, prompted bool) error {
 	if given {
 		s.used[email] = true
 	} else if !prompted {
-		if nick = defaultNickname(email); nick == "" {
+		if nick = s.defaultFor(email); nick == "" {
 			return fmt.Errorf("no nickname can be derived from %s; pass --nick %s=NAME", email, email)
 		}
 	}
@@ -500,7 +513,7 @@ func (s *sharer) withNickname(email, nick string, ask bool, action, hint string,
 // askNickname prompts until it gets a valid nickname; Enter takes the
 // default. ok is false when input ends.
 func (s *sharer) askNickname(email string) (string, bool) {
-	def := defaultNickname(email)
+	def := s.defaultFor(email)
 	q := fmt.Sprintf("Nickname for %s [%s]: ", email, def)
 	if def == "" {
 		q = fmt.Sprintf("Nickname for %s: ", email)
@@ -576,6 +589,24 @@ func classifyDirs(s *sharer, listing *remote.Listing, toShare map[string]bool) (
 			}
 		}
 	}
+	// Pending shares from new-config: the first marked dir per email names
+	// the default nickname. Sharing or declining the email, or finding it
+	// shared or declined already, settles them.
+	s.pending = map[string]string{}
+	for _, c := range cands {
+		if cd, ok := cfg.FindByDir(c.Dir); ok && c.LoggedIn && cd.ShareOnLogin != nil {
+			if _, seen := s.pending[c.Email]; !seen {
+				s.pending[c.Email] = cd.ShareOnLogin.Nickname
+			}
+		}
+	}
+	settle := func(email string) {
+		for _, c := range cands {
+			if c.LoggedIn && c.Email == email {
+				clearShareOnLogin(cfg, c.Dir)
+			}
+		}
+	}
 	for _, e := range sortedKeys(toShare) {
 		if _, found := firstDir[e]; !found {
 			fmt.Fprintf(env.Stdout, "Note:     --share %s: no config dir here is logged in as it (use `julienning share %s` to share it anyway)\n", e, e)
@@ -587,17 +618,25 @@ func classifyDirs(s *sharer, listing *remote.Listing, toShare map[string]bool) (
 		share, prompted := false, false
 		switch {
 		case cache.Contains(e):
+			settle(e)
 		case toShare[e]:
 			share = true
 		case cfg.Declined(e):
+			// Personal wins over a pending share, as on login
+			// (claims.ResolvePendingShares).
+			settle(e)
 		case s.interactive && s.client != nil:
 			q := fmt.Sprintf("Share %s (found in %s) with the team? [y/N] ", e, shortenHome(firstDir[e]))
 			if confirm(env.Stdout, s.in, q) {
 				share, prompted = true, true
 			} else {
 				cfg.Decline(e)
+				settle(e)
 			}
 		}
+		// Without a terminal a pending share is left to the session hooks
+		// (claims.ResolvePendingShares), like --yes leaves every other
+		// account alone; --share EMAIL shares it now under its nickname.
 		if !share {
 			continue
 		}
@@ -607,6 +646,7 @@ func classifyDirs(s *sharer, listing *remote.Listing, toShare map[string]bool) (
 			continue
 		}
 		cfg.Undecline(e)
+		settle(e)
 	}
 	s.nameLegacy(order, listing)
 	for _, e := range sortedKeys(s.nicks) {
@@ -643,11 +683,17 @@ func classifyDirs(s *sharer, listing *remote.Listing, toShare map[string]bool) (
 			}
 		}
 		_, statErr := os.Stat(c.Dir)
+		marked := false
+		if cd, ok := cfg.FindByDir(c.Dir); ok && c.Registered {
+			marked = cd.ShareOnLogin != nil
+		}
 		switch {
 		case c.Registered && os.IsNotExist(statErr):
 			row.status = fmt.Sprintf("missing (registered as %s; run `julienning forget %s`)", c.Name, c.Name)
 		case c.Err != nil:
 			row.status = "unreadable account file: " + c.Err.Error()
+		case !c.LoggedIn && c.Registered && marked:
+			row.status = fmt.Sprintf("not logged in (registered as %s; shares on login)", c.Name)
 		case !c.LoggedIn && c.Registered:
 			row.status = fmt.Sprintf("not logged in (registered as %s)", c.Name)
 		case !c.LoggedIn:
@@ -663,6 +709,8 @@ func classifyDirs(s *sharer, listing *remote.Listing, toShare map[string]bool) (
 			row.status = "not shared (share failed: " + shareErr[c.Email].Error() + ")"
 			fmt.Fprintf(env.Stderr, "julienning: share %s: %v\n", c.Email, shareErr[c.Email])
 			delete(shareErr, c.Email) // report once per email
+		case marked:
+			row.status = fmt.Sprintf("not shared yet (shares on login; registered as %s)", c.Name)
 		case c.Registered && cfg.Declined(c.Email):
 			row.status = fmt.Sprintf("now logged in as %s (personal, declined; registered as %s)", c.Email, c.Name)
 		case cfg.Declined(c.Email):
@@ -687,6 +735,17 @@ func classifyDirs(s *sharer, listing *remote.Listing, toShare map[string]bool) (
 		fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", indent, r.dir, r.nick, r.email, r.status)
 	}
 	return failures, w.Flush()
+}
+
+// clearShareOnLogin drops the pending share of a registered dir in cfg
+// (setup saves cfg afterwards).
+func clearShareOnLogin(cfg *config.Config, dir string) {
+	dir = filepath.Clean(dir)
+	for i := range cfg.Configs {
+		if filepath.Clean(cfg.Configs[i].Dir) == dir {
+			cfg.Configs[i].ShareOnLogin = nil
+		}
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {

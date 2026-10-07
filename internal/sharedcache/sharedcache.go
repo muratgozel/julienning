@@ -32,7 +32,19 @@ type Cache struct {
 	FetchedAt time.Time         `json:"fetched_at"`
 	Emails    []string          `json:"emails"`              // lowercased, sorted
 	Nicknames map[string]string `json:"nicknames,omitempty"` // email → team nickname (may be missing for legacy records)
+	// LocalAdds records when this machine shared an email. KV listings lag
+	// writes by up to a minute, so a refresh within LocalAddGrace keeps these
+	// entries even when the Worker's listing does not show them yet.
+	LocalAdds map[string]time.Time `json:"local_adds,omitempty"`
 }
+
+// LocalAddGrace is how long a locally added email survives refreshes that
+// do not list it.
+const LocalAddGrace = 10 * time.Minute
+
+// nowFunc is the wall clock used for the grace window (a seam for tests);
+// the fetch stamp passed to Save* is the listing's time, not "now".
+var nowFunc = time.Now
 
 // Entry is one shared account as the Worker lists it.
 type Entry struct {
@@ -106,11 +118,28 @@ func Save(emails []string, now time.Time) (*Cache, error) {
 	return SaveEntries(entries, now)
 }
 
-// SaveEntries replaces the cache atomically with emails and nicknames.
+// SaveEntries replaces the cache atomically with emails and nicknames,
+// keeping entries this machine added within LocalAddGrace that the new
+// listing does not contain yet.
 func SaveEntries(entries []Entry, now time.Time) (*Cache, error) {
+	prev, err := Load()
+	if err != nil {
+		prev = &Cache{}
+	}
+	return saveEntries(entries, now, prev.LocalAdds, prev)
+}
+
+func saveEntries(entries []Entry, now time.Time, localAdds map[string]time.Time, prev *Cache) (*Cache, error) {
 	norm := make([]string, 0, len(entries))
 	nicks := map[string]string{}
 	seen := map[string]bool{}
+	keptAdds := map[string]time.Time{}
+	wall := nowFunc().UTC()
+	for e, at := range localAdds {
+		if age := wall.Sub(at); age >= 0 && age < LocalAddGrace {
+			keptAdds[e] = at
+		}
+	}
 	for _, en := range entries {
 		e := strings.ToLower(en.Email)
 		if !seen[e] {
@@ -121,11 +150,23 @@ func SaveEntries(entries []Entry, now time.Time) (*Cache, error) {
 			nicks[e] = n
 		}
 	}
+	for e := range keptAdds {
+		if !seen[e] {
+			seen[e] = true
+			norm = append(norm, e)
+			if n := prev.Nicknames[e]; n != "" && nicks[e] == "" {
+				nicks[e] = n
+			}
+		}
+	}
 	sort.Strings(norm)
 	if len(nicks) == 0 {
 		nicks = nil
 	}
-	c := &Cache{FetchedAt: now.UTC(), Emails: norm, Nicknames: nicks}
+	if len(keptAdds) == 0 {
+		keptAdds = nil
+	}
+	c := &Cache{FetchedAt: now.UTC(), Emails: norm, Nicknames: nicks, LocalAdds: keptAdds}
 	p, err := config.Path(File)
 	if err != nil {
 		return nil, err
@@ -168,7 +209,16 @@ func AddWithNickname(email, nickname string) (*Cache, error) {
 	if !found {
 		entries = append(entries, Entry{Email: email, Nickname: nickname})
 	}
-	return saveEntriesKeepingTime(entries, c.FetchedAt)
+	adds := map[string]time.Time{}
+	for e, at := range c.LocalAdds {
+		adds[e] = at
+	}
+	adds[email] = nowFunc().UTC()
+	fetched := c.FetchedAt
+	if fetched.IsZero() {
+		fetched = time.Unix(0, 0)
+	}
+	return saveEntries(entries, fetched, adds, c)
 }
 
 // Remove drops email without changing FetchedAt (after Unshare, or when the
@@ -185,15 +235,18 @@ func Remove(email string) (*Cache, error) {
 			kept = append(kept, en)
 		}
 	}
-	return saveEntriesKeepingTime(kept, c.FetchedAt)
-}
-
-func saveEntriesKeepingTime(entries []Entry, fetched time.Time) (*Cache, error) {
+	adds := map[string]time.Time{}
+	for e, at := range c.LocalAdds {
+		if e != email {
+			adds[e] = at
+		}
+	}
+	fetched := c.FetchedAt
 	if fetched.IsZero() {
 		// Never fetched: keep it stale so the next network process refreshes.
-		return SaveEntries(entries, time.Unix(0, 0))
+		fetched = time.Unix(0, 0)
 	}
-	return SaveEntries(entries, fetched)
+	return saveEntries(kept, fetched, adds, c)
 }
 
 // FromListing extracts the allowlist (emails and nicknames) from a Worker

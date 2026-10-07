@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/muratgozel/julienning/internal/shell"
 )
 
 // SchemaVersion bumps when config.json changes incompatibly.
@@ -52,6 +54,56 @@ type Remote struct {
 type ConfigDir struct {
 	Name string `json:"name"` // internal label, e.g. "julienning1" or "default"; users address accounts by nickname
 	Dir  string `json:"dir"`  // absolute path, e.g. /Users/x/.claude-julienning1
+	// ShareOnLogin is set by new-config (a dir for a team account): the
+	// first account the dir is signed into is shared with the team
+	// automatically (claims.ResolvePendingShares), then the mark is cleared.
+	// nil means nothing is pending.
+	ShareOnLogin *ShareOnLogin `json:"share_on_login,omitempty"`
+}
+
+// ShareOnLogin is a pending share of a registered dir's future login.
+type ShareOnLogin struct {
+	// Nickname is the team nickname to share under; "" means the email's
+	// local part (DefaultNickname), decided at share time.
+	Nickname string `json:"nickname,omitempty"`
+}
+
+// NicknameFor is the nickname the pending share uses for email: Nickname,
+// else DefaultNickname(email) ("" when neither gives a valid one).
+func (s *ShareOnLogin) NicknameFor(email string) string {
+	if s != nil && s.Nickname != "" {
+		return s.Nickname
+	}
+	return DefaultNickname(email)
+}
+
+// DefaultNickname is the suggested team nickname for an email: its local
+// part (claude1@x.io → claude1). Characters a nickname cannot hold become
+// dashes (john+team@x.io → john-team), leading dots, underscores and dashes
+// are dropped and it is cut to 32; "" when nothing valid is left. setup,
+// share, new-config and the pending share on login all use this one rule.
+func DefaultNickname(email string) string {
+	local := strings.ToLower(email)
+	if i := strings.LastIndex(local, "@"); i >= 0 {
+		local = local[:i]
+	}
+	var b strings.Builder
+	for _, r := range local {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	n := strings.TrimLeft(b.String(), "._-")
+	if len(n) > 32 {
+		n = n[:32]
+	}
+	if !shell.ValidNickname(n) {
+		return ""
+	}
+	return n
 }
 
 // Config is config.json.
@@ -243,6 +295,9 @@ func (c *Config) Validate() error {
 		if seenDir[cd.Dir] {
 			return fmt.Errorf("duplicate config dir %q", cd.Dir)
 		}
+		if s := cd.ShareOnLogin; s != nil && s.Nickname != "" && !shell.ValidNickname(s.Nickname) {
+			return fmt.Errorf("config %q: invalid share_on_login nickname %q (%s; fix it, or remove the nickname to use the email's local part)", cd.Name, s.Nickname, shell.NicknameRule)
+		}
 		seenName[cd.Name] = true
 		seenDir[cd.Dir] = true
 	}
@@ -404,6 +459,27 @@ func (c *Config) Remove(name string) bool {
 		}
 	}
 	return false
+}
+
+// UpdateDir re-reads config.json, applies mutate to the registered dir at
+// path dir and saves. Long-running processes (claim-sync) use it instead of
+// saving the Config they loaded at start: Save rewrites the whole file, so
+// that would undo whatever another command saved in the meantime. found is
+// false, and nothing is saved, when the dir is no longer registered. mutate
+// must not change Dir.
+func UpdateDir(dir string, mutate func(*ConfigDir)) (found bool, err error) {
+	c, err := Load()
+	if err != nil {
+		return false, err
+	}
+	dir = filepath.Clean(dir)
+	for i := range c.Configs {
+		if filepath.Clean(c.Configs[i].Dir) == dir {
+			mutate(&c.Configs[i])
+			return true, c.Save()
+		}
+	}
+	return false, nil
 }
 
 // Current returns the selected config dir, or ok=false when none is selected.

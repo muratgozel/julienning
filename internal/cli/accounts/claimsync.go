@@ -41,6 +41,12 @@ var (
 	pollEvery = 100 * time.Millisecond
 )
 
+// codeShareFailed is the errors.log code for a pending share on login
+// (new-config) that failed and stays pending: a taken nickname, an
+// unreachable Worker, an unreadable account file. Throttled like the other
+// background codes (usage.BackgroundFailedEvery).
+const codeShareFailed = "SHARE_FAILED"
+
 // sessionIDRe bounds what a hook may pass on to claim-sync. Claude's session
 // ids are UUIDs.
 var sessionIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -161,7 +167,13 @@ type upkeep struct {
 	now    time.Time
 }
 
+// reconcile shares the logins new-config marked ShareOnLogin (SPEC "Claims
+// from sessions" step 0), then reconciles claims, so an account shared here
+// is claimed in the same run.
 func (u upkeep) reconcile(ctx context.Context, ending claims.Ending) {
+	if err := claims.ResolvePendingShares(ctx, u.cfg, u.client, u.now); err != nil {
+		u.fail(codeShareFailed, err)
+	}
 	if err := claims.Reconcile(ctx, u.cfg, u.client, ending, u.now); err != nil {
 		u.fail(usage.CodeClaimSync, err)
 	}

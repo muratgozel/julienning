@@ -236,17 +236,17 @@ func Reconcile(ctx context.Context, cfg *config.Config, c remote.Client, ending 
 	return errors.Join(errs...)
 }
 
-// Sync is Reconcile for interactive commands (accounts, next, use): it takes
-// the claim-sync lock without waiting and stamps MarkReconciled. ran=false
-// with a nil error means another process holds the lock and is reconciling
-// right now, which is not a failure.
+// Sync is ResolvePendingShares plus Reconcile for interactive commands
+// (accounts, next, use): it takes the claim-sync lock without waiting and
+// stamps MarkReconciled. ran=false with a nil error means another process
+// holds the lock and is reconciling right now, which is not a failure.
 func Sync(ctx context.Context, cfg *config.Config, c remote.Client, now time.Time) (ran bool, err error) {
 	release, ok, err := AcquireLock(now)
 	if err != nil || !ok {
 		return false, err
 	}
 	defer release()
-	err = Reconcile(ctx, cfg, c, Ending{}, now)
+	err = errors.Join(ResolvePendingShares(ctx, cfg, c, now), Reconcile(ctx, cfg, c, Ending{}, now))
 	if merr := MarkReconciled(now); merr != nil {
 		err = errors.Join(err, merr)
 	}

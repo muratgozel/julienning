@@ -250,7 +250,9 @@ show `alpha`, never a dir name. A nickname is team-wide: the Worker stores it
 with the allowlist entry, and whoever shares the account picks it once for
 everyone. Setup asks `Nickname for claude4@example.com [claude4]:`; Enter takes
 the email's local part, lowercased, with any other character turned into `-`
-(`john+team@x.io` → `john-team`).
+(`john+team@x.io` → `john-team`). `new-config` asks
+`Nickname for this account [the email's name]:` before you sign in, so Enter
+there means the same default, taken once the email is known.
 
 - 1–32 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a letter or
   digit, and unique in the team. A taken one is refused with the account that
@@ -342,6 +344,14 @@ decides per email:
   asked again.
 - **not logged in** → listed, registered only if it already was
   (`not logged in (registered as julienning3)`).
+- **a dir `new-config` created** whose account is not shared yet → offered
+  like any other, with the nickname you gave `new-config` as the default
+  (also for `--share EMAIL` without `--nick`). Saying no marks it personal
+  and cancels the pending share. Without a terminal it is left to the
+  session hooks, which share it on their own, and listed as
+  `not shared yet (shares on login; registered as julienning3)`
+  (`not logged in (registered as julienning3; shares on login)` before the
+  login).
 
 Without a terminal, or with `--yes`, nothing is asked: only emails given with
 `--share EMAIL` (repeatable) are shared, under `--nick EMAIL=NAME` or the
@@ -625,7 +635,9 @@ A dir whose account has no nickname shows its config name
 **`julienning configs [--json]`** lists registered dirs. NAME is the config
 name the dir commands take; NICK is the team nickname of the dir's current
 login (`-` when it has none or is not shared); SHARED is `?` until the
-allowlist was fetched once:
+allowlist was fetched once, and `no (shares on login)` for a dir
+`new-config` created whose account is not shared yet (`share_on_login` in
+`--json`):
 
 ```
    NAME         NICK   DIR                    EMAIL                SHARED
@@ -633,7 +645,7 @@ allowlist was fetched once:
    julienning2  delta  ~/.claude-work         claude4@example.com  yes
 ```
 
-**`julienning new-config [--name NAME] [--copy-settings-from NAME] [--no-login]`**
+**`julienning new-config [--name NAME] [--copy-settings-from NAME] [--nick NICK] [--no-share] [--no-login]`**
 creates and registers `~/.claude-julienning<N>` named `julienning<N>` (the
 smallest N whose name and dir are both free; the prefix is the one from
 `setup --name-prefix`) or `~/.claude-NAME` named `NAME`, and refuses an
@@ -641,13 +653,34 @@ existing dir (use `adopt`).
 `--copy-settings-from` copies that registered dir's settings.json without
 julienning's own statusLine and hooks (a statusLine julienning replaced there
 is put back in the copy), then patches the copy like any other.
-Then it starts claude in the new dir so you can sign in:
+
+A new dir is for a team account, so the account you sign in with is shared
+with the team automatically. Before creating anything new-config asks for its
+[nickname](#nicknames) (Enter leaves it to the part before `@`; a nickname
+the cached allowlist shows as taken is refused and asked again), then starts
+claude in the new dir so you can sign in:
 
 ```
+Nickname for this account [the email's name]: delta
 Created ~/.claude-julienning3 (config "julienning3").
 Starting claude in it so you can sign in.
-After signing in, run `julienning setup`: it offers to share the account with the team.
+The account you sign in with will be shared with the team as delta; julienning does that automatically when your first session starts.
 ```
+
+The share runs in the background, in the claim sync the session hooks start:
+normally at the first session start after you sign in, at the latest when
+that session ends (or at the next `accounts`, `next` or `use`; `setup` in a
+terminal offers it too). From then on the account is a team account like any
+other: `claude-delta` in new terminals, usage in the status line, claims.
+Until then `configs` shows
+`no (shares on login)`. When the nickname turns out to be taken, or the
+Worker cannot be reached, the share stays pending and is retried on every
+session start and end; `errors.log` gets a `SHARE_FAILED` line, and
+`julienning setup` offers the account with that nickname as the default so
+you can pick another. An account declined as personal on this machine is
+never shared this way. Without a terminal the nickname is `--nick NICK`, else
+the email's local part. `--no-share` keeps the account personal: no question,
+and `This account stays personal (not shared).` replaces the last line.
 
 If claude is not installed, the dir stays registered and the error ends with
 `sign in later with: julienning login julienning3`. `--no-login` (scripts)
@@ -656,7 +689,7 @@ only creates and registers the dir:
 ```
 Created ~/.claude-julienning3 (config "julienning3").
 Sign in: julienning login julienning3
-Then share the account with the team: julienning setup (or julienning share EMAIL).
+The account you sign in with will be shared with the team as its email name; julienning does that automatically when your first session starts.
 ```
 
 `--login`, from when signing in was opt-in, is still accepted and changes
@@ -725,12 +758,15 @@ can have several holders. Claims follow live Claude sessions, not
 1. The `SessionStart` / `SessionEnd` hooks run `julienning hook session-start|session-end`.
    The hook reads Claude Code's JSON from stdin and checks locally that
    julienning is set up and the dir is registered; `session-start` also needs
-   the dir logged in with an email in `shared.json`. `session-end` does not,
+   the dir logged in with an email in `shared.json`, or a share pending from
+   `new-config`. `session-end` does not,
    so a session that ended after `/logout` still releases its claim. It then
    starts a detached `julienning claim-sync` and exits 0. It never prints,
    never fails and never touches the network. A `SessionEnd` caused by
    `/clear` is ignored (the same process goes on).
 2. `claim-sync` takes a per-machine lock (`~/.julienning/claim-sync.lock`),
+   first shares the account of every dir `new-config` created that is now
+   signed in (so it is claimed in the same run; see `new-config` above), then
    counts live sessions per shared email across all registered dirs (the
    registry `<dir>/sessions/<pid>.json` of running processes, minus the session
    that is ending), then claims (`PUT /accounts/<email>/claim`) while the count
@@ -943,7 +979,7 @@ reproductions.
 status line code (errors and gate outcomes alike) and every hook code is
 written at most once an hour per code; the status line's error row still
 shows on every render. `SEND_FAILED` is written at most every 10 minutes per
-account; `CLAIM_SYNC_FAILED`, `SHARED_REFRESH_FAILED` and
+account; `CLAIM_SYNC_FAILED`, `SHARE_FAILED`, `SHARED_REFRESH_FAILED` and
 `UPDATE_CHECK_FAILED` at most every 10 minutes. The file is trimmed to its
 newest 500 lines once it passes 1 MB.
 
@@ -960,6 +996,7 @@ newest 500 lines once it passes 1 MB.
 | `SEND_FAILED` | the usage PUT failed; the rest of the line says why (`401 unauthorized`, `request timed out after 5s`, `request failed: …`, `500 internal error`). At most every 10 minutes per account |
 | `HOOK_INPUT_INVALID` | a hook got an argument other than `session-start` / `session-end` (it then does nothing) or unusable stdin (the sync still runs) |
 | `CLAIM_SYNC_FAILED` | claim reconciliation failed (Worker unreachable, lock, unreadable dir) |
+| `SHARE_FAILED` | the account of a dir `new-config` created could not be shared yet; the share stays pending and is retried. `nickname taken: "delta" belongs to another team account` → pick another with `julienning setup`; otherwise the Worker or the account file says why. Also written once when the account signed in there is marked personal on this machine (then it is never shared) |
 | `SHARED_REFRESH_FAILED` | refreshing `shared.json` failed |
 | `UPDATE_CHECK_FAILED` | the daily update check failed: the latest-release lookup on GitHub (retried on the next background run), or the auto-update install (download, checksum, the new binary's `version`, the symlink switch; retried at the next daily check, the active version is unchanged), or `JULIENNING_AUTO_UPDATE` is not a boolean. `julienning update` shows the same error right away |
 | `LOG_FAILED` | errors.log itself could not be written; shown only in the status line |
@@ -1017,7 +1054,7 @@ Common messages:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | dev, machine id, Worker URL and token, registered dirs, declined emails, `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
+| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
 | `current` | path of the selected config dir (read by the `claude` function) |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |
 | `claims.json` | emails this machine holds a claim on |

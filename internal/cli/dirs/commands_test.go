@@ -174,7 +174,7 @@ func TestNewConfigSignsInByDefault(t *testing.T) {
 			out := h.mustRun(runNewConfig, args...)
 			want := "Created ~/.claude-fresh (config \"fresh\").\n" +
 				"Starting claude in it so you can sign in.\n" +
-				"After signing in, run `julienning setup`: it offers to share the account with the team.\n"
+				"The account you sign in with will be shared with the team as its email name; julienning does that automatically when your first session starts.\n"
 			if out != want {
 				t.Fatalf("stdout = %q, want %q", out, want)
 			}
@@ -197,7 +197,7 @@ func TestNewConfigNoLogin(t *testing.T) {
 	out := h.mustRun(runNewConfig, "--name", "fresh", "--no-login")
 	want := "Created ~/.claude-fresh (config \"fresh\").\n" +
 		"Sign in: julienning login fresh\n" +
-		"Then share the account with the team: julienning setup (or julienning share EMAIL).\n"
+		"The account you sign in with will be shared with the team as its email name; julienning does that automatically when your first session starts.\n"
 	if out != want {
 		t.Fatalf("stdout = %q, want %q", out, want)
 	}
@@ -466,7 +466,7 @@ func TestConfigsJSON(t *testing.T) {
 	}
 	want := map[string]any{
 		"name": "default", "dir": d1, "email": "claude1@team.io", "nickname": "", "logged_in": true,
-		"shared": nil, "current": false, "default": true,
+		"shared": nil, "current": false, "default": true, "share_on_login": false,
 	}
 	if len(doc.Configs) != 1 || !reflect.DeepEqual(doc.Configs[0], want) {
 		t.Fatalf("got %v", doc.Configs)
