@@ -54,10 +54,11 @@ Get the **Worker URL** and the **team token** from your team lead, then:
 3. Open a new terminal, or run `source ~/.zshrc`, to load the new shell
    functions.
 
-No separate Claude config dir for a shared account yet?
-`julienning new-config --login` creates one and starts Claude in it so you can
-sign in; if that account is new to the team, run `julienning setup` again to
-share it.
+4. More accounts later: `julienning new-config` creates a fresh Claude config
+   dir (`julienning<N>`, in `~/.claude-julienning<N>`) and starts Claude in it
+   so you can sign in with the next account. After signing in, run
+   `julienning setup` again: it offers to share the account, or picks it up
+   without asking if the team already shares that email.
 
 ## Daily use
 
@@ -109,7 +110,11 @@ lists every project).
   as yours in everyone's `accounts` (`claimed by`, then `in use by` once usage
   comes in); closing your last session on it releases it. Switching alone
   claims nothing.
-- **Update** with `julienning update`. Commands print a one-line hint when a
+- **Updates install themselves:** once a day a background process installs a
+  newer release, and your next command prints `julienning updated to 0.3.0`.
+  `julienning update` updates right away. To opt out, set
+  `"auto_update": false` in `~/.julienning/config.json` (or export
+  `JULIENNING_AUTO_UPDATE=0`); commands then print a one-line hint when a
   newer release is out.
 - **Undo** with `julienning uninstall`: it reverts what setup changed in your
   Claude settings and shell (settings.json entries, the shell line), releases

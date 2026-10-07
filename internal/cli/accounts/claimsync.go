@@ -89,21 +89,23 @@ func runClaimSync(env cli.Env) error {
 	if !ok {
 		return nil // another run is still busy after lockWait: it will do
 	}
-	defer release()
 
-	// Read the clock after waiting: the reconcile and cache stamps must not
-	// predate the wait.
-	n, err := now()
-	if err != nil {
-		n = time.Now()
-	}
-	logger.Now = n
-	ctx, cancel := context.WithTimeout(context.Background(), backgroundBudget)
-	defer cancel()
-	u := upkeep{cfg: cfg, client: newClient(cfg, reportTimeout), logger: logger, now: n}
-	u.reconcile(ctx, claims.Ending{SessionID: *ending, PID: *endingPID})
-	u.refreshShared(ctx)
-	u.refreshUpdates(ctx)
+	u := upkeep{cfg: cfg, client: newClient(cfg, reportTimeout), logger: logger}
+	func() {
+		defer release()
+		// Read the clock after waiting: the reconcile and cache stamps must
+		// not predate the wait.
+		n, err := now()
+		if err != nil {
+			n = time.Now()
+		}
+		u.now, u.logger.Now = n, n
+		ctx, cancel := context.WithTimeout(context.Background(), backgroundBudget)
+		defer cancel()
+		u.reconcile(ctx, claims.Ending{SessionID: *ending, PID: *endingPID})
+		u.refreshShared(ctx)
+	}()
+	u.updateIfDue()
 	return nil
 }
 
@@ -150,8 +152,8 @@ func waitForSession(id string) {
 
 // upkeep is the background maintenance shared by claim-sync and the
 // send-usage child: claim reconciliation, the allowlist snapshot and the
-// update check. Failures are logged (throttled), never returned: nothing
-// watches these processes.
+// daily update check (auto-update). Failures are logged (throttled), never
+// returned: nothing watches these processes.
 type upkeep struct {
 	cfg    *config.Config
 	client remote.Client
@@ -179,8 +181,13 @@ func (u upkeep) refreshShared(ctx context.Context) {
 	}
 }
 
-func (u upkeep) refreshUpdates(ctx context.Context) {
-	if err := refreshUpdateCheck(ctx); err != nil {
+// updateIfDue runs the daily update check, which installs a newer release
+// unless auto-update is off (selfupdate.AutoUpdateIfDue). Callers run it
+// after releasing the claim-sync lock: a slow download may outlast
+// claims.LockStale, and selfupdate has its own lock and time budget, so it
+// gets a context without the claim work's short deadline.
+func (u upkeep) updateIfDue() {
+	if err := autoUpdateIfDue(context.Background(), u.cfg); err != nil {
 		u.fail(usage.CodeUpdateCheck, err)
 	}
 }

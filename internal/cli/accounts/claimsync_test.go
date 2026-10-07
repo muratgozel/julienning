@@ -264,9 +264,33 @@ func TestClaimSyncInvalidArguments(t *testing.T) {
 
 func TestClaimSyncUpdateCheckFailureIsLogged(t *testing.T) {
 	f, _ := claimSyncFixture(t)
-	refreshUpdateCheck = func(context.Context) error { return errors.New("github unreachable") }
+	autoUpdateIfDue = func(context.Context, *config.Config) error { return errors.New("github unreachable") }
 	assertCode(t, f.run("", "claim-sync"), 0)
 	if !strings.Contains(f.errorLog(), "UPDATE_CHECK_FAILED") {
 		t.Errorf("errors.log = %q", f.errorLog())
+	}
+}
+
+func TestClaimSyncRunsAutoUpdateAfterReleasingTheLock(t *testing.T) {
+	f, _ := claimSyncFixture(t)
+	f.autoUpdateOff()
+	var calls int
+	f.checkAutoUpdateCall(&calls)
+
+	assertCode(t, f.run("", "claim-sync"), 0)
+	if calls != 1 {
+		t.Fatalf("auto-update ran %d times, want 1", calls)
+	}
+
+	// A run that cannot get the claim-sync lock leaves it to the holder.
+	release, ok, err := claims.AcquireLock(time.Unix(nowEpoch, 0))
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	defer release()
+	autoUpdateIfDue = func(context.Context, *config.Config) error { calls++; return nil }
+	assertCode(t, f.run("", "claim-sync"), 0)
+	if calls != 1 {
+		t.Fatalf("auto-update ran %d times while another run held the lock, want 1", calls)
 	}
 }

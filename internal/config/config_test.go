@@ -168,3 +168,65 @@ func TestRename(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoUpdateDefaultAndPersistence(t *testing.T) {
+	t.Setenv(EnvHome, t.TempDir())
+	t.Setenv(EnvAutoUpdate, "")
+	newSaved(t, Remote{})
+	if got := readConfig(t); strings.Contains(got, "auto_update") {
+		t.Fatalf("default auto_update written to config.json:\n%s", got)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on, err := c.AutoUpdateEnabled(); !on || err != nil {
+		t.Fatalf("default AutoUpdateEnabled = %v, %v; want on", on, err)
+	}
+
+	off := false
+	c.AutoUpdate = &off
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readConfig(t); !strings.Contains(got, `"auto_update": false`) {
+		t.Fatalf("auto_update not saved:\n%s", got)
+	}
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := c.AutoUpdateEnabled(); on || err != nil {
+		t.Fatalf("after auto_update false: %v, %v; want off", on, err)
+	}
+	// The env var only switches off; it never overrides a false in the file.
+	t.Setenv(EnvAutoUpdate, "1")
+	if on, err := c.AutoUpdateEnabled(); on || err != nil {
+		t.Fatalf("env 1 over auto_update false: %v, %v; want off", on, err)
+	}
+
+	p, _ := Path(ConfigFile)
+	raw := strings.Replace(readConfig(t), `"auto_update": false`, `"auto_update": "no"`, 1)
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "auto_update") {
+		t.Fatalf("Load accepted a non-boolean auto_update: %v", err)
+	}
+}
+
+func TestAutoUpdateEnv(t *testing.T) {
+	on := true
+	for _, c := range []*Config{nil, {}, {AutoUpdate: &on}} {
+		for v, want := range map[string]bool{"": true, "1": true, "true": true, " TRUE ": true, "0": false, "false": false, "False": false, "f": false} {
+			t.Setenv(EnvAutoUpdate, v)
+			if got, err := c.AutoUpdateEnabled(); got != want || err != nil {
+				t.Errorf("config %+v, %s=%q: got %v, %v; want %v", c, EnvAutoUpdate, v, got, err, want)
+			}
+		}
+	}
+	t.Setenv(EnvAutoUpdate, "banana")
+	got, err := (&Config{}).AutoUpdateEnabled()
+	if got || err == nil || !strings.Contains(err.Error(), `JULIENNING_AUTO_UPDATE="banana" is not a boolean`) {
+		t.Fatalf("invalid env: got %v, %v; want off with an error", got, err)
+	}
+}

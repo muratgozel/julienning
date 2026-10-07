@@ -39,7 +39,7 @@ type fixture struct {
 	dead    map[int]bool // pids livesess.Alive reports as gone
 	parents map[int]int  // pid → parent pid, for parentOf; the hook's own parent is hookPPID
 	hints   int          // selfupdate.Hint calls
-	ucheck  int          // selfupdate.RefreshIfStale calls
+	ucheck  int          // selfupdate.AutoUpdateIfDue calls
 }
 
 // hookPPID is the pid the stubbed hookParent reports for the hook process.
@@ -64,12 +64,12 @@ func setup(t *testing.T) *fixture {
 	t.Setenv("JULIENNING_TOKEN", "")
 
 	f.fake = &remote.Fake{}
-	prevClient, prevHint, prevCheck := newClient, updateHint, refreshUpdateCheck
+	prevClient, prevHint, prevCheck := newClient, updateHint, autoUpdateIfDue
 	prevAlive, prevLock, prevStart, prevPoll, prevStdin := livesess.Alive, lockWait, startWait, pollEvery, hookStdinWait
 	prevHookParent, prevParentOf := hookParent, parentOf
 	newClient = func(*config.Config, time.Duration) remote.Client { return f.fake }
 	updateHint = func(w io.Writer) { f.hints++ }
-	refreshUpdateCheck = func(context.Context) error { f.ucheck++; return nil }
+	autoUpdateIfDue = func(context.Context, *config.Config) error { f.ucheck++; return nil }
 	livesess.Alive = func(s livesess.Session) bool { return !f.dead[s.PID] }
 	lockWait, startWait = 0, 0
 	hookParent = func() int { return hookPPID }
@@ -80,7 +80,7 @@ func setup(t *testing.T) *fixture {
 		return 0, fmt.Errorf("no process %d", pid)
 	}
 	t.Cleanup(func() {
-		newClient, updateHint, refreshUpdateCheck = prevClient, prevHint, prevCheck
+		newClient, updateHint, autoUpdateIfDue = prevClient, prevHint, prevCheck
 		livesess.Alive, lockWait, startWait, pollEvery, hookStdinWait = prevAlive, prevLock, prevStart, prevPoll, prevStdin
 		hookParent, parentOf = prevHookParent, prevParentOf
 	})

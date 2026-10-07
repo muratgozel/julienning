@@ -106,7 +106,10 @@ func runSendUsage(env cli.Env) error {
 	// which is exactly when crashed sessions (no SessionEnd) need cleaning up.
 	// It runs even when the report was debounced; its own markers keep it
 	// rare, and the claim-sync lock keeps it to one process per machine.
-	backgroundUpkeep(ctx, upkeep{cfg: cfg, client: client, logger: logger, now: n})
+	u := upkeep{cfg: cfg, client: client, logger: logger, now: n}
+	if backgroundUpkeep(ctx, u) {
+		u.updateIfDue()
+	}
 	return nil
 }
 
@@ -178,27 +181,29 @@ func sendReport(ctx context.Context, client remote.Client, logger usage.Logger, 
 
 // backgroundUpkeep reconciles claims at most every claims.ReconcileEvery and
 // refreshes shared.json when stale. Nothing due means no lock and no I/O
-// beyond two stats, so running it on every render is cheap.
-func backgroundUpkeep(ctx context.Context, u upkeep) {
+// beyond two stats, so running it on every render is cheap. It reports
+// whether it ran; the update check rides on the same occasions, but after
+// the claim-sync lock is released (see upkeep.updateIfDue).
+func backgroundUpkeep(ctx context.Context, u upkeep) bool {
 	reconcile := claims.ReconcileDue(u.now)
 	stale := sharedStale(u.now)
 	if !reconcile && !stale {
-		return
+		return false
 	}
 	release, ok, err := claims.AcquireLock(u.now)
 	if err != nil {
 		u.fail(usage.CodeClaimSync, err)
-		return
+		return false
 	}
 	if !ok {
-		return // claim-sync (or another reporter) is doing this right now
+		return false // claim-sync (or another reporter) is doing this right now
 	}
 	defer release()
 	if reconcile {
 		u.reconcile(ctx, claims.Ending{})
 	}
 	u.refreshShared(ctx)
-	u.refreshUpdates(ctx)
+	return true
 }
 
 // sendFailed records one SEND_FAILED line, at most once per 10 minutes per

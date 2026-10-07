@@ -14,6 +14,7 @@ import (
 
 	"github.com/muratgozel/julienning/internal/claims"
 	"github.com/muratgozel/julienning/internal/cli"
+	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/usage"
 )
@@ -491,7 +492,7 @@ func TestSendUsageUpkeepFailuresAreThrottled(t *testing.T) {
 	f.save()
 	f.shareAt(time.Unix(nowEpoch, 0).Add(-2*time.Hour), email1)
 	f.fake.ListErr = errors.New("request failed: connection refused")
-	refreshUpdateCheck = func(context.Context) error { return errors.New("github unreachable") }
+	autoUpdateIfDue = func(context.Context, *config.Config) error { return errors.New("github unreachable") }
 
 	assertCode(t, f.run("", sendArgs()...), 0)
 	assertCode(t, f.run("", sendArgs("--now")...), 0)
@@ -501,6 +502,54 @@ func TestSendUsageUpkeepFailuresAreThrottled(t *testing.T) {
 	}
 	if n := strings.Count(log, "UPDATE_CHECK_FAILED"); n != 1 {
 		t.Errorf("UPDATE_CHECK_FAILED lines = %d: %q", n, log)
+	}
+}
+
+// checkAutoUpdateCall stubs the auto-update seam and asserts what the call
+// sites owe it: the loaded config (here with "auto_update": false), no
+// deadline from the short claim work (a download can take minutes), and no
+// claim-sync lock held while it runs (it may outlast claims.LockStale).
+func (f *fixture) checkAutoUpdateCall(calls *int) {
+	t := f.t
+	autoUpdateIfDue = func(ctx context.Context, cfg *config.Config) error {
+		*calls++
+		if cfg == nil || cfg.AutoUpdate == nil || *cfg.AutoUpdate {
+			t.Errorf("config.json not passed through: %+v", cfg)
+		}
+		if _, ok := ctx.Deadline(); ok {
+			t.Error("auto-update inherited the claim work's deadline")
+		}
+		if _, err := os.Stat(filepath.Join(f.jul, claims.LockFile)); !os.IsNotExist(err) {
+			t.Errorf("auto-update ran under the claim-sync lock: %v", err)
+		}
+		return nil
+	}
+}
+
+func (f *fixture) autoUpdateOff() {
+	off := false
+	f.cfg.AutoUpdate = &off
+	f.save()
+}
+
+// The reporter runs the daily update check on its upkeep occasions only.
+func TestSendUsageRunsAutoUpdateAfterUpkeep(t *testing.T) {
+	f := setup(t)
+	cd := f.addConfig("sixtynine1", email1)
+	f.autoUpdateOff()
+	f.share(email1)
+	f.session(cd.Dir, 100, "s1")
+	var calls int
+	f.checkAutoUpdateCall(&calls)
+
+	assertCode(t, f.run("", sendArgs()...), 0)
+	if calls != 1 {
+		t.Fatalf("auto-update ran %d times, want 1", calls)
+	}
+	// Reconciled just now and shared.json is fresh: no upkeep, no check.
+	assertCode(t, f.run("", sendArgs("--now")...), 0)
+	if calls != 1 {
+		t.Fatalf("auto-update ran %d times without upkeep, want 1", calls)
 	}
 }
 

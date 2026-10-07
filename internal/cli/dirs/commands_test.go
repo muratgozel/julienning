@@ -2,6 +2,7 @@ package dirs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/launch"
 	"github.com/muratgozel/julienning/internal/remote"
 )
 
@@ -23,7 +25,7 @@ func TestNewConfigAutoNumbering(t *testing.T) {
 	h.initConfig(false, config.ConfigDir{Name: "julienning1", Dir: h.mkdir(".claude-julienning1")})
 	h.mkdir(".claude-julienning2") // exists on disk but is not registered
 
-	out := h.mustRun(runNewConfig)
+	out := h.mustRun(runNewConfig, "--no-login")
 	contains(t, out, `Created ~/.claude-julienning3 (config "julienning3").`)
 	contains(t, out, "Sign in: julienning login julienning3")
 	contains(t, out, "claude-julienning3")
@@ -161,14 +163,70 @@ func TestNewConfigNotSetUp(t *testing.T) {
 	}
 }
 
-func TestNewConfigLoginFlagExecs(t *testing.T) {
+// Signing in is the default: claude starts in the new dir once it is
+// created, registered and patched. --login is still accepted and changes
+// nothing.
+func TestNewConfigSignsInByDefault(t *testing.T) {
+	for _, args := range [][]string{{"--name", "fresh"}, {"--name", "fresh", "--login"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			h := newHarness(t)
+			h.initConfig(false)
+			out := h.mustRun(runNewConfig, args...)
+			want := "Created ~/.claude-fresh (config \"fresh\").\n" +
+				"Starting claude in it so you can sign in.\n" +
+				"After signing in, run `julienning setup`: it offers to share the account with the team.\n"
+			if out != want {
+				t.Fatalf("stdout = %q, want %q", out, want)
+			}
+			dir := filepath.Join(h.home, ".claude-fresh")
+			if wantExec := []execCall{{dir: dir}}; !reflect.DeepEqual(h.execs, wantExec) {
+				t.Fatalf("execs = %+v, want %+v", h.execs, wantExec)
+			}
+			// Everything is in place before claude starts.
+			assertPatched(t, dir)
+			if _, ok := h.config().Find("fresh"); !ok {
+				t.Fatal("fresh not registered before the exec")
+			}
+		})
+	}
+}
+
+func TestNewConfigNoLogin(t *testing.T) {
 	h := newHarness(t)
 	h.initConfig(false)
-	out := h.mustRun(runNewConfig, "--name", "fresh", "--login")
-	contains(t, out, `config "fresh"`)
-	want := []execCall{{dir: filepath.Join(h.home, ".claude-fresh")}}
-	if !reflect.DeepEqual(h.execs, want) {
-		t.Fatalf("execs = %+v, want %+v", h.execs, want)
+	out := h.mustRun(runNewConfig, "--name", "fresh", "--no-login")
+	want := "Created ~/.claude-fresh (config \"fresh\").\n" +
+		"Sign in: julienning login fresh\n" +
+		"Then share the account with the team: julienning setup (or julienning share EMAIL).\n"
+	if out != want {
+		t.Fatalf("stdout = %q, want %q", out, want)
+	}
+	if len(h.execs) != 0 {
+		t.Fatalf("started claude with --no-login: %+v", h.execs)
+	}
+	if _, ok := h.config().Find("fresh"); !ok {
+		t.Fatal("fresh not registered")
+	}
+}
+
+// Without claude the dir stays created and registered; the error says how
+// to sign in later.
+func TestNewConfigSignInFailureKeepsTheDir(t *testing.T) {
+	h := newHarness(t)
+	h.initConfig(false)
+	launch.Exec = func(string, []string, string) error { return launch.ErrClaudeNotFound }
+	err := h.run(runNewConfig, "--name", "fresh")
+	want := "claude not found on PATH (install Claude Code first); ~/.claude-fresh is created, sign in later with: julienning login fresh"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if !errors.Is(err, launch.ErrClaudeNotFound) {
+		t.Fatalf("err does not wrap ErrClaudeNotFound: %v", err)
+	}
+	dir := filepath.Join(h.home, ".claude-fresh")
+	assertPatched(t, dir)
+	if _, ok := h.config().Find("fresh"); !ok {
+		t.Fatal("fresh unregistered after a failed sign-in")
 	}
 }
 
@@ -626,7 +684,7 @@ func TestNewConfigNumbersWithCustomPrefix(t *testing.T) {
 	}
 	h.mkdir(".claude-team2") // on disk, not registered: 2 is not free
 
-	out := h.mustRun(runNewConfig)
+	out := h.mustRun(runNewConfig, "--no-login")
 	contains(t, out, `Created ~/.claude-team3 (config "team3").`)
 	contains(t, out, "Sign in: julienning login team3\n")
 	notContains(t, out, "alias")

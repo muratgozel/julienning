@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,11 @@ const (
 
 // EnvHome overrides the state directory (tests, multiple profiles).
 const EnvHome = "JULIENNING_HOME"
+
+// EnvAutoUpdate turns background auto-updates off at runtime when false
+// (0, false, f; see strconv.ParseBool). A true value does not override
+// "auto_update": false in config.json: the variable can only switch off.
+const EnvAutoUpdate = "JULIENNING_AUTO_UPDATE"
 
 // Remote is how the CLI reaches the Worker.
 type Remote struct {
@@ -65,6 +71,10 @@ type Config struct {
 	// DefaultNamePrefix; read it through Prefix. Changing it never renames
 	// configs that are already registered.
 	NamePrefix string `json:"name_prefix,omitempty"`
+	// AutoUpdate lets detached background processes install new releases
+	// (SPEC "Install layout and updates"). nil means on; read it through
+	// AutoUpdateEnabled, which also honours EnvAutoUpdate.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
 
 	// fileRemote is Remote as stored on disk and loadedRemote is Remote after
 	// env overrides. Save writes fileRemote unless the caller changed Remote,
@@ -249,6 +259,24 @@ func (c *Config) RequireRemote() error {
 		return ErrRemoteNotConfigured
 	}
 	return nil
+}
+
+// AutoUpdateEnabled reports whether background auto-updates may run: the
+// auto_update field (absent = on), switched off by a false EnvAutoUpdate. A
+// value of EnvAutoUpdate that is not a boolean is an error and counts as off:
+// whoever set it meant to configure updates, so installing anyway would be
+// the surprising choice. A nil receiver (not set up) consults the env only.
+func (c *Config) AutoUpdateEnabled() (bool, error) {
+	if v := strings.TrimSpace(os.Getenv(EnvAutoUpdate)); v != "" {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			return false, fmt.Errorf("%s=%q is not a boolean (use 0 or false to turn auto-update off, or unset it); auto-update stays off until it is fixed", EnvAutoUpdate, v)
+		}
+		if !on {
+			return false, nil
+		}
+	}
+	return c == nil || c.AutoUpdate == nil || *c.AutoUpdate, nil
 }
 
 // Declined reports whether email was marked personal on this machine.

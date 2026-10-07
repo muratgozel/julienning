@@ -126,22 +126,52 @@ minutes). It switches the `julienning` symlink that runs it, looked up in
 `$JULIENNING_BIN_DIR`, `~/.local/bin`, then `PATH`, so an install made with
 `JULIENNING_BIN_DIR` updates without it. `update` only manages the layout
 above; on any other install it refuses and prints the curl one-liner.
+`--version` with a release older than the latest prints a reminder when
+auto-update is on, since the next daily check would move back:
 
-**Update hint.** `accounts`, `current`, `configs`, `setup`, and `next` / `use`
-when they do not start claude, print one line on stderr when a newer release is
-known:
+```
+julienning: note: auto-update will move to 0.3.0 again within a day; to stay on 0.2.9, set "auto_update": false in /Users/you/.julienning/config.json (or export JULIENNING_AUTO_UPDATE=0)
+```
+
+**Auto-update.** Once a day, the background processes that report usage and
+sync claims (never an interactive command) look up the latest release and,
+when it is newer than the active version, install it the same way `update`
+does: download, checksum, run its `version`, switch the symlink, prune. A
+lock in `~/.julienning/update.lock` keeps concurrent processes from
+installing twice. Commands that are already running keep their binary; the
+next command runs the new one and prints once, on stderr:
+
+```
+julienning updated to 0.3.0
+```
+
+A failure (no network, a broken release, a full disk) goes to
+`~/.julienning/errors.log` as `UPDATE_CHECK_FAILED` and leaves the active
+version as it was; a failed lookup is retried on the next background run, a
+failed install at the next daily check. Auto-update never touches local
+builds (`make install`, git-describe versions, or a `dev` version behind the
+symlink) or installs not made by the installer. To turn it off, set
+`"auto_update": false` in `~/.julienning/config.json`, or export
+`JULIENNING_AUTO_UPDATE=0` (or `false`) where Claude Code runs; the variable
+can only turn it off, and a value that is not a boolean keeps it off and is
+logged.
+
+**Update hint.** When a newer release is known that auto-update did not
+install (it is off, the install is not managed, or the last attempt failed),
+`accounts`, `current`, `configs`, `setup`, and `next` / `use` when they do
+not start claude, print one line on stderr:
 
 ```
 julienning 0.3.0 is available (you have 0.2.1): julienning update
 ```
 
-Background processes refresh `~/.julienning/update-check.json` at most once per
-24 h. The status line and hooks never print the hint, and dev builds never see
-it.
+Both lines come from `~/.julienning/update-check.json`, which the background
+check refreshes at most once per 24 h. The status line and hooks never
+print them, and dev builds never see them.
 
 **Local builds:** `make install` builds version `dev` into
 `<versions dir>/dev` and points the same symlink at it (`julienning update`
-later moves it to a release).
+later moves it to a release; auto-update leaves it alone).
 
 **Install overrides:**
 
@@ -150,8 +180,9 @@ later moves it to a release).
 | `JULIENNING_VERSION` | `install.sh` | latest release |
 | `JULIENNING_BIN_DIR` | `install.sh`, `make install`, `update`, `uninstall --purge`, the settings.json command path | `~/.local/bin` |
 | `JULIENNING_VERSIONS_DIR` | same | `${XDG_DATA_HOME:-~/.local/share}/julienning/versions` |
-| `JULIENNING_REPO` | `install.sh`, `update` | `muratgozel/julienning` |
-| `JULIENNING_RELEASES_BASE` | `install.sh`, `update` | `https://github.com/<repo>` (tests, mirrors) |
+| `JULIENNING_REPO` | `install.sh`, `update`, auto-update | `muratgozel/julienning` |
+| `JULIENNING_RELEASES_BASE` | `install.sh`, `update`, auto-update | `https://github.com/<repo>` (tests, mirrors) |
+| `JULIENNING_AUTO_UPDATE` | auto-update | on; `0` or `false` turns it off |
 
 **Coming from an older julienning:** run the installer (it replaces the old
 binary with the symlink), then `julienning setup`, which also names the shared
@@ -247,7 +278,7 @@ dir here is logged into it, `use`, `login` and `claude-<nickname>` say how to
 sign in:
 
 ```
-julienning: beta (claude2@example.com) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config --login`
+julienning: beta (claude2@example.com) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config`
 ```
 
 `nick` and `unshare` act on the team account, so it need not be logged in
@@ -602,7 +633,7 @@ allowlist was fetched once:
    julienning2  delta  ~/.claude-work         claude4@example.com  yes
 ```
 
-**`julienning new-config [--name NAME] [--copy-settings-from NAME] [--login]`**
+**`julienning new-config [--name NAME] [--copy-settings-from NAME] [--no-login]`**
 creates and registers `~/.claude-julienning<N>` named `julienning<N>` (the
 smallest N whose name and dir are both free; the prefix is the one from
 `setup --name-prefix`) or `~/.claude-NAME` named `NAME`, and refuses an
@@ -610,13 +641,26 @@ existing dir (use `adopt`).
 `--copy-settings-from` copies that registered dir's settings.json without
 julienning's own statusLine and hooks (a statusLine julienning replaced there
 is put back in the copy), then patches the copy like any other.
-`--login` starts claude in it right away.
+Then it starts claude in the new dir so you can sign in:
+
+```
+Created ~/.claude-julienning3 (config "julienning3").
+Starting claude in it so you can sign in.
+After signing in, run `julienning setup`: it offers to share the account with the team.
+```
+
+If claude is not installed, the dir stays registered and the error ends with
+`sign in later with: julienning login julienning3`. `--no-login` (scripts)
+only creates and registers the dir:
 
 ```
 Created ~/.claude-julienning3 (config "julienning3").
 Sign in: julienning login julienning3
 Then share the account with the team: julienning setup (or julienning share EMAIL).
 ```
+
+`--login`, from when signing in was opt-in, is still accepted and changes
+nothing.
 
 Until its account is shared and named, the new dir is reached by its config
 name; once it is logged into an account that is already shared, its nickname
@@ -724,7 +768,9 @@ registry can keep a claim but never releases it; the TTL does.
    `shared.json` and the status line stops reporting it.
 5. Upkeep rides along: claims are reconciled when the last reconcile is over
    10 minutes old, `shared.json` is refreshed when older than an hour, and on
-   either occasion the update check runs (at most once per 24 h).
+   either occasion the daily update check runs afterwards (at most once per
+   24 h; it installs a newer release unless auto-update is off, see
+   [Install](#install)).
 
 Failures go to `~/.julienning/errors.log`; the status line never breaks. KV
 holds only the latest snapshot per account: a report older than the stored
@@ -915,7 +961,7 @@ newest 500 lines once it passes 1 MB.
 | `HOOK_INPUT_INVALID` | a hook got an argument other than `session-start` / `session-end` (it then does nothing) or unusable stdin (the sync still runs) |
 | `CLAIM_SYNC_FAILED` | claim reconciliation failed (Worker unreachable, lock, unreadable dir) |
 | `SHARED_REFRESH_FAILED` | refreshing `shared.json` failed |
-| `UPDATE_CHECK_FAILED` | the latest-release lookup on GitHub failed |
+| `UPDATE_CHECK_FAILED` | the daily update check failed: the latest-release lookup on GitHub (retried on the next background run), or the auto-update install (download, checksum, the new binary's `version`, the symlink switch; retried at the next daily check, the active version is unchanged), or `JULIENNING_AUTO_UPDATE` is not a boolean. `julienning update` shows the same error right away |
 | `LOG_FAILED` | errors.log itself could not be written; shown only in the status line |
 
 Common messages:
@@ -934,12 +980,12 @@ Common messages:
   `curl <worker>/healthz`, then pick an account yourself with
   `julienning use <nickname>`.
 - **`none of the N shared accounts is logged in on this machine ...`**: sign a
-  registered dir into a shared account (`julienning new-config --login` or
+  registered dir into a shared account (`julienning new-config` or
   `julienning login <config>`); an account nobody shared yet also needs
   `julienning setup` or `julienning share EMAIL`.
 - **`… is shared but not logged in on this machine; sign in with …`** (`use`,
   `login`, `claude-<nickname>`): no registered dir here is logged into that
-  account right now. Sign one in (`julienning new-config --login`, or
+  account right now. Sign one in (`julienning new-config`, or
   `julienning login <config>` for an existing dir); a dir julienning does not
   know yet also needs `julienning setup` or `julienning adopt DIR`.
 - **`unknown target "…": not a team nickname, an email, or a config name ...`**:
@@ -971,12 +1017,12 @@ Common messages:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | dev, machine id, Worker URL and token, registered dirs, declined emails, `send_min_interval_sec`, `name_prefix` |
+| `config.json` | dev, machine id, Worker URL and token, registered dirs, declined emails, `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
 | `current` | path of the selected config dir (read by the `claude` function) |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |
 | `claims.json` | emails this machine holds a claim on |
 | `patches.json` | statusLine values replaced in settings.json, for restore |
-| `update-check.json` | latest known release |
+| `update-check.json` | latest known release, when it was checked, and the version the last auto-update installed (until its one-time notice is shown) |
 | `errors.log` | diagnostics, no emails |
 | `sent/` | send-usage debounce cache and in-flight markers, one `<hash>.json` / `<hash>.inflight` per account (a hash of the email, never the address) |
-| `claim-sync.lock`, `.claims-reconciled`, `.last-*` | lock and throttle markers (per-account ones are also named by the hash) |
+| `claim-sync.lock`, `update.lock`, `.claims-reconciled`, `.last-*` | lock and throttle markers (per-account ones are also named by the hash) |

@@ -153,7 +153,7 @@ func runSetup(env cli.Env) error {
 	fmt.Fprintln(env.Stdout, "Next steps:")
 	fmt.Fprintf(env.Stdout, "  open a new terminal, or run: %s\n", sourceHint(*shellName))
 	if len(cfg.Configs) == 0 {
-		fmt.Fprintln(env.Stdout, "  julienning new-config --login   # create a config dir for a team account")
+		fmt.Fprintln(env.Stdout, "  julienning new-config   # create a config dir for a team account")
 	}
 	fmt.Fprintln(env.Stdout, "  julienning accounts   # who is free right now")
 	fmt.Fprintln(env.Stdout, "  julienning next       # switch to the best account")

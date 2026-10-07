@@ -101,7 +101,7 @@ logins (accounts move between dirs), using the cached allowlist:
    currently logged into it (`resolve.Dirs`: the current selection first,
    then by config name; an unreadable account file counts as not logged in);
    the first wins. None → `*resolve.NotLocalError`:
-   ``alpha (claude1@x.io) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config --login` ``
+   ``alpha (claude1@x.io) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config` ``
    (without a nickname:
    `no registered config dir on this machine is logged in as x@y; sign in with …`);
 3. a registered config name → that dir, logged in or not (the only way to
@@ -150,7 +150,8 @@ integration"); dir-name aliases no longer exist.
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
 | `claims.json` | claims | emails this machine currently holds a claim on |
 | `patches.json` | claudecfg | per settings.json path: prior `statusLine` value for restore |
-| `update-check.json` | selfupdate | `{checked_at, latest}` |
+| `update-check.json` | selfupdate | `{checked_at, latest, installed?, installed_at?, notified?}` (the `installed*` fields: last background auto-update; absent `notified` = false) |
+| `update.lock` | selfupdate | auto-update lock (O_EXCL, stale after 10 min) |
 | `errors.log` | usage | diagnostics, never contains emails |
 | `sent/` | usage | send-usage debounce cache + in-flight markers, named by a short hash of the email (no addresses in file names) |
 | `claim-sync.lock`, `.claims-reconciled` | claims | per-machine lock (stale after 60 s), 10-minute reconcile marker |
@@ -170,11 +171,14 @@ integration"); dir-name aliases no longer exist.
   ],
   "declined_emails": ["me@personal.com"],
   "send_min_interval_sec": 300,
-  "name_prefix": "julienning"
+  "name_prefix": "julienning",
+  "auto_update": false
 }
 ```
 
 `name_prefix` is optional (absent = `julienning`, `config.Prefix()`).
+`auto_update` is optional (absent = on; `cfg.AutoUpdateEnabled()`, which also
+honours `JULIENNING_AUTO_UPDATE`).
 
 Remote URL and token come only from setup (prompt or `--remote-url` /
 `--token`) or the env vars `JULIENNING_REMOTE_URL` / `JULIENNING_TOKEN`
@@ -244,20 +248,68 @@ julienning setup`. Re-running upgrades. A version argument wins over
 The whole script body runs inside a function so a truncated download does
 nothing, and the new binary must run `version` before the link switches.
 
-`julienning update [--version vX.Y.Z]`: same steps in Go. Up to date →
-`julienning 0.3.0 is up to date.` (or `… (newer than the latest release
-0.2.9).`); local builds (`dev`, commit hashes, git-describe versions) always
-move to the latest release. `--version` allows downgrades. Prints `Updated
-0.2.1 → 0.3.0.`. Refuses with a curl-installer hint when the command is not
-a symlink into the versions dir.
+`julienning update [--version vX.Y.Z]`: same steps in Go, manual and
+immediate. Up to date → `julienning 0.3.0 is up to date.` (or `… (newer than
+the latest release 0.2.9).`); local builds (`dev`, commit hashes,
+git-describe versions) always move to the latest release. `--version` allows
+downgrades. Prints `Updated 0.2.1 → 0.3.0.`. Refuses with a curl-installer
+hint when the command is not a symlink into the versions dir. Rewrites
+`update-check.json` to `{checked_at, latest}` (dropping any pending
+auto-update notice). After installing a version older than the latest while
+auto-update is on and config.json loads, it adds `julienning: note:
+auto-update will move to 0.3.0 again within a day; to stay on 0.2.9, set
+"auto_update": false in <config.json path> (or export
+JULIENNING_AUTO_UPDATE=0)` on stderr.
 
-Update hint: detached network processes refresh `update-check.json` at most
-once per 24 h. Interactive commands (`accounts`, `next`, `use`, `current`,
-`configs`, `setup`) print one stderr line when a newer release exists:
-`julienning 0.3.0 is available (you have 0.2.1): julienning update`. Never
-from `statusline` or hooks.
+Auto-update (`selfupdate.AutoUpdateIfDue(ctx, cfg)`), background only: the
+send-usage child (on its upkeep occasions) and claim-sync call it after
+releasing the claim-sync lock, with a context that has no deadline of their
+own (the function bounds itself to 5 min, below the lock's 10 min
+staleness); errors go to errors.log as `UPDATE_CHECK_FAILED` (throttled,
+email-free). Steps:
 
-`make install` builds version `dev` into the same layout.
+1. Skip local builds (`IsDevBuild` of the running version) entirely, and
+   return when `update-check.json` is younger than 24 h (a `checked_at` more
+   than a minute in the future counts as stale).
+2. Take `update.lock` (O_EXCL; a lock older than 10 min, or more than a
+   minute in the future, is broken; release removes it only while it still
+   holds this pid). Not acquired → return. Re-read the cache; fresh → return.
+3. Look up the latest tag. Failure → return the error, cache unchanged (the
+   next background run retries). Nothing published → latest `""`.
+4. Install only when `cfg.AutoUpdateEnabled()` (config `auto_update`, absent
+   = on; `JULIENNING_AUTO_UPDATE` parsed by `strconv.ParseBool` can only turn
+   it off, and a non-boolean value is an error that keeps it off), `ActiveLink`
+   succeeds (`NotManagedError` → silently check-only; other errors are
+   returned), the active version is not a local build, and the latest release
+   is newer than the active version (not the running one: a child of an old
+   process must not reinstall what another process activated). Then
+   `Install` (download, checksum, `version` run), `Activate` (atomic symlink
+   swap), `Prune`.
+5. Write `{checked_at: now, latest}`, keeping earlier `installed*` fields; after
+   an activation also `installed: "<ver>", installed_at: now` and
+   `notified: false`. Written even when step 4 failed, so a broken release or
+   slow link is retried at the next daily check, not on every run. A prune
+   failure after activation is returned but still records the install.
+
+Running processes keep their binary (one file per version; `Prune` never
+removes the running one); the next command runs the new version.
+
+`selfupdate.Hint(w)` (cache only, no network, nothing for dev builds), called
+by interactive commands (`accounts`, `next`, `use`, `current`, `configs`,
+`setup`), prints at most one stderr line:
+
+- `julienning updated to 0.3.0` when the running version equals `installed`
+  and `notified` is false, then sets `notified` (re-read before writing; a
+  failed write shows it once more);
+- otherwise `julienning 0.3.0 is available (you have 0.2.1): julienning
+  update` when `latest` is newer than the running version and `installed` is
+  not at least `latest`: auto-update is off, the install is unmanaged, or the
+  last attempt failed.
+
+Never from `statusline` or hooks.
+
+`make install` builds version `dev` into the same layout; auto-update never
+replaces it.
 
 Releases: goreleaser on `v*` tags; archives
 `julienning_{{.Version}}_{{.Os}}_{{.Arch}}.tar.gz` + `checksums.txt`.
@@ -418,18 +470,26 @@ on stderr and exit 1, which makes the function return 1.
 
 ### new-config / adopt / rename / login / configs
 
-- `new-config [--name NAME] [--copy-settings-from NAME] [--login]`: without
-  `--name`, creates `~/.claude-<prefix><N>` named `<prefix><N>` (dir and name
-  share N: the smallest N ≥ 1 whose name is not registered and whose dir does
-  not exist, up to 999). `--name foo` (or `.claude-foo`) → `~/.claude-foo`
-  named `foo`. Otherwise as v1.
+- `new-config [--name NAME] [--copy-settings-from NAME] [--no-login]`:
+  without `--name`, creates `~/.claude-<prefix><N>` named `<prefix><N>` (dir
+  and name share N: the smallest N ≥ 1 whose name is not registered and whose
+  dir does not exist, up to 999). `--name foo` (or `.claude-foo`) →
+  `~/.claude-foo` named `foo`. After creating, registering and patching it
+  starts claude in the new dir (`launch.Exec`) so the user can sign in;
+  `--no-login` (scripts) stops after registering. `--login` is accepted as a
+  no-op for compatibility. Otherwise as v1.
 - `adopt DIR [--name NAME]`: as v1 (register + patch); the name follows
   Config names unless `--name` is given.
 - `new-config` prints `Created ~/.claude-julienning3 (config
-  "julienning3").`, `Sign in: julienning login julienning3` and `Then share
-  the account with the team: julienning setup (or julienning share EMAIL).`
-  (no alias line); `adopt` prints `Adopted ~/.claude-x as config
-  "julienning4" (settings.json added).`.
+  "julienning3").`, then `Starting claude in it so you can sign in.` and
+  ``After signing in, run `julienning setup`: it offers to share the account
+  with the team.`` before the exec; when the exec fails (claude not on PATH)
+  the dir stays registered and the error ends with `; ~/.claude-julienning3
+  is created, sign in later with: julienning login julienning3`. With
+  `--no-login`: `Created …`, `Sign in: julienning login julienning3` and
+  `Then share the account with the team: julienning setup (or julienning
+  share EMAIL).` (no alias line). `adopt` prints `Adopted ~/.claude-x as
+  config "julienning4" (settings.json added).`.
 - `rename OLD NEW`: renames the internal label only (`nick` renames an
   account). NEW must be a valid config name not used by any registered dir;
   only `config.json` changes (`current` stores the dir path, shell functions
@@ -669,9 +729,12 @@ process continues under a new session.
    unreadable account file, in which case nothing is released this run and
    the Worker's claim TTL is the backstop. A fresh claim (< 1 h) is not
    re-PUT; usage reports refresh it.
-3. Refresh `shared.json` and `update-check.json` when stale.
+3. Refresh `shared.json` when stale.
 4. One run per machine at a time (O_EXCL lock in `~/.julienning`, stale after
    60 s); errors go to `errors.log` (throttled).
+5. After releasing the lock, the daily update check / auto-update
+   (`selfupdate.AutoUpdateIfDue`, see Install layout and updates). A run that
+   did not get the lock leaves it to the holder.
 
 The same reconciliation runs synchronously in `accounts`/`next`/`use`
 (without spawning) and in the send-usage child at most every 10 minutes,
@@ -685,7 +748,8 @@ account file via `claudecfg.AccountFileForEnv` (an explicitly exported
 `CLAUDE_CONFIG_DIR=~/.claude` reads `~/.claude/.claude.json`). Every
 status-line error code is log-throttled. The
 send-usage child refreshes `shared.json` when stale and runs claim
-reconciliation at most every 10 minutes. A 404 `account is not shared` from
+reconciliation at most every 10 minutes; when it did either, it then runs
+the daily update check / auto-update outside the claim-sync lock. A 404 `account is not shared` from
 the Worker removes the email from `shared.json`.
 
 ## Worker

@@ -81,7 +81,7 @@ func TestUseNotLocal(t *testing.T) {
 	f.addConfig("julienning1", email1)
 	f.save()
 	f.fake.Listing = listing(nacct(email1, "alpha", 1, 1), nacct(email2, "beta", 1, 1))
-	want := "julienning: beta (claude2@x.io) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config --login`\n"
+	want := "julienning: beta (claude2@x.io) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config`\n"
 	for _, arg := range []string{"beta", email2} {
 		got := f.run("use", arg)
 		assertCode(t, got, cli.ExitError)

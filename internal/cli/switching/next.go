@@ -60,7 +60,7 @@ func runNext(env cli.Env) error {
 	if !ok {
 		best := listing.Accounts[0]
 		return fmt.Errorf("none of the %d shared accounts is logged in on this machine (best ranked: %s); "+
-			"sign one in with `julienning new-config --login` or `julienning login NICKNAME`",
+			"sign one in with `julienning new-config` or `julienning login NICKNAME`",
 			len(listing.Accounts), accountName(cache.Nickname(best.Email), strings.ToLower(best.Email)))
 	}
 	if err := config.SetCurrent(cd); err != nil {

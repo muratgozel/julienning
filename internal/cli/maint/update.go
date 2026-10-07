@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/muratgozel/julienning/internal/cli"
+	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/version"
 )
@@ -106,23 +107,53 @@ func runUpdate(env cli.Env) error {
 	if _, err := selfupdate.Prune(selfupdate.KeepVersions, link); err != nil {
 		fmt.Fprintf(env.Stderr, "julienning: warning: could not remove old versions: %v\n", err)
 	}
-	recordLatest(ctx, env, latest)
+	latest = recordLatest(ctx, env, latest)
 	fmt.Fprintf(env.Stdout, "Updated %s → %s.\n", selfupdate.DisplayVersion(cur), target)
+	noteAutoUpdate(env, latest, target)
 	return nil
 }
 
 // recordLatest refreshes update-check.json so no stale hint follows the
-// update. latest is "" when --version was used and the latest tag is unknown.
-func recordLatest(ctx context.Context, env cli.Env, latest string) {
+// update, and returns the latest tag ("" when unknown). latest is "" when
+// --version was used and the latest tag is not looked up yet.
+func recordLatest(ctx context.Context, env cli.Env, latest string) string {
 	if latest == "" {
 		t, err := selfupdate.LatestTag(ctx)
 		if err != nil {
 			fmt.Fprintf(env.Stderr, "julienning: warning: could not refresh the update check: %v\n", err)
-			return
+			return ""
 		}
 		latest = t
 	}
 	if err := selfupdate.RecordLatest(latest); err != nil {
 		fmt.Fprintf(env.Stderr, "julienning: warning: could not refresh the update check: %v\n", err)
 	}
+	return latest
+}
+
+// noteAutoUpdate warns after `--version` installed something older than the
+// latest release: the daily background auto-update would move back to it
+// without a word, which would look like the downgrade silently failed.
+func noteAutoUpdate(env cli.Env, latest, installed string) {
+	if latest == "" {
+		return
+	}
+	if cmp, err := selfupdate.CompareVersions(latest, installed); err != nil || cmp <= 0 {
+		return
+	}
+	// Best effort: without a loadable config.json no background process
+	// runs (they need setup), so there is nothing to warn about.
+	cfg, err := config.Load()
+	if err != nil {
+		return
+	}
+	if on, _ := cfg.AutoUpdateEnabled(); !on {
+		return
+	}
+	p, err := config.Path(config.ConfigFile)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(env.Stderr, "julienning: note: auto-update will move to %s again within a day; to stay on %s, set \"auto_update\": false in %s (or export %s=0)\n",
+		selfupdate.DisplayVersion(latest), installed, p, config.EnvAutoUpdate)
 }

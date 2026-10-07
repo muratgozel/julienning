@@ -266,7 +266,7 @@ func TestSetupWithoutRemote(t *testing.T) {
 	contains(t, out, "Remote:   not configured")
 	contains(t, out, "Shared:   unknown")
 	contains(t, out, "Settings: no config dirs registered yet")
-	contains(t, out, "julienning new-config --login")
+	contains(t, out, "julienning new-config")
 	if len(h.fake.Calls) != 0 {
 		t.Fatalf("Worker called without a remote: %v", h.fake.Ops())
 	}

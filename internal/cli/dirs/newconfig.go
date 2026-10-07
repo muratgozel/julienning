@@ -24,8 +24,8 @@ const maxAutoNumber = 999
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "new-config",
-		Summary: "create and register a new Claude config dir",
-		Usage:   "new-config [--name NAME] [--copy-settings-from NAME] [--login]",
+		Summary: "create and register a new Claude config dir, then start claude in it to sign in",
+		Usage:   "new-config [--name NAME] [--copy-settings-from NAME] [--no-login]",
 		Run:     runNewConfig,
 	})
 }
@@ -34,7 +34,10 @@ func runNewConfig(env cli.Env) error {
 	fs := cli.NewFlagSet("new-config", env)
 	nameFlag := fs.String("name", "", "config name or dir basename (e.g. foo or .claude-foo; default: <prefix><N> in ~/.claude-<prefix><N>)")
 	copyFrom := fs.String("copy-settings-from", "", "registered config whose settings.json to copy")
-	login := fs.Bool("login", false, "start claude in the new config afterwards so it can sign in")
+	noLogin := fs.Bool("no-login", false, "only create and register the dir (scripts); print the sign-in command instead of starting claude")
+	// Signing in used to be opt-in; --login stays accepted (and does
+	// nothing) so older docs, hints and scripts keep working.
+	_ = fs.Bool("login", false, "accepted for compatibility; starting claude is the default")
 	if err := parseFlags(fs, env.Args); err != nil {
 		return err
 	}
@@ -120,11 +123,17 @@ func runNewConfig(env cli.Env) error {
 	registered = true
 
 	fmt.Fprintf(env.Stdout, "Created %s (config %q).\n", shortenHome(dir), name)
-	fmt.Fprintf(env.Stdout, "Sign in: julienning login %s\n", name)
-	fmt.Fprintln(env.Stdout, "Then share the account with the team: julienning setup (or julienning share EMAIL).")
-
-	if *login {
-		return launch.Exec(dir, nil, "")
+	if *noLogin {
+		fmt.Fprintf(env.Stdout, "Sign in: julienning login %s\n", name)
+		fmt.Fprintln(env.Stdout, "Then share the account with the team: julienning setup (or julienning share EMAIL).")
+		return nil
+	}
+	fmt.Fprintln(env.Stdout, "Starting claude in it so you can sign in.")
+	fmt.Fprintln(env.Stdout, "After signing in, run `julienning setup`: it offers to share the account with the team.")
+	// Exec replaces this process on success. On failure (claude missing)
+	// the dir stays registered, so the error says how to sign in later.
+	if err := launch.Exec(dir, nil, ""); err != nil {
+		return fmt.Errorf("%w; %s is created, sign in later with: julienning login %s", err, shortenHome(dir), name)
 	}
 	return nil
 }

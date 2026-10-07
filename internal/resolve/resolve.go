@@ -36,7 +36,7 @@ type NotLocalError struct {
 }
 
 func (e *NotLocalError) Error() string {
-	const hint = "sign in with `julienning login <config>` or `julienning new-config --login`"
+	const hint = "sign in with `julienning login <config>` or `julienning new-config`"
 	if e.Nickname != "" {
 		return fmt.Sprintf("%s (%s) is shared but not logged in on this machine; %s", e.Nickname, e.Email, hint)
 	}

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/paths"
 	"github.com/muratgozel/julienning/internal/version"
 )
@@ -44,6 +45,9 @@ func newEnv(t *testing.T) env {
 	t.Setenv(paths.EnvVersionsDir, e.versions)
 	t.Setenv(EnvRepo, "")
 	t.Setenv(EnvReleasesBase, "")
+	t.Setenv(config.EnvAutoUpdate, "")
+	// paths.FindLink scans PATH; keep the developer's real install out of it.
+	t.Setenv("PATH", filepath.Join(root, "empty-path"))
 	// The test binary is never a julienning version file.
 	oldExe := paths.Executable
 	t.Cleanup(func() { paths.Executable = oldExe })

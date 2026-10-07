@@ -39,10 +39,10 @@ var newClient = func(cfg *config.Config, timeout time.Duration) remote.Client {
 	return remote.NewHTTP(cfg.Remote.URL, cfg.Remote.Token, timeout)
 }
 
-// Update check hooks, vars so tests never reach GitHub.
+// Update hooks, vars so tests never reach GitHub.
 var (
-	updateHint         = selfupdate.Hint
-	refreshUpdateCheck = selfupdate.RefreshIfStale
+	updateHint      = selfupdate.Hint
+	autoUpdateIfDue = selfupdate.AutoUpdateIfDue
 )
 
 // spawner starts a detached julienning child. Tests replace it to capture the

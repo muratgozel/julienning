@@ -2,9 +2,7 @@ package selfupdate
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,6 +32,15 @@ func TestHint(t *testing.T) {
 		{"malformed latest", "0.2.1", `{"checked_at":"2026-09-29T09:00:00Z","latest":"banana"}`, ""},
 		{"corrupt cache", "0.2.1", `{not json`, ""},
 		{"no cache", "0.2.1", "", ""},
+
+		// Background auto-update.
+		{"auto-updated", "0.3.0", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.0","installed":"0.3.0","installed_at":"2026-09-29T09:00:01Z"}`, "julienning updated to 0.3.0\n"},
+		{"auto-updated, tag-style current", "v0.3.0", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.0","installed":"0.3.0"}`, "julienning updated to 0.3.0\n"},
+		{"auto-update already announced", "0.3.0", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.0","installed":"0.3.0","notified":true}`, ""},
+		{"process started before the auto-update", "0.2.1", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.0","installed":"0.3.0"}`, ""},
+		{"auto-update behind latest", "0.2.1", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.1","installed":"0.3.0","notified":true}`, "julienning 0.3.1 is available (you have 0.2.1): julienning update\n"},
+		{"auto-updated version no longer running", "0.3.1", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.1","installed":"0.3.0"}`, ""},
+		{"dev build with a pending notice", "dev", `{"checked_at":"2026-09-29T09:00:00Z","latest":"0.3.0","installed":"0.3.0"}`, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -51,93 +58,46 @@ func TestHint(t *testing.T) {
 	}
 }
 
-func TestRefreshIfStale(t *testing.T) {
+// The notice shows exactly once; the other fields stay as they were.
+func TestHintAnnouncesAutoUpdateOnce(t *testing.T) {
 	e := newEnv(t)
-	setVersion(t, "0.2.1")
-	setNow(t, t0)
-	f := newFakeReleases(t)
-	f.setLatest("v0.3.0")
+	setVersion(t, "0.3.0")
+	at := t0.Add(-time.Hour)
+	saved := checkCache{CheckedAt: t0.Add(-2 * time.Hour), Latest: "0.3.0", Installed: "0.3.0", InstalledAt: at}
+	if err := saveCheck(saved); err != nil {
+		t.Fatal(err)
+	}
+	raw := readFile(t, filepath.Join(e.state, CheckFile))
+	if strings.Contains(raw, "notified") {
+		t.Fatalf("pending notice written as %s", raw)
+	}
 
-	// No cache → network, written with checked_at = now (UTC).
-	if err := RefreshIfStale(context.Background()); err != nil {
+	var first, second bytes.Buffer
+	Hint(&first)
+	Hint(&second)
+	if first.String() != "julienning updated to 0.3.0\n" || second.String() != "" {
+		t.Fatalf("Hint = %q then %q", first.String(), second.String())
+	}
+	c, err := readCheck()
+	saved.Notified = true
+	if err != nil || !c.CheckedAt.Equal(saved.CheckedAt) || !c.InstalledAt.Equal(at) || c.Latest != "0.3.0" || c.Installed != "0.3.0" || !c.Notified {
+		t.Fatalf("cache = %+v, %v; want %+v", c, err, saved)
+	}
+}
+
+// A manual update rewrites the file: no stale auto-update notice follows it.
+func TestRecordLatestDropsAutoUpdateFields(t *testing.T) {
+	newEnv(t)
+	setNow(t, t0)
+	if err := saveCheck(checkCache{CheckedAt: t0.Add(-time.Hour), Latest: "0.3.0", Installed: "0.3.0", InstalledAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordLatest("v0.3.1"); err != nil {
 		t.Fatal(err)
 	}
 	c, err := readCheck()
-	if err != nil || c.Latest != "0.3.0" || !c.CheckedAt.Equal(t0) {
+	if err != nil || !c.CheckedAt.Equal(t0) || c.Latest != "0.3.1" || c.Installed != "" || !c.InstalledAt.IsZero() || c.Notified {
 		t.Fatalf("cache = %+v, %v", c, err)
-	}
-	if info, _ := os.Stat(filepath.Join(e.state, CheckFile)); info.Mode().Perm() != 0o600 {
-		t.Fatalf("cache mode = %v", info.Mode())
-	}
-	if n := f.hitCount("/releases/latest"); n != 1 {
-		t.Fatalf("hits = %d", n)
-	}
-
-	// Fresh (23h) → no network.
-	f.setLatest("v0.4.0")
-	setNow(t, t0.Add(23*time.Hour))
-	if err := RefreshIfStale(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.hitCount("/releases/latest"); n != 1 {
-		t.Fatalf("fresh cache hit the network (%d)", n)
-	}
-
-	// Stale (> 24h) → refreshed.
-	setNow(t, t0.Add(24*time.Hour+time.Second))
-	if err := RefreshIfStale(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if c, _ := readCheck(); c.Latest != "0.4.0" {
-		t.Fatalf("cache = %+v", c)
-	}
-
-	// checked_at in the future (clock moved back) → refreshed.
-	writeCheck(t, e, t0.Add(48*time.Hour), "0.4.0")
-	f.setLatest("v0.5.0")
-	if err := RefreshIfStale(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if c, _ := readCheck(); c.Latest != "0.5.0" {
-		t.Fatalf("future cache not refreshed: %+v", c)
-	}
-}
-
-func TestRefreshIfStaleNoReleaseAndErrors(t *testing.T) {
-	e := newEnv(t)
-	setVersion(t, "0.2.1")
-	setNow(t, t0)
-	f := newFakeReleases(t)
-
-	// Nothing published: recorded (so background runs back off), no error.
-	if err := RefreshIfStale(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if c, err := readCheck(); err != nil || c.Latest != "" || !c.CheckedAt.Equal(t0) {
-		t.Fatalf("cache = %+v, %v", c, err)
-	}
-
-	// Server error: returned, cache left as it was.
-	writeCheck(t, e, t0.Add(-48*time.Hour), "0.2.5")
-	f.setLatestCode(500)
-	if err := RefreshIfStale(context.Background()); err == nil || !strings.Contains(err.Error(), "HTTP 500") {
-		t.Fatalf("err = %v", err)
-	}
-	if c, _ := readCheck(); c.Latest != "0.2.5" {
-		t.Fatalf("cache changed on error: %+v", c)
-	}
-}
-
-func TestRefreshIfStaleSkipsDevBuilds(t *testing.T) {
-	newEnv(t)
-	setVersion(t, "dev")
-	f := newFakeReleases(t)
-	f.setLatest("v0.3.0")
-	if err := RefreshIfStale(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.hitCount("/releases/latest"); n != 0 {
-		t.Fatalf("dev build hit the network (%d)", n)
 	}
 }
 

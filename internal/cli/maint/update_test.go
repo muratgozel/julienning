@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/muratgozel/julienning/internal/cli"
+	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/paths"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/version"
@@ -52,6 +53,7 @@ func newHarness(t *testing.T, cur string) *harness {
 	t.Setenv(paths.EnvBinDir, h.bin)
 	t.Setenv(paths.EnvVersionsDir, h.versions)
 	t.Setenv(selfupdate.EnvRepo, "")
+	t.Setenv(config.EnvAutoUpdate, "")
 	// paths.FindLink scans PATH; keep the developer's real install out of it.
 	t.Setenv("PATH", filepath.Join(root, "empty-path"))
 
@@ -270,6 +272,52 @@ func TestUpdateExplicitVersion(t *testing.T) {
 	// The cache holds the real latest, so the downgrade gets a hint.
 	if got := h.cachedLatest(); got != "0.3.0" {
 		t.Fatalf("update-check latest = %q", got)
+	}
+}
+
+// The daily background auto-update would quietly undo a downgrade; say so
+// unless it is off (or nothing runs it because julienning is not set up).
+func TestUpdateDowngradeNotesAutoUpdate(t *testing.T) {
+	off := false
+	cases := []struct {
+		name       string
+		setUp      bool
+		autoUpdate *bool
+		env        string
+		want       bool
+	}{
+		{name: "auto-update on", setUp: true, want: true},
+		{name: "auto_update false", setUp: true, autoUpdate: &off},
+		{name: "env off", setUp: true, env: "0"},
+		{name: "not set up"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "0.3.0")
+			h.publish("v0.2.5", false)
+			h.setLatest("v0.3.0")
+			t.Setenv(config.EnvAutoUpdate, tc.env)
+			if tc.setUp {
+				cfg, err := config.New("murat")
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg.AutoUpdate = tc.autoUpdate
+				if err := cfg.Save(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			code, out, errOut := h.run("--version", "0.2.5")
+			if code != 0 || out != "Updated 0.3.0 → 0.2.5.\n" {
+				t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
+			}
+			note := "julienning: note: auto-update will move to 0.3.0 again within a day; to stay on 0.2.5, set \"auto_update\": false in " +
+				filepath.Join(h.state, config.ConfigFile) + " (or export JULIENNING_AUTO_UPDATE=0)\n"
+			if got := strings.Contains(errOut, note); got != tc.want {
+				t.Fatalf("note shown = %v, want %v; stderr %q", got, tc.want, errOut)
+			}
+		})
 	}
 }
 
