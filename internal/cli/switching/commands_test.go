@@ -121,6 +121,107 @@ func TestNextWarnsWhenOthersUseIt(t *testing.T) {
 	}
 }
 
+// exhaustedAcct is an account at 100% in its week window (exhausted until
+// Fri 20:00 local), or in its session window (until 20:00) when session.
+func exhaustedAcct(email, nick string, session bool, busy ...string) remote.Account {
+	a := acct(email, 40, 100)
+	a.ExhaustedUntil = ts(weekReset)
+	if session {
+		a = acct(email, 100, 40)
+		a.ExhaustedUntil = ts(fiveReset)
+	}
+	a.Nickname, a.State, a.Exhausted = nick, "exhausted", true
+	if len(busy) > 0 {
+		a.BusyBy = busy
+	}
+	return a
+}
+
+// Every local account exhausted: next still switches (to the one the Worker
+// ranks first, which frees up first) and warns before the summary.
+func TestNextWarnsWhenEveryLocalAccountIsExhausted(t *testing.T) {
+	f := setup(t)
+	f.addConfig("one", email1)
+	cd := f.addConfig("three", "claude3@x.io")
+	f.save()
+	f.fake.Listing = listing(
+		acct("free@x.io", 0, 0), // usable, but not logged in here
+		exhaustedAcct("claude3@x.io", "claude3", true, "ali"),
+		exhaustedAcct(email1, "alpha", false),
+	)
+	got := f.run("next")
+	assertCode(t, got, 0)
+	want := "julienning: warning: every usable shared account on this machine is exhausted; claude3 becomes usable at 20:00\n" +
+		"julienning: warning: claude3 (claude3@x.io) is also in use by ali\n"
+	if got.stderr != want {
+		t.Errorf("stderr = %q\nwant     %q", got.stderr, want)
+	}
+	if want := "Now using claude3 (claude3@x.io) in ~/.claude-three — session 100% → 20:00, week 40% → Fri 20:00.\n"; got.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", got.stdout, want)
+	}
+	if f.current() != cd.Dir {
+		t.Errorf("current = %q", f.current())
+	}
+
+	// Week-bound, no nickname: the email names it, the day is shown.
+	f.fake.Listing = listing(exhaustedAcct(email1, "", false))
+	got = f.run("next", "--json")
+	assertCode(t, got, 0)
+	if want := "julienning: warning: every usable shared account on this machine is exhausted; claude1@x.io becomes usable at Fri 20:00\n"; got.stderr != want {
+		t.Errorf("stderr = %q\nwant     %q", got.stderr, want)
+	}
+}
+
+func TestUsableAgain(t *testing.T) {
+	loc := location()
+	if got := usableAgain("alpha", nil, nowT, loc); got != "alpha becomes usable when its limit resets" {
+		t.Errorf("unknown = %q", got)
+	}
+	if got := usableAgain("alpha", ts(nowEpoch-1), nowT, loc); got != "alpha should be usable again (its reset has passed)" {
+		t.Errorf("passed = %q", got)
+	}
+	if got := usableAgain("alpha", ts(weekReset), nowT, loc); got != "alpha becomes usable at Fri 20:00" {
+		t.Errorf("future = %q", got)
+	}
+}
+
+// Guard: should the Worker ever rank an exhausted account above a usable
+// one, next still takes the usable local account, without the warning, and
+// does not stay on an exhausted current dir.
+func TestNextSkipsExhaustedWhenAUsableLocalAccountExists(t *testing.T) {
+	f := setup(t)
+	one := f.addConfig("one", email1)
+	two := f.addConfig("two", email2)
+	f.save()
+	f.setCurrent(one)
+	f.fake.Listing = listing(exhaustedAcct(email1, "alpha", false), acct(email2, 90, 90))
+	got := f.run("next")
+	assertCode(t, got, 0)
+	if !strings.HasPrefix(got.stdout, "Now using two (claude2@x.io)") || f.current() != two.Dir {
+		t.Errorf("stdout = %q, current = %q", got.stdout, f.current())
+	}
+	if got.stderr != "" {
+		t.Errorf("stderr = %q", got.stderr)
+	}
+}
+
+// Two exhausted accounts tie only when they free up at the same time.
+func TestSameRankExhausted(t *testing.T) {
+	a, b := exhaustedAcct(email1, "", false), exhaustedAcct(email2, "", false)
+	if !sameRank(&a, &b) {
+		t.Error("equal exhausted accounts must tie")
+	}
+	c := exhaustedAcct(email2, "", false)
+	c.ExhaustedUntil = ts(weekReset + 60)
+	if sameRank(&a, &c) {
+		t.Error("a later exhausted_until must not tie")
+	}
+	d := acct(email2, 40, 100)
+	if sameRank(&a, &d) {
+		t.Error("exhausted and usable must not tie")
+	}
+}
+
 func TestNextJSON(t *testing.T) {
 	f := setup(t)
 	f.addConfig("one", email1)

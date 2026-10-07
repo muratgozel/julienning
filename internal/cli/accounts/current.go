@@ -119,7 +119,13 @@ func runCurrent(env cli.Env) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(env.Stdout, "usage: %s\n", summary(account, n, location()))
+		loc := location()
+		fmt.Fprintf(env.Stdout, "usage: %s\n", summary(account, n, loc))
+		// Only an exhausted account gets a state line: it is the one state
+		// that changes what the user can do with the selection.
+		if account.IsExhausted() {
+			fmt.Fprintf(env.Stdout, "state: %s\n", state(account, cfg.Dev, n, loc))
+		}
 	}
 	updateHint(env.Stderr)
 	return nil

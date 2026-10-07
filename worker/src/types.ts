@@ -74,7 +74,8 @@ export interface RankedWindow extends UsageWindow {
   reset_passed: boolean;
 }
 
-export type AccountState = "free" | "in_use" | "claimed";
+/** `exhausted` wins over the others: an account at 100% cannot take work, busy or not. */
+export type AccountState = "free" | "in_use" | "claimed" | "exhausted";
 
 export interface RankedAccount {
   rank: number;
@@ -90,8 +91,15 @@ export interface RankedAccount {
   /** Fresh holders only (expired ones are dropped), the querying dev included. */
   claims: Claim[];
   state: AccountState;
-  /** Sorted, unique, never the querying dev; empty when nobody else is on it. */
+  /** Sorted, unique, never the querying dev; empty when nobody else is on it. Populated in every state. */
   busy_by: string[];
+  /** A present window is at 100% effective usage. Always present. */
+  exhausted: boolean;
+  /**
+   * When the account takes work again: the latest reset among the windows at
+   * 100% (all of them must reset). null when not exhausted. Always present.
+   */
+  exhausted_until: string | null;
 }
 
 export interface AccountsResponse {

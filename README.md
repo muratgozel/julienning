@@ -86,9 +86,12 @@ $ julienning accounts
 ```
 
 SESSION and WEEK are the used % and when it resets, in your local time. STATE
-names the teammates on the account. LOCAL is the dir here that is logged into
-it (`*` is your selection). `next` takes the highest account that is logged in
-on this machine.
+names the teammates on the account, says `exhausted (week resets Fri 10:00)`
+when a limit is used up (those rank last), and `syncing (just shared)` for an
+account you shared a moment ago that the Worker does not list yet. LOCAL is
+the dir here that is logged into it (`*` is your selection). `next` takes the
+highest account that is logged in on this machine, and warns when all of them
+are exhausted.
 
 ### Session picker
 

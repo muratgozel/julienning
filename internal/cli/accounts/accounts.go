@@ -29,7 +29,7 @@ func init() {
 
 func runAccounts(env cli.Env) error {
 	fs := cli.NewFlagSet("accounts", env)
-	asJSON := fs.Bool("json", false, "print the Worker JSON with local_config and local_configs added per account")
+	asJSON := fs.Bool("json", false, "print the Worker JSON with local_config and local_configs added per account, plus the syncing accounts")
 	if err := fs.Parse(env.Args); err != nil {
 		return err
 	}
@@ -62,9 +62,11 @@ func runAccounts(env cli.Env) error {
 		return err
 	}
 	// The listing is the allowlist: keep the status line's gate current.
-	if _, err := sharedcache.FromListing(listing, n); err != nil {
+	cache, err := sharedcache.FromListing(listing, n)
+	if err != nil {
 		warnf(env, "could not update the shared account cache (%v)", err)
 	}
+	syncRows := syncing(cache, listing)
 
 	local, unreadable := localConfigs(cfg)
 	for _, name := range slices.Sorted(maps.Keys(unreadable)) {
@@ -77,9 +79,9 @@ func runAccounts(env cli.Env) error {
 	isCurrent := func(cd config.ConfigDir) bool { return curOK && cur.Dir == cd.Dir }
 
 	if *asJSON {
-		err = accountsJSON(env, listing, local, isCurrent)
+		err = accountsJSON(env, listing, syncRows, local, isCurrent)
 	} else {
-		err = accountsTable(env, cfg, listing, local, isCurrent, n)
+		err = accountsTable(env, cfg, listing, syncRows, local, isCurrent, n)
 	}
 	if err != nil {
 		return err
@@ -88,9 +90,44 @@ func runAccounts(env cli.Env) error {
 	return nil
 }
 
-func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, local map[string][]config.ConfigDir,
+// syncingAccount is an account this machine just shared that the Worker's
+// listing does not show yet.
+type syncingAccount struct {
+	email    string // lowercased
+	nickname string // "" when unknown
+}
+
+// syncingState is the STATE of a syncing row.
+const syncingState = "syncing (just shared)"
+
+// syncing returns, sorted by email, the cache's LocalAdds that the listing
+// lacks: KV listings lag writes by up to a minute, so an account shared here
+// a moment ago would otherwise look unshared. cache must be the one
+// sharedcache.FromListing returned: it already dropped adds older than
+// sharedcache.LocalAddGrace, measured on the wall clock the adds were stamped
+// with (not JULIENNING_NOW_EPOCH), so they are not filtered again here. nil
+// (the cache could not be saved, which was warned about) yields none.
+func syncing(cache *sharedcache.Cache, l *remote.Listing) []syncingAccount {
+	if cache == nil || len(cache.LocalAdds) == 0 {
+		return nil
+	}
+	listed := make(map[string]bool, len(l.Accounts))
+	for _, a := range l.Accounts {
+		listed[strings.ToLower(a.Email)] = true
+	}
+	var out []syncingAccount
+	for _, e := range slices.Sorted(maps.Keys(cache.LocalAdds)) {
+		e = strings.ToLower(e)
+		if !listed[e] {
+			out = append(out, syncingAccount{email: e, nickname: cache.Nickname(e)})
+		}
+	}
+	return out
+}
+
+func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syncRows []syncingAccount, local map[string][]config.ConfigDir,
 	isCurrent func(config.ConfigDir) bool, n time.Time) error {
-	if len(listing.Accounts) == 0 {
+	if len(listing.Accounts) == 0 && len(syncRows) == 0 {
 		fmt.Fprintln(env.Stdout, "no shared accounts yet (share one: julienning share EMAIL)")
 		return nil
 	}
@@ -105,7 +142,12 @@ func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, loc
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			rank, orDash(a.Nickname), a.Email, column(a.Session, n, loc), column(a.Week, n, loc),
-			state(a, cfg.Dev, n), localColumn(local[strings.ToLower(a.Email)], isCurrent), updated(a, n))
+			state(a, cfg.Dev, n, loc), localColumn(local[strings.ToLower(a.Email)], isCurrent), updated(a, n))
+	}
+	// Unranked: the Worker has not listed them yet.
+	for _, s := range syncRows {
+		fmt.Fprintf(tw, "-\t%s\t%s\t-\t-\t%s\t%s\t-\n",
+			orDash(s.nickname), s.email, syncingState, localColumn(local[s.email], isCurrent))
 	}
 	return tw.Flush()
 }
@@ -148,7 +190,11 @@ func column(w *remote.Window, n time.Time, loc *time.Location) string {
 // state renders the STATE column. busy_by is the Worker's verdict from this
 // dev's perspective (every other dev holding or using it); the reporter and
 // the claim holders are only a fallback for a Worker that left it empty.
-func state(a *remote.Account, self string, n time.Time) string {
+// Exhausted wins over every other state, as on the Worker.
+func state(a *remote.Account, self string, n time.Time, loc *time.Location) string {
+	if a.IsExhausted() {
+		return exhaustedState(a, n, loc)
+	}
 	switch a.State {
 	case "in_use":
 		who := a.BusyBy
@@ -165,6 +211,34 @@ func state(a *remote.Account, self string, n time.Time) string {
 	default:
 		return "free"
 	}
+}
+
+// exhaustedState renders `exhausted (week resets Fri 10:00)`: the window the
+// account waits on and its reset in loc, `(resets …)` when no window can be
+// matched to exhausted_until, bare `exhausted` without one. Other devs on it
+// follow as `, in use by ali, can` (no age: in this state busy_by does not
+// say whether they hold a claim or reported usage).
+func exhaustedState(a *remote.Account, n time.Time, loc *time.Location) string {
+	var b strings.Builder
+	b.WriteString("exhausted")
+	if until := a.ExhaustedUntil; until != nil {
+		b.WriteString(" (")
+		if w := a.ExhaustedWindow(); w != "" {
+			b.WriteString(w + " ")
+		}
+		if until.After(n) {
+			b.WriteString("resets " + usage.FormatReset(*until, n, loc))
+		} else {
+			// Our clock is past the Worker's exhausted_until (clock skew):
+			// "resets reset" would be nonsense.
+			b.WriteString("has reset")
+		}
+		b.WriteString(")")
+	}
+	if len(a.BusyBy) > 0 {
+		b.WriteString(", in use by " + strings.Join(a.BusyBy, ", "))
+	}
+	return b.String()
 }
 
 // claimDevs returns the sorted, unique devs other than self holding a claim.
@@ -223,8 +297,10 @@ func updated(a *remote.Account, n time.Time) string {
 // absent for legacy records), adding local_config (the preferred local dir's
 // config name: the selected one, else the first) and local_configs (all of
 // them) to every account, so unknown fields keep working after a Worker
-// upgrade.
-func accountsJSON(env cli.Env, l *remote.Listing, local map[string][]config.ConfigDir, isCurrent func(config.ConfigDir) bool) error {
+// upgrade. Syncing accounts go in a top-level "syncing" array (always
+// present), never inside "accounts": they are not ranked and have no Worker
+// record yet.
+func accountsJSON(env cli.Env, l *remote.Listing, syncRows []syncingAccount, local map[string][]config.ConfigDir, isCurrent func(config.ConfigDir) bool) error {
 	doc, err := l.Object()
 	if err != nil {
 		return err
@@ -236,20 +312,35 @@ func accountsJSON(env cli.Env, l *remote.Listing, local map[string][]config.Conf
 			continue
 		}
 		email, _ := a["email"].(string)
-		dirs := local[strings.ToLower(email)]
-		names := make([]string, 0, len(dirs))
-		preferred := ""
-		for _, cd := range dirs {
-			names = append(names, cd.Name)
-			if isCurrent(cd) {
-				preferred = cd.Name
-			}
-		}
-		if preferred == "" && len(names) > 0 {
-			preferred = names[0]
-		}
+		names, preferred := configNames(local[strings.ToLower(email)], isCurrent)
 		a["local_config"] = preferred
 		a["local_configs"] = names
 	}
+	rows := make([]any, 0, len(syncRows))
+	for _, s := range syncRows {
+		var nick any
+		if s.nickname != "" {
+			nick = s.nickname
+		}
+		names, _ := configNames(local[s.email], isCurrent)
+		rows = append(rows, map[string]any{"email": s.email, "nickname": nick, "local_configs": names})
+	}
+	doc["syncing"] = rows
 	return printJSON(env, doc)
+}
+
+// configNames returns the config names of dirs (never nil, so JSON shows [])
+// and the preferred one: the selected dir, else the first, else "".
+func configNames(dirs []config.ConfigDir, isCurrent func(config.ConfigDir) bool) (names []string, preferred string) {
+	names = make([]string, 0, len(dirs))
+	for _, cd := range dirs {
+		names = append(names, cd.Name)
+		if isCurrent(cd) {
+			preferred = cd.Name
+		}
+	}
+	if preferred == "" && len(names) > 0 {
+		preferred = names[0]
+	}
+	return names, preferred
 }

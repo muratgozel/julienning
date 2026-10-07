@@ -242,3 +242,115 @@ describe("ordering", () => {
     ]);
   });
 });
+
+describe("exhaustion", () => {
+  it("sinks an account with its week at 100% below a 4%/13% one, despite 0% session", () => {
+    const ranked = rank([reported("weekout@x.io", 0, 100), reported("ok@x.io", 4, 13)], BASE);
+    expect(ranked.map((r) => r.email)).toEqual(["ok@x.io", "weekout@x.io"]);
+    expect(ranked[0]).toMatchObject({ exhausted: false, exhausted_until: null, state: "free" });
+    expect(ranked[1]).toMatchObject({
+      rank: 2,
+      exhausted: true,
+      exhausted_until: at(4000),
+      state: "exhausted",
+    });
+  });
+
+  it("sinks an account with its session at 100% below a 99%/99% one", () => {
+    const ranked = rank([reported("sessout@x.io", 100, 0), reported("ok@x.io", 99, 99)], BASE);
+    expect(ranked.map((r) => r.email)).toEqual(["ok@x.io", "sessout@x.io"]);
+    expect(ranked[1]).toMatchObject({ exhausted: true, exhausted_until: at(300), state: "exhausted" });
+  });
+
+  it("treats 99.9% as usable", () => {
+    const [a] = rank([reported("a@x.io", 99.9, 99.9)], BASE);
+    expect(a).toMatchObject({ exhausted: false, exhausted_until: null, state: "free" });
+  });
+
+  it("waits on the later reset when both windows are at 100%", () => {
+    const weekLater = rank([reported("a@x.io", 100, 100, { sessionResets: 300, weekResets: 4000 })], BASE);
+    expect(weekLater[0]!.exhausted_until).toBe(at(4000));
+    // A week window about to roll over can reset before the session does.
+    const sessionLater = rank([reported("a@x.io", 100, 100, { sessionResets: 300, weekResets: 60 })], BASE);
+    expect(sessionLater[0]!.exhausted_until).toBe(at(300));
+  });
+
+  it("takes exhausted_until only from the windows at 100%", () => {
+    const weekOnly = rank([reported("a@x.io", 99, 100, { sessionResets: 9000, weekResets: 4000 })], BASE);
+    expect(weekOnly[0]!.exhausted_until).toBe(at(4000));
+    const sessionOnly = rank([reported("a@x.io", 100, 99, { sessionResets: 300, weekResets: 4000 })], BASE);
+    expect(sessionOnly[0]!.exhausted_until).toBe(at(300));
+  });
+
+  it("is no longer exhausted once the window at 100% has reset", () => {
+    const passed = rank([reported("a@x.io", 100, 100, { sessionResets: -1, weekResets: -1 })], BASE);
+    expect(passed[0]).toMatchObject({ exhausted: false, exhausted_until: null, state: "free" });
+    const atNow = rank([reported("a@x.io", 100, 10, { sessionResets: 0 })], BASE);
+    expect(atNow[0]).toMatchObject({ exhausted: false, exhausted_until: null });
+  });
+
+  it("stays exhausted on the window that has not reset yet", () => {
+    const weekLeft = rank([reported("a@x.io", 100, 100, { sessionResets: -1, weekResets: 4000 })], BASE);
+    expect(weekLeft[0]).toMatchObject({ exhausted: true, exhausted_until: at(4000) });
+    const sessionLeft = rank([reported("a@x.io", 100, 100, { sessionResets: 300, weekResets: -1 })], BASE);
+    expect(sessionLeft[0]).toMatchObject({ exhausted: true, exhausted_until: at(300) });
+  });
+
+  it("takes precedence over in_use and claimed, keeping busy_by", () => {
+    const inUse = rank([reported("a@x.io", 100, 10, { dev: "ali", agoMin: 1 })], { ...BASE, dev: "murat" });
+    expect(inUse[0]).toMatchObject({ state: "exhausted", busy_by: ["ali"] });
+    const claimed = rank([{ ...reported("a@x.io", 10, 100), claims: [holder("can", 5), holder("ali", 9)] }], {
+      ...BASE,
+      dev: "murat",
+    });
+    expect(claimed[0]).toMatchObject({ state: "exhausted", busy_by: ["ali", "can"] });
+    expect(claimed[0]!.claims).toHaveLength(2);
+  });
+
+  it("orders below busy and unknown accounts, then by exhausted_until, then the usual tiebreakers", () => {
+    const accounts: StoredAccount[] = [
+      reported("late@x.io", 0, 100, { weekResets: 4000 }),
+      { ...reported("soonbusy@x.io", 100, 0, { sessionResets: 300 }), claims: [holder("ali", 5)] },
+      reported("soonhigh@x.io", 100, 50, { sessionResets: 300 }),
+      reported("soonlow-b@x.io", 100, 20, { sessionResets: 300 }),
+      reported("soonlow-a@x.io", 100, 20, { sessionResets: 300 }),
+      { ...reported("busy@x.io", 90, 90), claims: [holder("ali", 5)] },
+      account("unknown@x.io"),
+    ];
+    const ranked = rank(accounts, { ...BASE, dev: "murat" });
+    expect(ranked.map((r) => r.email)).toEqual([
+      "unknown@x.io",
+      "busy@x.io",
+      "soonlow-a@x.io",
+      "soonlow-b@x.io",
+      "soonhigh@x.io",
+      "soonbusy@x.io",
+      "late@x.io",
+    ]);
+    expect(ranked.map((r) => r.rank)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("orders exhausted accounts with the same exhausted_until by effective session, then session reset", () => {
+    const ranked = rank(
+      [
+        reported("s30@x.io", 30, 100, { weekResets: 4000 }),
+        reported("s10w100@x.io", 10, 100, { weekResets: 4000 }),
+        reported("s10w100b@x.io", 10, 100, { weekResets: 4000, sessionResets: 200 }),
+      ],
+      BASE,
+    );
+    // Same session %, same week %: the earlier session reset wins.
+    expect(ranked.map((r) => r.email)).toEqual(["s10w100b@x.io", "s10w100@x.io", "s30@x.io"]);
+  });
+
+  it("always sets both fields, also for never-reported accounts", () => {
+    const [a] = rank([account("a@x.io")], BASE);
+    expect(a).toHaveProperty("exhausted", false);
+    expect(a).toHaveProperty("exhausted_until", null);
+    const json = JSON.parse(JSON.stringify(a)) as Record<string, unknown>;
+    expect(typeof json.exhausted).toBe("boolean");
+    expect(json.exhausted_until).toBeNull();
+    const [b] = rank([reported("b@x.io", 100, 0)], BASE);
+    expect(typeof (JSON.parse(JSON.stringify(b)) as Record<string, unknown>).exhausted_until).toBe("string");
+  });
+});

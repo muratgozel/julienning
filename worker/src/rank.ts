@@ -26,8 +26,47 @@ function rankWindow(w: UsageWindow | undefined, nowMs: number): RankedWindow | u
   };
 }
 
+/**
+ * Usage at which Claude refuses work until the window resets. The status line
+ * reports at most 100 (validate.ts rejects more); `>=` keeps that a non-issue.
+ */
+const EXHAUSTED_AT = 100;
+
+export type WindowName = "session" | "week";
+
+export interface BlockingWindow {
+  name: WindowName;
+  window: RankedWindow;
+}
+
+/**
+ * The window an exhausted account is waiting on, or undefined when it is not
+ * exhausted. With both windows at 100% this is the one that resets LAST: the
+ * account stays unusable until every exhausted window has reset. Ties go to
+ * week. Shared with format.ts so the text STATE names the same window whose
+ * reset is `exhausted_until`.
+ */
+export function blockingWindow(
+  session: RankedWindow | undefined,
+  week: RankedWindow | undefined,
+): BlockingWindow | undefined {
+  let blocking: BlockingWindow | undefined;
+  for (const [name, w] of [
+    ["session", session],
+    ["week", week],
+  ] as const) {
+    if (!w || w.effective < EXHAUSTED_AT) continue;
+    if (!blocking || Date.parse(w.resets_at) >= Date.parse(blocking.window.resets_at))
+      blocking = { name, window: w };
+  }
+  return blocking;
+}
+
 interface Scored {
   account: RankedAccount;
+  exhausted: boolean;
+  /** `exhausted_until` in ms; only compared between two exhausted accounts. */
+  until: number;
   busy: boolean;
   known: boolean;
   session: number;
@@ -37,7 +76,9 @@ interface Scored {
 
 /**
  * Pure ranking. `now` is injected so both the Worker and the tests control it.
- * Ordering: not busy, then known usage, then effective session %, effective
+ * Ordering: not exhausted (an account at 100% sinks below every usable one,
+ * whatever its other window says), then within the exhausted band the earliest
+ * `exhausted_until`; then not busy, known usage, effective session %, effective
  * week %, earliest session reset, email.
  */
 export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccount[] {
@@ -58,12 +99,17 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
     const claimingDevs = claims.map((c) => c.dev).filter((d) => d !== opts.dev);
 
     const busy_by = [...new Set([...(activeDev ? [activeDev] : []), ...claimingDevs])].sort();
-    // Activity beats a claim: someone typing right now is the better signal.
-    const state: AccountState = activeDev
-      ? "in_use"
-      : claimingDevs.length > 0
-        ? "claimed"
-        : "free";
+    const blocking = blockingWindow(session, week);
+    // Exhaustion beats everything: nobody can use it, whoever is on it. busy_by
+    // stays populated so clients still see who is. Activity beats a claim:
+    // someone typing right now is the better signal.
+    const state: AccountState = blocking
+      ? "exhausted"
+      : activeDev
+        ? "in_use"
+        : claimingDevs.length > 0
+          ? "claimed"
+          : "free";
 
     const account: RankedAccount = {
       rank: 0,
@@ -78,10 +124,14 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
       claims,
       state,
       busy_by,
+      exhausted: blocking !== undefined,
+      exhausted_until: blocking?.window.resets_at ?? null,
     };
 
     return {
       account,
+      exhausted: blocking !== undefined,
+      until: blocking ? Date.parse(blocking.window.resets_at) : Number.POSITIVE_INFINITY,
       busy: busy_by.length > 0,
       known: session !== undefined || week !== undefined,
       session: session?.effective ?? Number.POSITIVE_INFINITY,
@@ -91,6 +141,8 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
   });
 
   scored.sort((x, y) => {
+    if (x.exhausted !== y.exhausted) return x.exhausted ? 1 : -1;
+    if (x.exhausted && x.until !== y.until) return x.until - y.until;
     if (x.busy !== y.busy) return x.busy ? 1 : -1;
     if (x.known !== y.known) return x.known ? -1 : 1;
     if (x.session !== y.session) return x.session - y.session;

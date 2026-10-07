@@ -471,7 +471,13 @@ next `claude` in any terminal uses it.
 you: your own claims and reports never count as busy) and takes the best
 account that has a registered, logged-in dir here. If several dirs are logged
 into it, the selected one wins, else the first by config name. If your current
-account ranks level with the winner, you stay. It warns when the winner is busy
+account ranks level with the winner, you stay. The Worker ranks exhausted
+accounts (a window at 100%) after every usable one, so `next` only lands on
+one when every shared account logged in here is exhausted; it then still
+switches, to the one that becomes usable first, and warns before the summary
+line:
+`julienning: warning: every usable shared account on this machine is exhausted; claude3 becomes usable at Fri 10:00`
+(local time). It warns when the winner is busy
 (`julienning: warning: beta (claude2@example.com) is also in use by ali, can`)
 and needs the Worker: without it,
 `` julienning: cannot rank accounts (...); pick manually with `julienning use NICKNAME` ``.
@@ -595,11 +601,13 @@ target already has that id.
 prints the ranking:
 
 ```
-#  NICK     ACCOUNT              SESSION      WEEK             STATE                     LOCAL                   UPDATED
-1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28  free                      *~/.claude-julienning1  2m ago
-2  claude3  claude3@example.com  -            -                free                      -                       never
-3  delta    claude4@example.com  -            -                free                      ~/.claude-work          never
-4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28  in use by ali, can (12m)  -                       12m ago
+#  NICK     ACCOUNT              SESSION      WEEK              STATE                              LOCAL                   UPDATED
+1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               *~/.claude-julienning1  2m ago
+2  claude3  claude3@example.com  -            -                 free                               -                       never
+3  delta    claude4@example.com  -            -                 free                               ~/.claude-work          never
+4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           -                       12m ago
+5  gamma    claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  ~/.claude-julienning2   5m ago
+-  epsilon  claude6@example.com  -            -                 syncing (just shared)              ~/.claude-julienning5   -
 ```
 
 - NICK: the team nickname; `-` for an account shared before nicknames that
@@ -610,13 +618,28 @@ prints the ranking:
 - STATE: `free`; `in use by …` when another dev reported usage in the last 15
   minutes (with the age of that report); `claimed by … (3m)` when other devs
   only hold claims (with the age of the oldest one). Every other dev is listed.
+  `exhausted (week resets Fri 10:00)` or `exhausted (session resets 23:40)`
+  when a window is at 100%, so Claude refuses work on it until then: the
+  window named is the one that resets last (week on a tie), in your local
+  zone (`exhausted (resets …)` when the Worker's reset matches neither
+  window). Exhausted wins over the other states; anyone else on the account
+  follows, `exhausted (week resets Fri 10:00), in use by ali`.
+- `syncing (just shared)`: an account shared from this machine in the last
+  10 minutes that the Worker's listing does not show yet (its listings lag
+  writes by up to a minute). The row has no rank (`-`), no usage and
+  UPDATED `-`; it disappears once the listing has the account, or after the
+  10 minutes.
 - LOCAL: the registered dirs here logged into that account, as paths, `*` on
   the selected one, `-` for none.
-- Order: not busy first, then accounts with usage before those without, then
-  session %, week %, session reset, email.
+- Order: not exhausted first (exhausted accounts last, the one that frees up
+  first on top), then not busy, then accounts with usage before those
+  without, then session %, week %, session reset, email.
 - `--json`: the Worker document (each account's `nickname` is `null` when it
-  has none) with `local_config` and `local_configs` (config names) added to
-  every account.
+  has none; `exhausted` and `exhausted_until`, `null` unless exhausted) with
+  `local_config` and `local_configs` (config names) added to every account,
+  plus a top-level `syncing` array (always present) of
+  `{"email", "nickname", "local_configs"}` for the syncing accounts, which
+  never appear under `accounts`.
 
 **`julienning current [--json]`** prints `none`, or:
 
@@ -624,6 +647,10 @@ prints the ranking:
 alpha (claude1@example.com) in ~/.claude-julienning1
 usage: session 4% → 23:38, week 11% → Fri 00:28
 ```
+
+An exhausted account gets a third line with the same text as the STATE
+column of `accounts`:
+`state: exhausted (session resets 23:40), in use by ali`.
 
 A dir whose account has no nickname shows its config name
 (`julienning3 in ~/.claude-julienning3`). The usage line becomes

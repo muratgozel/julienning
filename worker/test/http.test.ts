@@ -238,6 +238,8 @@ describe("share and unshare", () => {
       claims: [],
       state: "free",
       busy_by: [],
+      exhausted: false,
+      exhausted_until: null,
     });
 
     const text = await (await call("/accounts?dev=murat")).text();
@@ -774,6 +776,8 @@ describe("response formats", () => {
       "claims",
       "collected_at",
       "email",
+      "exhausted",
+      "exhausted_until",
       "nickname",
       "rank",
       "reporter",
@@ -783,6 +787,44 @@ describe("response formats", () => {
     ]);
 
     expect((await listJson("&tz=America/New_York")).tz).toBe("America/New_York");
+  });
+
+  it("serializes exhausted as a boolean and exhausted_until as null when usable", async () => {
+    await shared(A);
+    await putUsage(A, MURAT, 99, 99);
+    const raw = await (await call("/accounts?format=json&dev=murat")).text();
+    expect(raw).toContain('"exhausted":false');
+    expect(raw).toContain('"exhausted_until":null');
+    const one = await (await call(`/accounts/${A}?dev=murat`)).text();
+    expect(one).toContain('"exhausted":false');
+    expect(one).toContain('"exhausted_until":null');
+  });
+
+  it("sinks an exhausted account below a usable one, end to end", async () => {
+    await shared(A, B);
+    await putUsage(A, ALI, 0, 100);
+    await putUsage(B, MURAT, 4, 13);
+
+    const res = await listJson("&dev=murat");
+    expect(res.accounts.map((a) => a.email)).toEqual([B, A]);
+    const exhausted = byEmail(res, A);
+    expect(exhausted.exhausted).toBe(true);
+    expect(exhausted.exhausted_until).toBe(exhausted.week!.resets_at);
+    expect(exhausted.state).toBe("exhausted");
+    // ali reported just now: still listed, though exhaustion owns `state`.
+    expect(exhausted.busy_by).toEqual(["ali"]);
+    expect(byEmail(res, B)).toMatchObject({ exhausted: false, exhausted_until: null, state: "free" });
+
+    const one = await getJson(A, "murat");
+    expect(one.exhausted).toBe(true);
+    expect(one.exhausted_until).toBe(exhausted.week!.resets_at);
+
+    const lines = (await (await call("/accounts?dev=murat")).text()).split("\n");
+    expect(lines[1]).toContain(B);
+    expect(lines[1]).toMatch(/\sfree\s/);
+    expect(lines[2]).toContain(A);
+    expect(lines[2]).toMatch(/\sexhausted \(week resets [^)]+\)\s/);
+    expect(lines[2]).not.toContain("in use by");
   });
 
   it("defaults to an aligned text table in UTC", async () => {

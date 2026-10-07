@@ -1,3 +1,4 @@
+import { blockingWindow } from "./rank";
 import type { AccountsResponse, RankedAccount, RankedWindow } from "./types";
 
 interface ZonedParts {
@@ -87,11 +88,20 @@ function ago(iso: string | undefined, now: Date): string {
 }
 
 /**
+ * `exhausted (week resets Fri 10:00)`: the window it waits on, which with both
+ * at 100% is the later reset (see blockingWindow). Who is on an exhausted
+ * account is left to the JSON `busy_by`.
  * `in use by ali, can (12m)`: every other dev on it, with the age of the last
  * report (the in_use signal). Claims carry no age: with several holders there
  * is no single meaningful one.
  */
-function stateCell(a: RankedAccount, now: Date): string {
+function stateCell(a: RankedAccount, tz: string, now: Date): string {
+  if (a.state === "exhausted") {
+    const blocking = blockingWindow(a.session, a.week);
+    // Unreachable while `state` comes from rank(); the bare word keeps the row honest.
+    if (!blocking) return "exhausted";
+    return `exhausted (${blocking.name} resets ${formatResetTime(blocking.window.resets_at, tz, now)})`;
+  }
   if (a.state === "free" || a.busy_by.length === 0) return "free";
   const who = a.busy_by.join(", ");
   if (a.state === "in_use")
@@ -114,7 +124,7 @@ export function formatText(res: AccountsResponse, now: Date): string {
     a.email,
     windowCell(a.session, res.tz, now),
     windowCell(a.week, res.tz, now),
-    stateCell(a, now),
+    stateCell(a, res.tz, now),
     ago(a.collected_at, now),
   ]);
 

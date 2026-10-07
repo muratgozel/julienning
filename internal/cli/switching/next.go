@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/remote"
+	"github.com/muratgozel/julienning/internal/usage"
 )
 
 func init() {
@@ -67,6 +69,12 @@ func runNext(env cli.Env) error {
 		return err
 	}
 	email := strings.ToLower(acct.Email)
+	if acct.IsExhausted() {
+		// chooseNext only settles for an exhausted account when every local
+		// one is exhausted; it is the one that frees up first.
+		warnf(env, "every usable shared account on this machine is exhausted; %s",
+			usableAgain(orEmail(cache.Nickname(email), email), acct.ExhaustedUntil, now, location()))
+	}
 	if len(acct.BusyBy) > 0 {
 		warnf(env, "%s is also in use by %s", accountName(cache.Nickname(email), email), strings.Join(acct.BusyBy, ", "))
 	}
@@ -81,18 +89,54 @@ func runNext(env cli.Env) error {
 	return finish(env, cfg, cache, sel, o, now)
 }
 
+// usableAgain completes the all-exhausted warning: when name can take work
+// again, in loc.
+func usableAgain(name string, until *time.Time, now time.Time, loc *time.Location) string {
+	switch {
+	case until == nil:
+		return name + " becomes usable when its limit resets"
+	case !until.After(now):
+		// Our clock is past the Worker's exhausted_until (clock skew).
+		return name + " should be usable again (its reset has passed)"
+	default:
+		return name + " becomes usable at " + usage.FormatReset(*until, now, loc)
+	}
+}
+
+func orEmail(nick, email string) string {
+	if nick != "" {
+		return nick
+	}
+	return email
+}
+
 // chooseNext walks the Worker's ranking and returns the first account with a
 // local dir. Among several dirs logged into that account, the current dir
 // wins, else the first by name. When the current dir's account ranks level
 // with the winner on every ranking key (the Worker then orders by email
 // only), staying put avoids a pointless switch.
+//
+// The Worker ranks exhausted accounts after every usable one, so the first
+// local account is only exhausted when all local ones are. That is guarded
+// anyway: a usable local account ranked lower still wins over an exhausted
+// one, and the caller warns when the winner is exhausted.
 func chooseNext(l *remote.Listing, local map[string][]config.ConfigDir, cur config.ConfigDir, curOK bool) (*remote.Account, config.ConfigDir, bool) {
-	var best *remote.Account
+	var best, firstLocal *remote.Account
 	for i := range l.Accounts {
-		if len(local[strings.ToLower(l.Accounts[i].Email)]) > 0 {
-			best = &l.Accounts[i]
+		a := &l.Accounts[i]
+		if len(local[strings.ToLower(a.Email)]) == 0 {
+			continue
+		}
+		if firstLocal == nil {
+			firstLocal = a
+		}
+		if !a.IsExhausted() {
+			best = a
 			break
 		}
+	}
+	if best == nil {
+		best = firstLocal
 	}
 	if best == nil {
 		return nil, config.ConfigDir{}, false
@@ -122,8 +166,16 @@ func holds(dirs []config.ConfigDir, cd config.ConfigDir) bool {
 }
 
 // sameRank compares the Worker's sort keys except the final email
-// tie-breaker (SPEC "Ranking and state").
+// tie-breaker (SPEC "Ranking and state"): exhausted (and, between two
+// exhausted accounts, exhausted_until), busy, known usage, session %, week %,
+// session reset.
 func sameRank(a, b *remote.Account) bool {
+	if a.IsExhausted() != b.IsExhausted() {
+		return false
+	}
+	if a.IsExhausted() && !sameTime(a.ExhaustedUntil, b.ExhaustedUntil) {
+		return false
+	}
 	known := func(x *remote.Account) bool { return x.Session != nil || x.Week != nil }
 	reset := func(w *remote.Window) int64 {
 		if w == nil || w.ResetPassed || w.ResetsAt == nil {
@@ -136,4 +188,11 @@ func sameRank(a, b *remote.Account) bool {
 		a.Session.Percent() == b.Session.Percent() &&
 		a.Week.Percent() == b.Week.Percent() &&
 		reset(a.Session) == reset(b.Session)
+}
+
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }

@@ -23,7 +23,9 @@ import (
 )
 
 const (
-	nowEpoch  = 1789482657 // 2026-09-15T14:30:57Z = 17:30:57 +03:00
+	nowEpoch  = 1789482657 // 2026-09-15T14:30:57Z = Tue 17:30:57 +03:00
+	friReset  = 1789714800 // 2026-09-18T07:00:00Z = Fri 10:00 +03:00
+	lateReset = 1789504800 // 2026-09-15T20:40:00Z = 23:40 +03:00
 	fiveReset = 1789491600 // 2026-09-15T17:00:00Z = 20:00 +03:00
 	weekReset = 1793631600 // 2026-11-02T15:00:00Z = 18:00 +03:00
 	email1    = "claude1@sixtynine.agency"
@@ -530,23 +532,24 @@ func TestAccountsRendersResetAndClaimStates(t *testing.T) {
 
 func TestAccountsStateFallbacks(t *testing.T) {
 	n := time.Unix(nowEpoch, 0)
+	loc := location()
 	claimed := &remote.Account{State: "claimed", Claims: []remote.Claim{
 		{Dev: "murat", At: n.Add(-time.Hour)},
 		{Dev: "can", At: n.Add(-2 * time.Minute)},
 		{Dev: "ali", At: n.Add(-5 * time.Minute)},
 		{Dev: "ali", At: n.Add(-time.Minute)},
 	}}
-	if got := state(claimed, "murat", n); got != "claimed by ali, can (5m)" {
+	if got := state(claimed, "murat", n, loc); got != "claimed by ali, can (5m)" {
 		t.Errorf("claimed fallback = %q", got)
 	}
 	inUse := &remote.Account{State: "in_use", Reporter: &remote.Identity{Dev: "ali"}, CollectedAt: ts(nowEpoch - 30)}
-	if got := state(inUse, "murat", n); got != "in use by ali (30s)" {
+	if got := state(inUse, "murat", n, loc); got != "in use by ali (30s)" {
 		t.Errorf("in use fallback = %q", got)
 	}
-	if got := state(&remote.Account{State: "claimed"}, "murat", n); got != "claimed" {
+	if got := state(&remote.Account{State: "claimed"}, "murat", n, loc); got != "claimed" {
 		t.Errorf("bare claimed = %q", got)
 	}
-	if got := state(&remote.Account{State: "something-new"}, "murat", n); got != "free" {
+	if got := state(&remote.Account{State: "something-new"}, "murat", n, loc); got != "free" {
 		t.Errorf("unknown state = %q", got)
 	}
 }
@@ -1026,4 +1029,255 @@ func TestCommandsRequireSetup(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- exhausted ---------------------------------------------------------
+
+// exhausted is an account at 100% in one or both windows, with the Worker's
+// exhausted_until (the later reset of the full windows).
+func exhausted(email string, session, week *remote.Window, until int64, busy ...string) remote.Account {
+	a := remote.Account{Email: email, Session: session, Week: week, State: "exhausted", Exhausted: true, BusyBy: busy}
+	if until != 0 {
+		a.ExhaustedUntil = ts(until)
+	}
+	return a
+}
+
+func TestAccountsExhaustedState(t *testing.T) {
+	n := time.Unix(nowEpoch, 0)
+	loc := location()
+	cases := []struct {
+		name string
+		a    remote.Account
+		want string
+	}{
+		{"week", exhausted(email1, win(40, lateReset), win(100, friReset), friReset),
+			"exhausted (week resets Fri 10:00)"},
+		{"session", exhausted(email1, win(100, lateReset), win(70, friReset), lateReset),
+			"exhausted (session resets 23:40)"},
+		{"both: the later reset", exhausted(email1, win(100, lateReset), win(100, friReset), friReset),
+			"exhausted (week resets Fri 10:00)"},
+		{"busy", exhausted(email1, win(100, lateReset), win(70, friReset), lateReset, "ali"),
+			"exhausted (session resets 23:40), in use by ali"},
+		{"busy with several devs", exhausted(email1, win(40, lateReset), win(100, friReset), friReset, "ali", "can"),
+			"exhausted (week resets Fri 10:00), in use by ali, can"},
+		{"window unknown", exhausted(email1, nil, nil, friReset),
+			"exhausted (resets Fri 10:00)"},
+		{"no reset known", exhausted(email1, win(100, lateReset), nil, 0),
+			"exhausted"},
+		{"reset already passed here", exhausted(email1, win(100, nowEpoch-60), nil, nowEpoch-60),
+			"exhausted (session has reset)"},
+		{"state alone", remote.Account{State: "exhausted", Week: win(100, friReset), ExhaustedUntil: ts(friReset)},
+			"exhausted (week resets Fri 10:00)"},
+		{"flag alone beats in_use", remote.Account{State: "in_use", Exhausted: true, Session: win(100, lateReset), ExhaustedUntil: ts(lateReset), BusyBy: []string{"ali"}},
+			"exhausted (session resets 23:40), in use by ali"},
+	}
+	for _, tc := range cases {
+		if got := state(&tc.a, "murat", n, loc); got != tc.want {
+			t.Errorf("%s: state = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The table renders the Worker's order (exhausted last) with the exhausted
+// STATE in local time; --json passes the Worker's fields through.
+func TestAccountsTableExhausted(t *testing.T) {
+	f := setup(t)
+	f.addConfig("sixtynine3", "claude3@sixtynine.agency")
+	f.save()
+	l := listing()
+	ex := exhausted("claude3@sixtynine.agency", win(40, lateReset), win(100, friReset), friReset, "ali")
+	ex.Rank, ex.Nickname, ex.CollectedAt = 3, "claude3", ts(nowEpoch-300)
+	l.Accounts = append(l.Accounts, ex)
+	f.fake.Listing = l
+
+	got := f.run("", "accounts")
+	assertCode(t, got, 0)
+	lines := strings.Split(strings.TrimRight(got.stdout, "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("lines = %q", lines)
+	}
+	for _, want := range []string{"3  claude3  claude3@sixtynine.agency", "40% → 23:40", "100% → Fri 10:00",
+		"  exhausted (week resets Fri 10:00), in use by ali  ", "~/.claude-sixtynine3", "5m ago"} {
+		if !strings.Contains(lines[3], want) {
+			t.Errorf("row = %q, missing %q", lines[3], want)
+		}
+	}
+
+	f.fake.Listing.Raw = json.RawMessage(`{"generated_at":"2026-09-15T14:30:57Z","tz":"Europe/Istanbul","accounts":[` +
+		`{"rank":1,"email":"claude3@sixtynine.agency","nickname":"claude3","state":"exhausted","claims":[],"busy_by":["ali"],` +
+		`"exhausted":true,"exhausted_until":"2026-09-18T07:00:00Z"}]}`)
+	got = f.run("", "accounts", "--json")
+	assertCode(t, got, 0)
+	var doc struct {
+		Accounts []map[string]any `json:"accounts"`
+	}
+	if err := json.Unmarshal([]byte(got.stdout), &doc); err != nil {
+		t.Fatalf("json: %v (%q)", err, got.stdout)
+	}
+	if a := doc.Accounts[0]; a["exhausted"] != true || a["exhausted_until"] != "2026-09-18T07:00:00Z" || a["state"] != "exhausted" {
+		t.Errorf("Worker fields not passed through: %v", a)
+	}
+}
+
+func TestCurrentExhausted(t *testing.T) {
+	a := exhausted(email1, win(100, lateReset), win(70, friReset), lateReset, "ali")
+	a.Nickname = "alpha"
+	f := currentFixture(t, "alpha", &a)
+	got := f.run("", "current")
+	assertCode(t, got, 0)
+	want := "alpha (" + email1 + ") in ~/.claude-sixtynine1\n" +
+		"usage: session 100% → 23:40, week 70% → Fri 10:00\n" +
+		"state: exhausted (session resets 23:40), in use by ali\n"
+	if got.stdout != want {
+		t.Errorf("stdout = %q, want %q", got.stdout, want)
+	}
+	// A usable account keeps the two-line form.
+	l := listing()
+	f.fake.Accounts = map[string]*remote.Account{email1: &l.Accounts[0]}
+	if got := f.run("", "current"); strings.Contains(got.stdout, "state:") {
+		t.Errorf("usable account got a state line: %q", got.stdout)
+	}
+}
+
+// --- syncing -----------------------------------------------------------
+
+const email3 = "claude3@sixtynine.agency"
+
+// writeLocalAdd writes shared.json with email shared from this machine at
+// the given wall-clock time (LocalAddGrace is measured on the wall clock,
+// not on JULIENNING_NOW_EPOCH).
+func (f *fixture) writeLocalAdd(email, nick string, at time.Time) {
+	f.t.Helper()
+	doc := map[string]any{
+		"fetched_at": time.Unix(nowEpoch-60, 0).UTC(),
+		"emails":     []string{email1, email2, email},
+		"nicknames":  map[string]string{email1: "alpha", email: nick},
+		"local_adds": map[string]time.Time{email: at.UTC()},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.MkdirAll(f.jul, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.jul, sharedcache.File), raw, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func TestAccountsSyncingRows(t *testing.T) {
+	f := setup(t)
+	cd := f.addConfig("sixtynine1", email1)
+	f.addConfig("sixtynine3", email3)
+	f.save()
+	if err := config.SetCurrent(cd); err != nil {
+		t.Fatal(err)
+	}
+	f.shareNicks(map[string]string{email1: "alpha", email2: ""})
+	if _, err := sharedcache.AddWithNickname(email3, "gamma"); err != nil {
+		t.Fatal(err)
+	}
+	f.fake.Listing = listing()
+
+	got := f.run("", "accounts")
+	assertCode(t, got, 0)
+	want := "" +
+		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     LOCAL                  UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  free                      *~/.claude-sixtynine1  2m ago\n" +
+		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  -                      12m ago\n" +
+		"-  gamma  claude3@sixtynine.agency  -            -                       syncing (just shared)     ~/.claude-sixtynine3   -\n"
+	if got.stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
+	}
+	if c := f.sharedCache(); !c.Contains(email3) {
+		t.Errorf("the refresh dropped the local add: %+v", c)
+	}
+
+	got = f.run("", "accounts", "--json")
+	assertCode(t, got, 0)
+	var doc struct {
+		Accounts []map[string]any `json:"accounts"`
+		Syncing  []map[string]any `json:"syncing"`
+	}
+	if err := json.Unmarshal([]byte(got.stdout), &doc); err != nil {
+		t.Fatalf("json: %v (%q)", err, got.stdout)
+	}
+	if len(doc.Accounts) != 2 {
+		t.Errorf("syncing account leaked into accounts: %v", doc.Accounts)
+	}
+	if len(doc.Syncing) != 1 {
+		t.Fatalf("syncing = %v", doc.Syncing)
+	}
+	s := doc.Syncing[0]
+	if s["email"] != email3 || s["nickname"] != "gamma" {
+		t.Errorf("syncing row = %v", s)
+	}
+	if locals, _ := s["local_configs"].([]any); len(locals) != 1 || locals[0] != "sixtynine3" {
+		t.Errorf("syncing local_configs = %#v", s["local_configs"])
+	}
+	if keys := strings.Join(slices.Sorted(maps.Keys(s)), ","); keys != "email,local_configs,nickname" {
+		t.Errorf("syncing keys = %s", keys)
+	}
+}
+
+// No local dir and no nickname: "-" in the table, [] and null in JSON; an
+// empty listing still shows the row instead of "no shared accounts yet".
+func TestAccountsSyncingOnly(t *testing.T) {
+	f := setup(t)
+	f.save()
+	f.writeLocalAdd(email3, "", time.Now().Add(-time.Minute))
+	f.fake.Listing = &remote.Listing{TZ: "Europe/Istanbul"}
+
+	got := f.run("", "accounts")
+	assertCode(t, got, 0)
+	want := "" +
+		"#  NICK  ACCOUNT                   SESSION  WEEK  STATE                  LOCAL  UPDATED\n" +
+		"-  -     claude3@sixtynine.agency  -        -     syncing (just shared)  -      -\n"
+	if got.stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
+	}
+
+	got = f.run("", "accounts", "--json")
+	assertCode(t, got, 0)
+	if !strings.Contains(got.stdout, `"local_configs": []`) || !strings.Contains(got.stdout, `"nickname": null`) {
+		t.Errorf("syncing row must have [] and null: %q", got.stdout)
+	}
+}
+
+func TestAccountsSyncingEnds(t *testing.T) {
+	t.Run("the listing has it", func(t *testing.T) {
+		f := setup(t)
+		f.save()
+		f.writeLocalAdd(email3, "gamma", time.Now().Add(-time.Minute))
+		l := listing()
+		l.Accounts = append(l.Accounts, remote.Account{Rank: 3, Email: "Claude3@Sixtynine.Agency", Nickname: "gamma", State: "free"})
+		f.fake.Listing = l
+		got := f.run("", "accounts")
+		assertCode(t, got, 0)
+		// The Worker's spelling of the email still matches the lowercased add.
+		if strings.Contains(got.stdout, "syncing") || strings.Count(got.stdout, "Claude3@Sixtynine.Agency") != 1 {
+			t.Errorf("listed account still syncing: %q", got.stdout)
+		}
+		got = f.run("", "accounts", "--json")
+		assertCode(t, got, 0)
+		if !strings.Contains(got.stdout, `"syncing": []`) {
+			t.Errorf("want an empty syncing array: %q", got.stdout)
+		}
+	})
+	t.Run("after the grace", func(t *testing.T) {
+		f := setup(t)
+		f.save()
+		f.writeLocalAdd(email3, "gamma", time.Now().Add(-sharedcache.LocalAddGrace-time.Minute))
+		f.fake.Listing = listing()
+		got := f.run("", "accounts")
+		assertCode(t, got, 0)
+		if strings.Contains(got.stdout, "syncing") || strings.Contains(got.stdout, email3) {
+			t.Errorf("expired local add still shown: %q", got.stdout)
+		}
+		if c := f.sharedCache(); c.Contains(email3) || len(c.LocalAdds) != 0 {
+			t.Errorf("expired local add kept in the cache: %+v", c)
+		}
+	})
 }

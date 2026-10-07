@@ -592,11 +592,41 @@ with: NICK is the team nickname (`-` for legacy records); allowlisted
 accounts that never reported show `-` windows; STATE shows every other holder
 (`in use by ali, can (12m)`); LOCAL lists the registered dirs here logged
 into that email as home-shortened paths, comma-separated, `*` on the
-selected one (`*~/.claude-julienning1`), `-` for none. `--json`: the Worker
-document (`nickname` included) plus `local_config` (the selected dir's config
-name, else the first) and `local_configs` (config names) per account. Before
-listing, run claim reconciliation (below) synchronously and refresh
-`shared.json`.
+selected one (`*~/.claude-julienning1`), `-` for none. Rows keep the
+Worker's order (Ranking and state: not exhausted (exhausted ones by
+`exhausted_until` asc) → not busy → known before unknown → session asc →
+week asc → session reset asc → email).
+
+STATE of an exhausted account (`exhausted` true or `state` `exhausted`;
+wins over every other state): `exhausted (<window> resets <time>)`, the
+window being the one at ≥ 100% whose `resets_at` equals `exhausted_until`
+(`Account.ExhaustedWindow`: week on a tie, which with both full is the later
+reset, matching the Worker's text), `<time>` in local time via
+`usage.FormatReset`; `exhausted (resets <time>)` when no window matches,
+`exhausted` when `exhausted_until` is null, `(… has reset)` when the local
+clock is already past it. A non-empty `busy_by` appends
+`, in use by ali, can` (no age). Examples: `exhausted (week resets Fri 10:00)`,
+`exhausted (session resets 23:40), in use by ali`.
+
+Syncing rows: after the listing refreshes `shared.json`
+(`sharedcache.FromListing`, which keeps this machine's `local_adds` younger
+than `LocalAddGrace` on the wall clock), every `local_adds` email the listing
+lacks (case-insensitive) is appended, sorted by email:
+`#` `-`, NICK from `shared.json`, SESSION/WEEK `-`, STATE
+`syncing (just shared)`, LOCAL as above, UPDATED `-`. It goes once the
+listing has the email or the grace is over. When the cache cannot be saved
+(warned) there are none. An empty listing with syncing rows prints the table,
+not `no shared accounts yet`.
+
+`--json`: the Worker document (`nickname`, `exhausted`, `exhausted_until`
+included as sent) plus `local_config` (the selected dir's config name, else
+the first) and `local_configs` (config names) per account, and a top-level
+`syncing` array, always present, of `{email, nickname (null when unknown),
+local_configs}`; syncing accounts never go under `accounts`. Before listing,
+run claim reconciliation (below) synchronously and refresh `shared.json`.
+
+`current` adds `state: <STATE text>` under the usage line when the account
+is exhausted (only then).
 
 ### next / use (`internal/cli/switching`, `internal/sessions`, `internal/tui`)
 
@@ -607,7 +637,18 @@ selection without re-ranking; nothing selected → same as `next`)
 `julienning use --clear`
 
 1. Target: `next` ranks via the Worker and picks the first shared account
-   with a registered, logged-in local dir (prefer the current dir on ties);
+   with a registered, logged-in local dir (prefer the current dir on ties:
+   `sameRank` compares every Worker sort key but the email, exhausted and
+   `exhausted_until` included). The Worker sinks exhausted accounts, so the
+   first local one is exhausted only when all are; guarded anyway: a usable
+   local account ranked lower wins over an exhausted one. When the winner is
+   exhausted, `next` still switches and warns on stderr before the summary
+   (and before the busy warning):
+   `every usable shared account on this machine is exhausted; claude3 becomes usable at Fri 10:00`
+   (nickname, else email; `exhausted_until` in local time via
+   `usage.FormatReset`; `… becomes usable when its limit resets` when null,
+   `… should be usable again (its reset has passed)` when the local clock is
+   past it);
    `use` refreshes the allowlist from the Worker when it can (falling back to
    `shared.json` with a warning), then resolves TARGET (`resolve.Target`; a
    `NotLocalError` or unknown target is the error). A dir reached by config
@@ -898,10 +939,16 @@ Routes:
 Ranking and state: holders with `at` older than `CLAIM_TTL_MIN` are ignored.
 `busy_by` = sorted unique devs ≠ querying `dev` that hold a fresh claim or
 reported within `ACTIVITY_TTL_MIN` (all such devs when no `dev` query).
-`state`: `in_use` when another dev reported within the activity TTL,
-`claimed` when only fresh claims by others exist, else `free`. Sort: not busy
-first → known usage before unknown → effective session asc → effective week
-asc → session reset asc → email asc. JSON: `claims` always an array,
+`exhausted`: any present window with effective usage ≥ 100 (Claude refuses
+work until it resets); `exhausted_until` = the reset after which the account
+is usable again (null otherwise). `state`: `exhausted` first, else `in_use`
+when another dev reported within the activity TTL, `claimed` when only fresh
+claims by others exist, else `free`; `busy_by` is populated in every state.
+Sort: not exhausted first → not busy first → known usage before unknown →
+effective session asc → effective week asc → session reset asc → email asc
+(exhausted accounts order by `exhausted_until` asc first). The CLI's
+`accounts` also appends `syncing (just shared)` rows for emails this machine
+shared within `sharedcache.LocalAddGrace` that the listing does not show yet. JSON: `claims` always an array,
 `busy_by` always an array. `nickname` is always present (null for legacy
 records). Text columns: `#  NICK  ACCOUNT  SESSION  WEEK  STATE  UPDATED`
 (NICK `-` when null; the CLI adds LOCAL). Text STATE: `free`,

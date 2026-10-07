@@ -107,11 +107,45 @@ type Account struct {
 	Reporter    *Identity  `json:"reporter,omitempty"`
 	Claims      []Claim    `json:"claims"`
 	State       string     `json:"state"`
-	BusyBy      []string   `json:"busy_by"` // other devs holding or actively using it
+	BusyBy      []string   `json:"busy_by"` // other devs holding or actively using it, in every state
+
+	// Exhausted: a window is at 100%, so Claude refuses work until it resets.
+	// ExhaustedUntil is the reset after which the account is usable again
+	// (with both windows at 100%, the later one). Workers from before these
+	// fields omit them, which reads as false/nil.
+	Exhausted      bool       `json:"exhausted"`
+	ExhaustedUntil *time.Time `json:"exhausted_until"`
 
 	// Raw is the exact JSON object the Worker sent, kept so `--json` output can
 	// pass through fields this binary does not know about yet.
 	Raw json.RawMessage `json:"-"`
+}
+
+// IsExhausted reports whether the account cannot take work until a reset.
+// State "exhausted" counts as well, so a Worker that sets only one of the two
+// still sinks the account.
+func (a *Account) IsExhausted() bool {
+	return a.Exhausted || a.State == "exhausted"
+}
+
+// ExhaustedWindow names the window the account waits on: "session" or "week",
+// the one at 100% whose reset is ExhaustedUntil (week on a tie, as the Worker
+// decides). "" when the account is not exhausted or no window matches.
+func (a *Account) ExhaustedWindow() string {
+	if !a.IsExhausted() || a.ExhaustedUntil == nil {
+		return ""
+	}
+	blocks := func(w *Window) bool {
+		return w != nil && w.ResetsAt != nil && w.Percent() >= 100 && w.ResetsAt.Equal(*a.ExhaustedUntil)
+	}
+	switch {
+	case blocks(a.Week):
+		return "week"
+	case blocks(a.Session):
+		return "session"
+	default:
+		return ""
+	}
 }
 
 // Listing is GET /accounts?format=json.
@@ -207,6 +241,7 @@ func (l *Listing) normalize() {
 
 func (a *Account) normalize() {
 	utcPtr(&a.CollectedAt)
+	utcPtr(&a.ExhaustedUntil)
 	a.Session.normalize()
 	a.Week.normalize()
 	for i := range a.Claims {
