@@ -191,24 +191,63 @@ func column(w *remote.Window, n time.Time, loc *time.Location) string {
 // dev's perspective (every other dev holding or using it); the reporter and
 // the claim holders are only a fallback for a Worker that left it empty.
 // Exhausted wins over every other state, as on the Worker.
+// ownActivityTTL mirrors the Worker's ACTIVITY_TTL_MIN: a usage report
+// younger than this counts as "in use".
+const ownActivityTTL = 15 * time.Minute
+
+// mine reports whether the querying dev holds a claim on the account or
+// reported usage recently. The Worker leaves one's own activity out of
+// `state`/`busy_by` on purpose (so `next` never avoids your own account), so
+// the table has to add "you" back for the human reading it.
+func mine(a *remote.Account, self string, n time.Time) bool {
+	if self == "" {
+		return false
+	}
+	for _, c := range a.Claims {
+		if c.Dev == self {
+			return true
+		}
+	}
+	return a.Reporter != nil && a.Reporter.Dev == self && a.CollectedAt != nil && n.Sub(*a.CollectedAt) < ownActivityTTL
+}
+
 func state(a *remote.Account, self string, n time.Time, loc *time.Location) string {
 	if a.IsExhausted() {
-		return exhaustedState(a, n, loc)
+		s := exhaustedState(a, n, loc)
+		if mine(a, self, n) {
+			if len(a.BusyBy) > 0 {
+				return s + " and you"
+			}
+			return s + ", in use by you"
+		}
+		return s
 	}
+	you := mine(a, self, n)
 	switch a.State {
 	case "in_use":
 		who := a.BusyBy
 		if len(who) == 0 && a.Reporter != nil {
 			who = []string{a.Reporter.Dev}
 		}
-		return busy("in use", who, a.CollectedAt, n)
+		s := busy("in use", who, a.CollectedAt, n)
+		if you {
+			s += " and you"
+		}
+		return s
 	case "claimed":
 		who := a.BusyBy
 		if len(who) == 0 {
 			who = claimDevs(a.Claims, self)
 		}
-		return busy("claimed", who, earliestClaim(a.Claims, who), n)
+		s := busy("claimed", who, earliestClaim(a.Claims, who), n)
+		if you {
+			s += " and you"
+		}
+		return s
 	default:
+		if you {
+			return "in use by you"
+		}
 		return "free"
 	}
 }

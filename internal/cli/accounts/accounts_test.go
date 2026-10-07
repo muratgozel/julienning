@@ -482,7 +482,7 @@ func TestAccountsTable(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "#  NICK   ACCOUNT") || !strings.Contains(lines[0], "UPDATED") {
 		t.Errorf("header = %q", lines[0])
 	}
-	for _, want := range []string{"1", "alpha", email1, "12% → 20:00", "28% → 2026-11-02 18:00", "free", "*~/.claude-sixtynine1,~/.claude-sixtynine9", "2m ago"} {
+	for _, want := range []string{"1", "alpha", email1, "12% → 20:00", "28% → 2026-11-02 18:00", "in use by you", "*~/.claude-sixtynine1,~/.claude-sixtynine9", "2m ago"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("row 1 = %q, missing %q", lines[1], want)
 		}
@@ -539,7 +539,7 @@ func TestAccountsStateFallbacks(t *testing.T) {
 		{Dev: "ali", At: n.Add(-5 * time.Minute)},
 		{Dev: "ali", At: n.Add(-time.Minute)},
 	}}
-	if got := state(claimed, "murat", n, loc); got != "claimed by ali, can (5m)" {
+	if got := state(claimed, "murat", n, loc); got != "claimed by ali, can (5m) and you" {
 		t.Errorf("claimed fallback = %q", got)
 	}
 	inUse := &remote.Account{State: "in_use", Reporter: &remote.Identity{Dev: "ali"}, CollectedAt: ts(nowEpoch - 30)}
@@ -764,7 +764,7 @@ func TestAccountsTableFormat(t *testing.T) {
 	assertCode(t, got, 0)
 	want := "" +
 		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     LOCAL                                       UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  free                      *~/.claude-sixtynine1,~/.claude-sixtynine9  2m ago\n" +
+		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             *~/.claude-sixtynine1,~/.claude-sixtynine9  2m ago\n" +
 		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  -                                           12m ago\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
@@ -1186,7 +1186,7 @@ func TestAccountsSyncingRows(t *testing.T) {
 	assertCode(t, got, 0)
 	want := "" +
 		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     LOCAL                  UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  free                      *~/.claude-sixtynine1  2m ago\n" +
+		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             *~/.claude-sixtynine1  2m ago\n" +
 		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  -                      12m ago\n" +
 		"-  gamma  claude3@sixtynine.agency  -            -                       syncing (just shared)     ~/.claude-sixtynine3   -\n"
 	if got.stdout != want {
@@ -1281,4 +1281,37 @@ func TestAccountsSyncingEnds(t *testing.T) {
 			t.Errorf("expired local add kept in the cache: %+v", c)
 		}
 	})
+}
+
+func TestAccountsStateShowsYourOwnUse(t *testing.T) {
+	t.Setenv("TZ", "Europe/Istanbul")
+	n := time.Unix(nowEpoch, 0)
+	loc := location()
+	recent := time.Unix(nowEpoch-60, 0).UTC()
+	stale := time.Unix(nowEpoch-3600, 0).UTC()
+	me := remote.Claim{Dev: "murat", MachineID: "0123456789ab", At: recent}
+	cases := []struct {
+		name string
+		a    remote.Account
+		want string
+	}{
+		{"own claim, free from the Worker's view", remote.Account{State: "free", Claims: []remote.Claim{me}}, "in use by you"},
+		{"own recent report", remote.Account{State: "free", Reporter: &remote.Identity{Dev: "murat"}, CollectedAt: &recent}, "in use by you"},
+		{"own stale report", remote.Account{State: "free", Reporter: &remote.Identity{Dev: "murat"}, CollectedAt: &stale}, "free"},
+		{"someone else only", remote.Account{State: "in_use", BusyBy: []string{"ali"}, CollectedAt: &recent}, "in use by ali (1m)"},
+		{"someone else and you", remote.Account{State: "in_use", BusyBy: []string{"ali"}, CollectedAt: &recent, Claims: []remote.Claim{me}}, "in use by ali (1m) and you"},
+		{"exhausted and you", exhaustedWith(me), "exhausted (week resets Fri 10:00), in use by you"},
+	}
+	for _, c := range cases {
+		a := c.a
+		if got := state(&a, "murat", n, loc); got != c.want {
+			t.Errorf("%s: state = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func exhaustedWith(c remote.Claim) remote.Account {
+	a := exhausted(email1, win(40, lateReset), win(100, friReset), friReset)
+	a.Claims = []remote.Claim{c}
+	return a
 }

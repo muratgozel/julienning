@@ -618,6 +618,10 @@ prints the ranking:
 - STATE: `free`; `in use by …` when another dev reported usage in the last 15
   minutes (with the age of that report); `claimed by … (3m)` when other devs
   only hold claims (with the age of the oldest one). Every other dev is listed.
+  Your own use is shown too: `in use by you` when you hold a claim or reported
+  in the last 15 minutes, or `… and you` after other devs. The Worker leaves
+  your own use out of its `state`/`busy_by` on purpose, so `next` never avoids
+  the account you are on; the table adds it back for you.
   `exhausted (week resets Fri 10:00)` or `exhausted (session resets 23:40)`
   when a window is at 100%, so Claude refuses work on it until then: the
   window named is the one that resets last (week on a tie), in your local
