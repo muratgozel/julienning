@@ -728,7 +728,8 @@ A taken nickname is refused:
 
 **`julienning adopt DIR [--name NAME]`** registers an existing dir and patches
 its settings.json, named as in [Config names](#config-names) unless `--name`
-is given; **`julienning forget NAME`** undoes both (see [Undo](#undo)).
+is given; **`julienning forget NAME`** undoes both and offers to delete the
+dir (see [Undo](#undo)).
 
 ```
 Adopted ~/.claude-backup as config "julienning4" (settings.json added).
@@ -818,24 +819,58 @@ stale.
 
 ```sh
 julienning use --clear           # drop the selection only
-julienning forget NAME           # unregister one dir, undo its settings.json changes
+julienning forget TARGET         # unregister one dir, undo its settings.json changes, offer to delete it
 julienning uninstall             # undo setup on this machine
 julienning uninstall --purge     # ... and delete julienning's own data, installed versions and command
 ```
 
-`forget` never deletes the dir, and clears the selection if it pointed there:
+**`julienning forget TARGET [--delete|--keep]`** takes a nickname, an email
+or a config name, resolved like `use`. It unregisters that dir, undoes its
+settings.json changes, clears the selection if it pointed there, and then
+asks whether to delete the dir:
 
 ```
-Forgot "work". ~/.claude-work was not deleted.
+$ julienning forget claude3
+Forgot claude3 (claude3@example.com, ~/.claude-julienning4).
 settings.json: removed statusLine, removed SessionStart hook, removed SessionEnd hook, removed empty hooks, deleted the settings.json julienning created.
 It was the current config; nothing is selected now.
+claude3 stays shared with the team; `julienning unshare claude3` removes it for everyone.
+Also delete ~/.claude-julienning4 and everything in it (its sessions and login)? [y/N] y
+Deleted ~/.claude-julienning4.
 ```
+
+- The answer defaults to no (`Kept ~/.claude-julienning4.`). `--delete`
+  answers yes and `--keep` answers no without asking; without a terminal and
+  without either flag the dir is kept:
+  `Kept ~/.claude-julienning4: no terminal to ask, and --delete was not passed.`
+  Decide up front: once forgotten, the dir is no longer a target.
+- A dir nobody is signed into shows as
+  `Forgot julienning4 (~/.claude-julienning4, not logged in).`
+- An account logged into more than one dir here is refused, nothing changed:
+  `` julienning: claude3 (claude3@example.com) is logged into more than one config dir here: julienning2 (~/.claude-julienning2), julienning4 (~/.claude-julienning4); pass the config name of the one to forget ``.
+  An account no dir here is logged into:
+  `julienning: claude3 (claude3@example.com) is not logged in on this machine; nothing to forget`.
+- Forgetting never unshares the account for the team; `julienning unshare`
+  does (see [Other commands](#other-commands)).
+- The dir is never deleted, and the question is skipped, when it is Claude's
+  default dir (`Kept ~/.claude: it is Claude's default config dir, which
+  julienning never deletes.`), when Claude is running in it (any entry in its
+  `sessions/` registry: `Kept ~/.claude-julienning4: Claude is running in it
+  (pid 4242); quit Claude there, then delete the dir yourself if you still
+  want it gone.`), when it is `/`, `$HOME` or a parent of `$HOME`, or when
+  another registered dir lives in it or links its settings.json into it
+  (`… julienning2 still uses files in it.`). With `--delete` the same refusal
+  is an error (exit 1) after the forget, so a script never assumes the dir is
+  gone. A registered dir that is a symlink loses only the link
+  (`Deleted the link ~/.claude-link; the directory it points to was kept.`).
+  Deleting removes the dir's login profile but not a login Claude keeps
+  outside it (on macOS, its Keychain entry).
 
 When another registered dir uses the same settings.json (a symlink), `forget`
 leaves the file alone, since that dir still needs it:
 `settings.json: left as is; it is the same file as the settings.json of work, which still uses julienning.`
-If the unpatch fails, the dir stays registered so you can fix the file and
-run `forget` again.
+If the unpatch fails, the dir stays registered and is not deleted, so you can
+fix the file and run `forget` again.
 
 `uninstall [--purge] [--yes]`, for every registered dir: restores the saved
 statusLine (or removes julienning's), removes only julienning's hook entries,

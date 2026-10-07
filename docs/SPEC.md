@@ -427,9 +427,39 @@ nothing (exit 1) when any unpatch failed or `config.json` is unreadable, so
 the undo data survives for a retry. Prints what it changed. Safe to run
 twice.
 
-`julienning forget NAME`: unregister + unpatch that dir only. When another
-registered dir's settings.json resolves to the same file (symlinked shared
-settings), the unpatch is skipped and reported.
+`julienning forget TARGET [--delete|--keep]`: TARGET is a nickname, email or
+config name resolved by `resolve.Target` (current selection preferred), with
+two forget-only rules: an email logged into more than one registered dir
+(`resolve.Dirs`) is refused with each dir's config name and path, asking for
+the config name; and when a nickname shadows a config name of the same
+spelling, the config name wins wherever the nickname is ambiguous or not
+local. A nickname/email no dir here is logged into fails with
+`<nick (email)|email> is not logged in on this machine; nothing to forget`.
+Then unregister + unpatch that dir only (unpatch first; a failure leaves it
+registered and undeleted). When another registered dir's settings.json
+resolves to the same file (symlinked shared settings), the unpatch is skipped
+and reported. Output: `Forgot <label> (<email>, <dir>).` (or `(<dir>, not
+logged in)`, `(<dir>, login unreadable)`; label = `resolve.Label`), the
+settings.json line, the cleared-selection line, and for a shared account
+``<nick|email> stays shared with the team; `julienning unshare <nick|email>`
+removes it for everyone.`` Forget never unshares.
+
+Then the dir itself: `Nothing to delete: <dir> does not exist.` when it is
+gone; `--keep` → `Kept <dir>.`. Otherwise guards run before any question,
+and any hit keeps the dir: Claude's default dir (`claudecfg.IsDefaultDir`,
+also through symlinks), `discover.IsUnsafeConfigDir` (`/`, `$HOME`, a parent
+of `$HOME`), not a directory, another registered dir inside it or with its
+settings.json resolving into it, or any live entry in its `sessions/`
+registry (`livesess.List`, all kinds; a read error also blocks). A guard hit
+prints `Kept <dir>: <reason>.`, or, under `--delete`, is the error
+`kept <dir>: <reason>` (exit 1, after the forget). With no guard hit,
+`--delete` deletes; else a terminal is asked
+`Also delete <dir> and everything in it (its sessions and login)? [y/N] `
+(default no); without a terminal → `Kept <dir>: no terminal to ask, and
+--delete was not passed.` Deletion is `os.RemoveAll(<registered dir>)` only
+(a symlinked dir loses only the link: `Deleted the link <dir>; the directory
+it points to was kept.`), reported as `Deleted <dir>.`; a partial failure is
+an error telling the user to remove the rest by hand.
 
 ### settings.json patch (`internal/jsonedit`, `internal/claudecfg`)
 

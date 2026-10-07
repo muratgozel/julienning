@@ -60,7 +60,8 @@ Get the **Worker URL** and the **team token** from your team lead, then:
    it so you can sign in with the next account. That account is shared with
    the team automatically when your first session in it starts; nothing else
    to run. `--nick NAME` answers the nickname question up front, and
-   `--no-share` keeps the account personal.
+   `--no-share` keeps the account personal. To drop one again,
+   `julienning forget claude3` unregisters it and offers to delete the dir.
 
 ## Daily use
 
@@ -122,7 +123,11 @@ lists every project).
   Claude settings and shell (settings.json entries, the shell line), releases
   your claims and clears the selection. `--purge` also deletes julienning's
   own data and the command. Claude config dirs, logins and sessions are never
-  touched, and nothing is unshared for the team.
+  touched, and nothing is unshared for the team. For a single account,
+  `julienning forget claude3` (a nickname, email or config name) unregisters
+  its dir, undoes its settings.json changes and offers to delete the dir
+  (default no; `--delete` / `--keep` answer up front). It never deletes
+  `~/.claude` or a dir Claude is running in, and the account stays shared.
 - **Back to plain claude:** `julienning use --clear`.
 - **Errors:** commands print theirs; the status line, hooks and background
   reports write to `~/.julienning/errors.log` (it never contains emails). See

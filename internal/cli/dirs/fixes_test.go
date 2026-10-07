@@ -165,7 +165,7 @@ func TestForgetSkipsUnpatchOfSharedSettings(t *testing.T) {
 	a, b := sharedSettingsDirs(t, h, original)
 
 	out := h.mustRun(runForget, "julienning2")
-	contains(t, out, `Forgot "julienning2".`)
+	contains(t, out, "Forgot b (b@x.io, ~/.claude-b).")
 	contains(t, out, "settings.json: left as is; it is the same file as the settings.json of julienning1, which still uses julienning.")
 	assertPatched(t, a) // a still reports usage and claims
 	if _, ok := h.config().Find("julienning2"); ok {

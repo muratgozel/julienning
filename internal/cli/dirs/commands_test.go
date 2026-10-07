@@ -352,7 +352,8 @@ func TestForgetUnpatchesAndClearsCurrent(t *testing.T) {
 	}
 
 	out := h.mustRun(runForget, "one")
-	contains(t, out, "was not deleted")
+	contains(t, out, "Forgot one (~/.claude-one, not logged in).\n")
+	contains(t, out, "Kept ~/.claude-one: no terminal to ask, and --delete was not passed.")
 	contains(t, out, "settings.json: restored previous statusLine, removed SessionStart hook, removed SessionEnd hook")
 	contains(t, out, "nothing is selected now")
 	if _, ok := h.config().Find("one"); ok {
@@ -398,7 +399,7 @@ func TestForgetUnknown(t *testing.T) {
 	h := newHarness(t)
 	h.initConfig(false, config.ConfigDir{Name: "one", Dir: h.mkdir(".claude-one")})
 	err := h.run(runForget, "nope")
-	if err == nil || !strings.Contains(err.Error(), "known: one") {
+	if err == nil || !strings.Contains(err.Error(), `unknown target "nope"`) {
 		t.Fatalf("got %v", err)
 	}
 	var ue *usageErr
