@@ -48,8 +48,15 @@ type fixture struct {
 	pickHdr   string
 	pickScope string
 	pick      func(items []tui.Item) (int, error)
-	execs     []execCall
+	pickAt    []int // the row each picker call opened on
+	// confirm answers the move confirmation; nil fails the test when one is
+	// shown. confirms records each question and detail shown.
+	confirm  func(question, detail string) (bool, error)
+	confirms []confirmCall
+	execs    []execCall
 }
+
+type confirmCall struct{ question, detail string }
 
 // setup builds a hermetic machine: temp HOME and JULIENNING_HOME, frozen
 // clock, fixed zone, fake Worker, fake terminal, fake claude.
@@ -75,9 +82,9 @@ func setup(t *testing.T) *fixture {
 
 	f.fake = &remote.Fake{}
 	restore := []func(){}
-	prevClient, prevInteractive, prevPick, prevExec, prevWd, prevAlive := newClient, interactive, pickSession, execClaude, getwd, livesess.Alive
+	prevClient, prevInteractive, prevPick, prevConfirm, prevExec, prevWd, prevAlive := newClient, interactive, pickSession, confirmMove, execClaude, getwd, livesess.Alive
 	restore = append(restore, func() {
-		newClient, interactive, pickSession, execClaude, getwd, livesess.Alive = prevClient, prevInteractive, prevPick, prevExec, prevWd, prevAlive
+		newClient, interactive, pickSession, confirmMove, execClaude, getwd, livesess.Alive = prevClient, prevInteractive, prevPick, prevConfirm, prevExec, prevWd, prevAlive
 	})
 	t.Cleanup(func() {
 		for _, r := range restore {
@@ -86,12 +93,20 @@ func setup(t *testing.T) *fixture {
 	})
 	newClient = func(*config.Config, time.Duration) remote.Client { return f.fake }
 	interactive = func(cli.Env) bool { return f.tty }
-	pickSession = func(_ cli.Env, items []tui.Item, header, scope string) (int, error) {
+	pickSession = func(_ cli.Env, items []tui.Item, header, scope string, initial int) (int, error) {
 		f.pickRows, f.pickHdr, f.pickScope = items, header, scope
+		f.pickAt = append(f.pickAt, initial)
 		if f.pick == nil {
 			t.Fatal("picker shown unexpectedly")
 		}
 		return f.pick(items)
+	}
+	confirmMove = func(_ cli.Env, question, detail string) (bool, error) {
+		f.confirms = append(f.confirms, confirmCall{question, detail})
+		if f.confirm == nil {
+			t.Fatalf("move confirmation shown unexpectedly: %s", question)
+		}
+		return f.confirm(question, detail)
 	}
 	execClaude = func(dir string, args []string, chdir string) error {
 		f.execs = append(f.execs, execCall{dir, args, chdir})
@@ -136,6 +151,9 @@ func (f *fixture) addConfig(name, email string) config.ConfigDir {
 	}
 	return cd
 }
+
+// acceptMoves answers yes to every move confirmation.
+func acceptMoves(string, string) (bool, error) { return true, nil }
 
 func (f *fixture) save() {
 	f.t.Helper()

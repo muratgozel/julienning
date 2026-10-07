@@ -425,9 +425,13 @@ func TestLaunchMovesThenResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.pick = func([]tui.Item) (int, error) { return 1, nil }
+	f.confirm = acceptMoves
 
 	got := f.run("next")
 	assertCode(t, got, 0)
+	if len(f.confirms) != 1 || f.confirms[0].question != `Move "Checkout fix" from sixtynine to julienning3?` {
+		t.Errorf("confirms = %+v", f.confirms)
+	}
 	if !strings.Contains(got.stdout, `Moved "Checkout fix" from sixtynine to julienning3 (memory: 1 file added).`) {
 		t.Errorf("stdout = %q", got.stdout)
 	}
@@ -459,6 +463,7 @@ func TestLaunchMoveRefusalDoesNotLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.pick = func([]tui.Item) (int, error) { return 1, nil }
+	f.confirm = acceptMoves
 	got := f.run("next")
 	assertCode(t, got, cli.ExitError)
 	if !strings.Contains(got.stderr, "julienning3 already has a session with id "+sidA) || len(f.execs) != 0 {
@@ -515,6 +520,7 @@ func TestLaunchIntoDefaultDir(t *testing.T) {
 	f.fake.Listing = listing(acct(email1, 1, 1), acct(email2, 50, 60))
 	f.writeSession(other, sidA, "Checkout fix", "fix", time.Hour)
 	f.pick = func([]tui.Item) (int, error) { return 1, nil }
+	f.confirm = acceptMoves
 	got := f.run("use", "default")
 	assertCode(t, got, 0)
 	if !strings.HasPrefix(got.stdout, "Now using default (claude1@x.io)") {

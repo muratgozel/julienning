@@ -65,10 +65,10 @@ func runNick(env cli.Env) error {
 	}
 	if old != "" {
 		fmt.Fprintf(env.Stdout, "Renamed %s to %s (%s).\n", old, newNick, email)
-		fmt.Fprintf(env.Stdout, "Shell function claude-%s replaces claude-%s in new terminals (or run: exec $SHELL).\n", newNick, old)
+		fmt.Fprintf(env.Stdout, "Shell function claude-%s replaces claude-%s in new terminals (or run: %s).\n", newNick, old, sourceHint(""))
 	} else {
 		fmt.Fprintf(env.Stdout, "Named %s %s.\n", email, newNick)
-		fmt.Fprintf(env.Stdout, "Shell function claude-%s is available in new terminals (or run: exec $SHELL).\n", newNick)
+		fmt.Fprintf(env.Stdout, "Shell function claude-%s is available in new terminals (or run: %s).\n", newNick, sourceHint(""))
 	}
 	return nil
 }

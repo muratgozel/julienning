@@ -27,7 +27,7 @@ Get the **Worker URL** and the **team token** from your team lead, then:
    ```
 
    If it prints `… is not on your PATH. Add it:`, run the `zsh:` line it
-   shows, then `exec zsh`.
+   shows, then open a new terminal, or run `source ~/.zshrc`.
 
 2. Set up this machine:
 
@@ -51,11 +51,8 @@ Get the **Worker URL** and the **team token** from your team lead, then:
    account's `settings.json` (a status line of your own there is saved and
    restored by `julienning uninstall`) and one line to `~/.zshrc`.
 
-3. Load the new shell functions:
-
-   ```sh
-   exec zsh
-   ```
+3. Open a new terminal, or run `source ~/.zshrc`, to load the new shell
+   functions.
 
 No separate Claude config dir for a shared account yet?
 `julienning new-config --login` creates one and starts Claude in it so you can
@@ -100,6 +97,9 @@ lists every project).
 - Picking a session that lives under another account **moves** it into the
   account you switched to, project memory included (merged, never
   overwritten), and resumes it there.
+- Before moving it asks (`Move "Fix flaky clock tests" from beta to
+  alpha?`): Enter or `y` moves it, `n` or Esc goes back to the list with
+  nothing moved.
 - A session that is open in another terminal is greyed out and can't be picked
   or moved; exit it there first.
 
@@ -148,7 +148,7 @@ terminal. After rotating the token, everyone runs
 - [docs/SPEC.md](docs/SPEC.md): the design, and the contract between the CLI
   and the Worker.
 - **Development:** Go 1.25. `make build` (to `bin/julienning`), `make test` (Go
-  and Worker tests); release by pushing a `vX.Y.Z` tag. See
+  and Worker tests); `make release VERSION=X.Y.Z` tags and pushes a release. See
   [Development](docs/REFERENCE.md#development).
 
 MIT licensed; see [LICENSE](LICENSE).

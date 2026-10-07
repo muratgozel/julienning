@@ -73,6 +73,21 @@ func (m Model) Selected() (int, bool) {
 	return i, !m.Items[i].Disabled
 }
 
+// SelectItem puts the cursor on Items[i] when that row is visible and
+// selectable, and otherwise returns m unchanged.
+func (m Model) SelectItem(i int) Model {
+	if i < 0 || i >= len(m.Items) || m.Items[i].Disabled {
+		return m
+	}
+	for pos, v := range m.Visible() {
+		if v == i {
+			m.Cursor = pos
+			break
+		}
+	}
+	return m
+}
+
 // Visible returns the indexes of the items matching the filter. Every
 // space-separated word must appear (case-insensitive) in the title, detail,
 // meta or search text.
@@ -321,8 +336,10 @@ const (
 
 // paint wraps s in t's SGR sequence. Under NoColor (and for toneNormal) it
 // returns s unchanged, so plain output never carries an escape.
-func (m Model) paint(s string, t tone) string {
-	if m.NoColor || s == "" {
+func (m Model) paint(s string, t tone) string { return paint(s, t, m.NoColor) }
+
+func paint(s string, t tone, noColor bool) string {
+	if noColor || s == "" {
 		return s
 	}
 	switch t {

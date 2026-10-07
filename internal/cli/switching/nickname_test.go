@@ -311,8 +311,12 @@ func TestLaunchPickerUsesNicknames(t *testing.T) {
 	}
 
 	f.pick = func([]tui.Item) (int, error) { return 1, nil }
+	f.confirm = acceptMoves
 	got = f.run("use", "alpha")
 	assertCode(t, got, 0)
+	if len(f.confirms) != 1 || f.confirms[0].question != `Move "Checkout fix" from beta to alpha?` {
+		t.Errorf("confirms = %+v", f.confirms)
+	}
 	if !strings.Contains(got.stdout, `Moved "Checkout fix" from beta to alpha`) {
 		t.Errorf("stdout = %q", got.stdout)
 	}

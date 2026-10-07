@@ -34,40 +34,81 @@ type Options struct {
 	TTY string
 	// Getenv reads TERM and NO_COLOR; nil means os.Getenv.
 	Getenv func(string) string
+	// Initial is the index into items of the row the raw-mode picker opens
+	// on, when that row is selectable (e.g. the row whose move was just
+	// declined); otherwise it opens on the first selectable row. The
+	// numbered fallback always defaults to choice 1.
+	Initial int
 }
 
 // Pick shows items and returns the chosen index. It uses a full-screen
 // raw-mode picker on the terminal, and falls back to a numbered prompt on
 // In/Out when there is no usable terminal (TERM=dumb, no /dev/tty, raw mode
 // refused). The terminal is always restored, including on SIGINT/SIGTERM/
-// SIGHUP, after which the signal is re-raised.
+// SIGHUP, after which the signal is re-raised (see openRaw).
 func Pick(items []Item, opts Options) (int, error) {
-	getenv := opts.Getenv
-	if getenv == nil {
-		getenv = os.Getenv
-	}
+	getenv := envOr(opts.Getenv)
 	if len(items) == 0 {
 		return 0, errors.New("nothing to pick from")
 	}
-	if getenv("TERM") == "dumb" {
+	t, err := openRaw(opts.TTY, getenv)
+	if errors.Is(err, errNoRawTerminal) {
 		return Fallback(items, opts)
 	}
-	path := opts.TTY
+	if err != nil {
+		return 0, err
+	}
+	defer t.close()
+	m := newModel(items, opts.Header, getenv).SelectItem(opts.Initial)
+	m.Scope = opts.Scope
+	return run(m, t.tty, t.tty, t.size)
+}
+
+func envOr(getenv func(string) string) func(string) string {
+	if getenv == nil {
+		return os.Getenv
+	}
+	return getenv
+}
+
+// errNoRawTerminal means there is no usable terminal for a raw-mode prompt;
+// callers use their line-based fallback instead.
+var errNoRawTerminal = errors.New("no raw-mode terminal")
+
+// rawTerminal is a terminal in raw mode on the alternate screen.
+type rawTerminal struct {
+	tty   *os.File
+	fd    int
+	close func() // restores the terminal; idempotent
+}
+
+// openRaw opens path (empty: /dev/tty), switches it to raw mode and the
+// alternate screen, and restores it on SIGINT/SIGTERM/SIGHUP before
+// re-raising the signal. It returns errNoRawTerminal when TERM is dumb, the
+// device cannot be opened, is not a terminal, or refuses raw mode. On
+// success the caller must defer close: it leaves the alternate screen,
+// restores the saved modes and closes the device, on every path (panics
+// included).
+func openRaw(path string, getenv func(string) string) (*rawTerminal, error) {
+	if getenv("TERM") == "dumb" {
+		return nil, errNoRawTerminal
+	}
 	if path == "" {
 		path = "/dev/tty"
 	}
 	tty, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
-		return Fallback(items, opts)
+		return nil, errNoRawTerminal
 	}
-	defer tty.Close()
 	fd := int(tty.Fd())
 	if !term.IsTerminal(fd) {
-		return Fallback(items, opts)
+		_ = tty.Close()
+		return nil, errNoRawTerminal
 	}
 	state, err := term.MakeRaw(fd)
 	if err != nil {
-		return Fallback(items, opts)
+		_ = tty.Close()
+		return nil, errNoRawTerminal
 	}
 
 	var once sync.Once
@@ -79,15 +120,10 @@ func Pick(items []Item, opts Options) (int, error) {
 			_ = term.Restore(fd, state)
 		})
 	}
-	defer restore()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	done := make(chan struct{})
-	defer func() {
-		signal.Stop(sigs)
-		close(done)
-	}()
 	go func() {
 		select {
 		case sig := <-sigs:
@@ -102,18 +138,29 @@ func Pick(items []Item, opts Options) (int, error) {
 		}
 	}()
 
+	var closeOnce sync.Once
+	t := &rawTerminal{tty: tty, fd: fd, close: func() {
+		closeOnce.Do(func() {
+			signal.Stop(sigs)
+			close(done)
+			restore()
+			_ = tty.Close()
+		})
+	}}
 	if _, err := io.WriteString(tty, "\x1b[?1049h"); err != nil {
-		return 0, fmt.Errorf("write to terminal: %w", err)
+		t.close()
+		return nil, fmt.Errorf("write to terminal: %w", err)
 	}
-	m := newModel(items, opts.Header, getenv)
-	m.Scope = opts.Scope
-	return run(m, tty, tty, func() (int, int) {
-		w, h, err := term.GetSize(fd)
-		if err != nil || w <= 0 || h <= 0 {
-			return 80, 24
-		}
-		return w, h
-	})
+	return t, nil
+}
+
+// size is the terminal size, 80x24 when it cannot be read.
+func (t *rawTerminal) size() (int, int) {
+	w, h, err := term.GetSize(t.fd)
+	if err != nil || w <= 0 || h <= 0 {
+		return 80, 24
+	}
+	return w, h
 }
 
 // newModel is the raw-mode picker's model. NO_COLOR set to any non-empty
@@ -143,8 +190,12 @@ type readResult struct {
 // Reads run on a goroutine, one at a time and only when the loop needs
 // input, so that after a selection nothing keeps reading the terminal (type-
 // ahead meant for claude is not swallowed). The one exception is the Esc
-// timeout: the read in flight is abandoned when run returns; the caller is
-// about to exit, and closing the tty ends it.
+// timeout: the read in flight is abandoned when run returns ErrCanceled.
+// Closing the tty does NOT end it on macOS (/dev/tty is not pollable there,
+// so the read stays blocked in the kernel and takes the next byte typed on
+// the terminal). Callers therefore must not open another raw-mode prompt
+// after a Pick canceled with Esc; Confirm reads synchronously for the same
+// reason.
 func run(m Model, in io.Reader, out io.Writer, size func() (int, int)) (int, error) {
 	var pending []byte          // undecoded tail of earlier reads
 	var reading chan readResult // non-nil while a Read is in flight
@@ -231,10 +282,16 @@ func run(m Model, in io.Reader, out io.Writer, size func() (int, int)) (int, err
 	}
 }
 
-// draw repaints the whole screen in place: home, each line followed by
-// erase-to-end-of-line, erase below, then park the cursor on the selection.
+// draw repaints the picker; see drawLines.
 func draw(out io.Writer, m Model, w, h int) error {
 	lines, at := m.render(w, h)
+	return drawLines(out, lines, at)
+}
+
+// drawLines repaints the whole screen in place: home, each line followed by
+// erase-to-end-of-line, erase below, then park the cursor on line at (0-based;
+// -1 leaves it after the last line).
+func drawLines(out io.Writer, lines []string, at int) error {
 	var b strings.Builder
 	b.WriteString("\x1b[H")
 	for i, l := range lines {

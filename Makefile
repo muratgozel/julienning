@@ -4,13 +4,15 @@ SHELL := /bin/sh
 
 MODULE  := github.com/muratgozel/julienning
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# `make release VERSION=X.Y.Z` passes the target version here (VERSION itself is the build stamp).
+VERSION_ARG := $(VERSION)
 # The toolchain in go.mod is authoritative; never download another one.
 GO      := GOTOOLCHAIN=local go
 LDFLAGS := -s -w -X $(MODULE)/internal/version.Version
 
 BIN := bin/julienning
 
-.PHONY: all build install test test-go test-worker lint clean
+.PHONY: all build install test test-go test-worker lint clean release
 
 all: build
 
@@ -64,3 +66,20 @@ lint:
 
 clean:
 	rm -rf bin dist
+
+# release VERSION=0.2.0: tag vVERSION and push it; GitHub Actions builds the
+# archives. Refuses a malformed version, a dirty tree, a branch other than
+# main, an existing tag, or failing tests.
+release:
+	@v='$(VERSION_ARG)'; \
+	case "$$v" in \
+	  [0-9]*.[0-9]*.[0-9]*) ;; \
+	  *) echo "usage: make release VERSION=X.Y.Z (got '$$v')" >&2; exit 2 ;; \
+	esac; \
+	echo "$$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "VERSION must be X.Y.Z, got '$$v'" >&2; exit 2; }; \
+	[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean; commit or stash first" >&2; exit 1; }; \
+	[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || { echo "release from main (on $$(git rev-parse --abbrev-ref HEAD))" >&2; exit 1; }; \
+	! git rev-parse -q --verify "refs/tags/v$$v" >/dev/null || { echo "tag v$$v already exists" >&2; exit 1; }; \
+	$(MAKE) test && \
+	git tag -a "v$$v" -m "julienning $$v" && git push origin "v$$v" && \
+	echo "tagged and pushed v$$v; watch: gh run list --workflow release"

@@ -70,11 +70,16 @@ team-wide: it is stored with the allowlist entry in the Worker
   "KV limits").
 - **Rename**: `julienning nick TARGET NEW` (`PUT /accounts/:email/nickname`)
   prints `Renamed alpha to gamma (claude1@x.io).` and
-  `Shell function claude-gamma replaces claude-alpha in new terminals (or run: exec $SHELL).`
+  `Shell function claude-gamma replaces claude-alpha in new terminals (or run: source ~/.zshrc).`
   (an unnamed account: `Named claude1@x.io gamma.` and
-  `Shell function claude-gamma is available in new terminals (or run: exec $SHELL).`;
-  unchanged: `claude1@x.io is already called gamma.`). A 404 drops the email
-  from `shared.json` and suggests `julienning share EMAIL --nick NEW`.
+  `Shell function claude-gamma is available in new terminals (or run: source ~/.zshrc).`;
+  unchanged: `claude1@x.io is already called gamma.`). The `source` hint
+  names the rc file setup edits for `$SHELL` (zsh: `~/.zshrc`; bash:
+  `~/.bash_profile` on macOS, `~/.bashrc` on Linux); setup's next steps say
+  `open a new terminal, or run: source ~/.zshrc` the same way, and the
+  installer `Then open a new terminal, or run: source ~/.zshrc (zsh) /
+  source ~/.bashrc (bash).` A 404 drops the email from `shared.json` and
+  suggests `julienning share EMAIL --nick NEW`.
   Teammates pick a rename up when their cache refreshes.
 - **Legacy records** (shared before nicknames: Worker `nickname: null`,
   shown `-`): setup step 4 names those logged into a dir on this machine;
@@ -492,8 +497,19 @@ selection without re-ranking; nothing selected → same as `next`)
    - No sessions to show → start a new session directly.
    - New session → `launch.Exec(target, [])`.
    - Session already in the target dir → `launch.Exec(target, ["--resume", id], cwd)`.
-   - Session in another dir → move it (below), then resume as above.
-   - Esc / Ctrl-C → exit 0 without launching (selection already switched).
+   - Session in another dir → confirm (`tui.Confirm`), then move it (below)
+     and resume as above. The ends are labelled like the move report
+     (nicknames, else config names; the home-shortened dir paths when both
+     are one account):
+     `Move "Fix flaky clock tests" from beta to alpha?` /
+     `  Its transcript, checkpoints, task list and session environment move to alpha; beta will no longer have it. Project memory is merged, never overwritten.` /
+     `  Enter to continue · n or Esc to go back`.
+     Enter or `y`/`Y` → move and resume. `n`/`N`, Esc, Ctrl-C (also Ctrl-D,
+     end of input) → back to the picker with the same list (not re-read) and
+     the cursor on that row (`tui.Options.Initial`); nothing moved, nothing
+     printed. New session and sessions already in the target never ask.
+   - Esc / Ctrl-C in the picker → exit 0 without launching (selection
+     already switched).
 4. Otherwise print the summary line and, with `--json` instead, the
    Worker's account object plus `config` (config name) and `nickname` (null
    when none); for an account the Worker did not list, `{config, email,
@@ -608,6 +624,21 @@ prompt lines, the filter and help lines, and unavailable or `(may be open)`
 rows are dim (SGR 2). Lines fit in width-1 columns, the title giving way
 before the metadata. Falls back to a numbered prompt when raw mode is
 unavailable. Always restores the terminal (defer + signal handling).
+
+Confirm (`tui.Confirm`): the same raw-mode terminal handling and restore
+(`openRaw`) and the alternate screen, so nothing stays on screen whichever
+way it is answered. Single keys, no Enter needed for `y`/`n`; other keys are
+ignored. An accept (Enter/`y`) within 300 ms of the prompt opening is
+ignored too, so a repeated or auto-repeated Enter from the picker cannot
+confirm a move; declines are honoured at once. The question and explanation are normal text, wrapped (never cut)
+to width-1; the key line is dim (plain under `NO_COLOR`). It reads the
+terminal synchronously and takes a lone ESC as Esc at once: the picker's
+timed ESC wait leaves a read in flight, which on macOS (where `/dev/tty` is
+not pollable) cannot be abandoned and would swallow the reopened picker's
+first key. Without raw mode: the question and explanation as plain lines,
+then `Continue? [Y/n] ` (empty, `y`, `yes` → yes; `n`, `no`, end of input →
+no; anything else → `Answer y or n.` and ask again), reading one byte at a
+time so the picker fallback that follows gets the rest of the input.
 
 ### Claims from sessions (`internal/claims`, hidden commands)
 

@@ -249,7 +249,7 @@ main() {
       printf '\n%s is not on your PATH. Add it:\n' "$bin_dir_norm"
       printf '  zsh:  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$bin_dir_norm"
       printf '  bash: echo '\''export PATH="%s:$PATH"'\'' >> ~/.bashrc\n' "$bin_dir_norm"
-      printf 'Then open a new terminal (or run: exec $SHELL).\n'
+      printf 'Then open a new terminal, or run: source ~/.zshrc (zsh) / source ~/.bashrc (bash).\n'
       ;;
   esac
 

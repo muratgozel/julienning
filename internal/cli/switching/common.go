@@ -41,9 +41,14 @@ var (
 	// interactive reports whether both stdin and stdout are terminals.
 	interactive = func(env cli.Env) bool { return isTerminal(env.Stdin) && isTerminal(env.Stdout) }
 	// pickSession shows the picker and returns the chosen row. scope says
-	// what is listed (see scopeLine).
-	pickSession = func(env cli.Env, items []tui.Item, header, scope string) (int, error) {
-		return tui.Pick(items, tui.Options{Header: header, Scope: scope, In: env.Stdin, Out: env.Stdout})
+	// what is listed (see scopeLine); initial is the row it opens on.
+	pickSession = func(env cli.Env, items []tui.Item, header, scope string, initial int) (int, error) {
+		return tui.Pick(items, tui.Options{Header: header, Scope: scope, In: env.Stdin, Out: env.Stdout, Initial: initial})
+	}
+	// confirmMove asks before a session moves between dirs (see
+	// moveQuestion); false means go back to the picker.
+	confirmMove = func(env cli.Env, question, detail string) (bool, error) {
+		return tui.Confirm(tui.ConfirmOptions{Question: question, Detail: detail, In: env.Stdin, Out: env.Stdout})
 	}
 	// execClaude replaces the process with claude (see launch.Exec).
 	execClaude = func(dir string, args []string, chdir string) error { return launch.Exec(dir, args, chdir) }

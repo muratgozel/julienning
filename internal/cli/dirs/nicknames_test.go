@@ -392,7 +392,7 @@ func TestNickRenamesByNicknameEmailOrConfig(t *testing.T) {
 	h.cacheNicks("c1@team.io=alpha", "c2@team.io")
 
 	out := h.mustRun(runNick, "alpha", "Beta")
-	if want := "Renamed alpha to beta (c1@team.io).\nShell function claude-beta replaces claude-alpha in new terminals (or run: exec $SHELL).\n"; out != want {
+	if want := "Renamed alpha to beta (c1@team.io).\nShell function claude-beta replaces claude-alpha in new terminals (or run: source ~/.zshrc).\n"; out != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
 	if got := nicksOf(h.fake.CallsFor("nickname")); !reflect.DeepEqual(got, []string{"c1@team.io=beta"}) {
@@ -403,7 +403,7 @@ func TestNickRenamesByNicknameEmailOrConfig(t *testing.T) {
 	}
 
 	out = h.mustRun(runNick, "C2@team.io", "two")
-	if want := "Named c2@team.io two.\nShell function claude-two is available in new terminals (or run: exec $SHELL).\n"; out != want {
+	if want := "Named c2@team.io two.\nShell function claude-two is available in new terminals (or run: source ~/.zshrc).\n"; out != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
 

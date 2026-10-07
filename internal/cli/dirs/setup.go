@@ -151,7 +151,7 @@ func runSetup(env cli.Env) error {
 	// 7. next steps
 	fmt.Fprintln(env.Stdout, "")
 	fmt.Fprintln(env.Stdout, "Next steps:")
-	fmt.Fprintln(env.Stdout, "  open a new terminal (or run: exec $SHELL)")
+	fmt.Fprintf(env.Stdout, "  open a new terminal, or run: %s\n", sourceHint(*shellName))
 	if len(cfg.Configs) == 0 {
 		fmt.Fprintln(env.Stdout, "  julienning new-config --login   # create a config dir for a team account")
 	}
@@ -761,6 +761,17 @@ func rcPath(home, shellName string) string {
 		return filepath.Join(home, ".bashrc")
 	}
 	return filepath.Join(home, ".zshrc")
+}
+
+// sourceHint is the command that loads julienning's shell functions into
+// the current terminal: sourcing the rc file setup edited.
+func sourceHint(shellFlag string) string {
+	shellName, _ := resolveShell(shellFlag)
+	home, err := homeDir()
+	if err != nil {
+		return "source your shell rc file"
+	}
+	return "source " + shortenHome(rcPath(home, shellName))
 }
 
 func resolveShell(flagValue string) (string, string) {

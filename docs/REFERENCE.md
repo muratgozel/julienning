@@ -203,7 +203,7 @@ Settings: julienning1 added, julienning2 added
 Shell:    hook added to ~/.zshrc
 
 Next steps:
-  open a new terminal (or run: exec $SHELL)
+  open a new terminal, or run: source ~/.zshrc
   julienning accounts   # who is free right now
   julienning next       # switch to the best account
 ```
@@ -507,14 +507,27 @@ Now using alpha (claude1@example.com) in ~/.claude-julienning1 — session 4% �
 
 **New session** runs `claude` in the target dir. A session already in the
 target runs `claude --resume <id>` from the session's working directory. A
-session in another dir is **moved** into the target first:
+session in another dir is **moved** into the target first, once you confirm:
+
+```
+Move "Billing refactor" from delta to alpha?
+  Its transcript, checkpoints, task list and session environment move to alpha; delta will no longer have it. Project memory is merged, never overwritten.
+  Enter to continue · n or Esc to go back
+```
+
+Enter (or `y`) moves it and resumes it there:
 
 ```
 Moved "Billing refactor" from delta to alpha (memory: 1 file added, 1 index line merged).
 ```
 
-Between two dirs logged into the same account, the report names the dirs
-instead (`from ~/.claude-work to ~/.claude-work2`).
+`n`, Esc or Ctrl-C go back to the same list with that session selected;
+nothing is moved or printed. New session and sessions already in the target
+never ask. Without a raw-mode terminal (`TERM=dumb`, no `/dev/tty`) the
+question ends in a line prompt instead: `Continue? [Y/n]`.
+
+Between two dirs logged into the same account, the question and the report
+name the dirs instead (`from ~/.claude-work to ~/.claude-work2`).
 
 The move takes `projects/<project>/<id>.jsonl`, `projects/<project>/<id>/`,
 `file-history/<id>/`, `session-env/<id>/`, `tasks/<id>/`, `todos/<id>-*.json`
@@ -629,7 +642,7 @@ unshare cannot bring the account back. All three update `shared.json`.
 Shared claude9@example.com with the team as claude9.
 No registered dir here is logged in as it; `julienning setup` registers one once it is.
 Renamed claude9 to gamma (claude9@example.com).
-Shell function claude-gamma replaces claude-claude9 in new terminals (or run: exec $SHELL).
+Shell function claude-gamma replaces claude-claude9 in new terminals (or run: source ~/.zshrc).
 Unshared gamma (claude9@example.com); its usage and claims were removed from the Worker.
 ```
 
@@ -854,10 +867,12 @@ CI (`.github/workflows/ci.yml`, every push and PR): gofmt, `go vet`,
 `go test -race`; `bash -n` and shellcheck on `scripts/install.sh` plus
 `goreleaser check`; worker `npm ci`, typecheck and tests.
 
-**Releasing:** push a `vX.Y.Z` tag.
+**Releasing:** tag `vX.Y.Z` and push it. `make release` does that with
+guards: it refuses a malformed version, a dirty tree, a branch other than
+`main` or an existing tag, and runs the tests first.
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+make release VERSION=0.3.0     # == git tag -a v0.3.0 && git push origin v0.3.0, guarded
 ```
 
 `.github/workflows/release.yml` runs `go test -race` and goreleaser
@@ -943,10 +958,11 @@ Common messages:
 - **`julienning update` says `… cannot manage this installation`**: install
   once with the curl one-liner.
 - **A `claude-<nickname>` function is missing**: functions are generated at
-  shell start from the cached allowlist; open a new terminal or
-  `exec $SHELL` (after `julienning accounts` when a teammate just shared or
-  renamed the account). A hand-written `alias claude-<nickname>` hides the
-  function; setup points out the line.
+  shell start from the cached allowlist; open a new terminal or `source` the
+  rc file setup edited (`source ~/.zshrc`; bash: `~/.bash_profile` on macOS,
+  `~/.bashrc` on Linux), after `julienning accounts` when a teammate just
+  shared or renamed the account. A hand-written `alias claude-<nickname>`
+  hides the function; setup points out the line.
 - **`SEND_FAILED … 500 internal error`**: the Worker threw; `cd worker && npx wrangler tail`
   shows why (for example KV's free-tier daily write limit, see
   [docs/CLOUDFLARE.md](CLOUDFLARE.md#14-kv-limits)).

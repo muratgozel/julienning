@@ -43,7 +43,8 @@ func finish(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel selec
 }
 
 // handOff lists sessions, lets the user pick one, moves it into the target
-// when it lives elsewhere, and replaces this process with claude.
+// when it lives elsewhere (after a confirmation; declining reopens the
+// picker), and replaces this process with claude.
 func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel selection, o options, now time.Time, loc *time.Location, header string) error {
 	target := sel.cd
 	if sel.email == "" || !sel.shared {
@@ -67,29 +68,45 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 
 	labels := dirLabels(cfg, cache)
 	labels[target.Name] = sel.label()
-	idx, err := pickSession(env, rows(list, target, labels, o.all, now, loc), header, scopeLine(len(list), o.limit, o.all, cwd))
-	if errors.Is(err, tui.ErrCanceled) {
-		fmt.Fprintf(env.Stdout, "Not starting claude; %s stays selected.\n", sel.label())
-		selfupdate.Hint(env.Stderr)
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if idx <= 0 || idx > len(list) {
-		return execClaude(target.Dir, nil, "")
-	}
-	s := list[idx-1]
-	if s.Live {
-		// The picker does not offer live rows; guard anyway.
-		return fmt.Errorf("session %q is open in another terminal (%s); exit it there first", s.Label(), labelOf(labels, s.LiveIn))
-	}
-	if filepath.Clean(s.ConfigDir) != filepath.Clean(target.Dir) {
+	items := rows(list, target, labels, o.all, now, loc)
+	scope := scopeLine(len(list), o.limit, o.all, cwd)
+	// at is the row the picker opens on: "New session" first, then the row
+	// whose move was just declined, so going back lands where the user was.
+	for at := 0; ; {
+		idx, err := pickSession(env, items, header, scope, at)
+		if errors.Is(err, tui.ErrCanceled) {
+			fmt.Fprintf(env.Stdout, "Not starting claude; %s stays selected.\n", sel.label())
+			selfupdate.Hint(env.Stderr)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if idx <= 0 || idx > len(list) {
+			return execClaude(target.Dir, nil, "")
+		}
+		s := list[idx-1]
+		if s.Live {
+			// The picker does not offer live rows; guard anyway.
+			return fmt.Errorf("session %q is open in another terminal (%s); exit it there first", s.Label(), labelOf(labels, s.LiveIn))
+		}
+		if filepath.Clean(s.ConfigDir) == filepath.Clean(target.Dir) {
+			return resume(env, target, s)
+		}
+		from, to := moveLabels(labels, s, target)
+		ok, err := confirmMove(env, moveQuestion(s.Label(), from, to), moveDetail(from, to))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			at = idx
+			continue
+		}
 		rep, err := sessions.Move(s, target)
 		if err != nil {
 			return err
 		}
-		rep.From, rep.To = moveLabels(labels, s, target)
+		rep.From, rep.To = from, to
 		fmt.Fprintln(env.Stdout, rep.String())
 		for _, c := range rep.Memory.Conflicts {
 			warnf(env, "project memory file %s differs between %s and %s; kept %s's version", c, rep.From, rep.To, rep.To)
@@ -97,13 +114,30 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		for _, w := range rep.Warnings {
 			warnf(env, "%s", w)
 		}
+		return resume(env, target, s)
 	}
+}
+
+// resume replaces the process with `claude --resume` on s in target, from
+// the session's working directory.
+func resume(env cli.Env, target config.ConfigDir, s sessions.Session) error {
 	if s.Cwd != "" {
 		if fi, err := os.Stat(s.Cwd); err != nil || !fi.IsDir() {
 			warnf(env, "the session's directory %s no longer exists; claude may not find the session from here", s.Cwd)
 		}
 	}
 	return execClaude(target.Dir, []string{"--resume", s.ID}, s.Cwd)
+}
+
+// moveQuestion and moveDetail are the confirmation shown before a session
+// moves into the target (SPEC "next / use" step 3). from and to are labelled
+// as in the move report (moveLabels), and the title is quoted the same way.
+func moveQuestion(title, from, to string) string {
+	return fmt.Sprintf("Move %q from %s to %s?", title, from, to)
+}
+
+func moveDetail(from, to string) string {
+	return fmt.Sprintf("Its transcript, checkpoints, task list and session environment move to %s; %s will no longer have it. Project memory is merged, never overwritten.", to, from)
 }
 
 // labelOf is labels[name], falling back to the config name.
