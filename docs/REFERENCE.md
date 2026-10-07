@@ -1005,11 +1005,22 @@ make install       # version dev into the installer layout (see Install)
 make test          # test-go + test-worker
 make test-go       # go test -race ./...
 make test-worker   # cd worker && npm test
+make e2e          # scripts/e2e.sh: installer, setup, claims, usage, update, uninstall in a throwaway HOME
 make lint          # gofmt -l, go vet ./..., worker typecheck
 make clean         # rm -rf bin dist
 ```
 
 Worker only: `cd worker && npm ci && npm test && npm run typecheck`.
+
+`make e2e` runs `scripts/e2e.sh`: it installs a release from a fake GitHub
+releases host (`scripts/e2e/fakereleases.go`) into a throwaway HOME, starts
+`wrangler dev` on a local KV namespace, builds fake Claude config dirs and a
+fake `claude`, and drives setup, the shell functions, switching, the session
+hooks with a fake live session, the status line and its usage report,
+`forget`, `update` and `uninstall`, checking at the end that every file setup
+touched is byte-for-byte what it was. Nothing on the machine is touched; the
+sandbox is kept on failure (`E2E_KEEP=1` keeps it always, `E2E_WORKER_PORT`
+changes the port). The session picker is not covered (it needs a terminal).
 
 CI (`.github/workflows/ci.yml`, every push and PR): gofmt, `go vet`,
 `go test -race`; `bash -n` and shellcheck on `scripts/install.sh` plus

@@ -12,7 +12,7 @@ LDFLAGS := -s -w -X $(MODULE)/internal/version.Version
 
 BIN := bin/julienning
 
-.PHONY: all build install test test-go test-worker lint clean release
+.PHONY: all build install test test-go test-worker e2e lint clean release
 
 all: build
 
@@ -53,6 +53,11 @@ test-go:
 
 test-worker:
 	cd worker && npm test
+
+# End-to-end check in a throwaway HOME against a local Worker and a fake
+# releases host; nothing on this machine is touched (see scripts/e2e.sh).
+e2e:
+	bash scripts/e2e.sh
 
 lint:
 	@out=`gofmt -l .`; \

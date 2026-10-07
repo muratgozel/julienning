@@ -962,6 +962,8 @@ non-email keys skipped) stay.
 - Module `github.com/muratgozel/julienning`, Go 1.25 (toolchain local),
   dependency `golang.org/x/term` only.
 - CI: gofmt, vet, `go test -race`, worker typecheck + tests.
+- `make e2e` (`scripts/e2e.sh`): end-to-end in a throwaway HOME against
+  `wrangler dev` and a fake releases host; manual, not in CI.
 - Release: goreleaser on tags. Deploy-worker workflow unchanged.
 - No secrets in the repo: team token is distributed out of band.
 

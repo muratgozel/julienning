@@ -164,7 +164,8 @@ terminal. After rotating the token, everyone runs
 - [docs/SPEC.md](docs/SPEC.md): the design, and the contract between the CLI
   and the Worker.
 - **Development:** Go 1.25. `make build` (to `bin/julienning`), `make test` (Go
-  and Worker tests); `make release VERSION=X.Y.Z` tags and pushes a release. See
+  and Worker tests), `make e2e` (end to end in a sandbox); `make release
+  VERSION=X.Y.Z` tags and pushes a release. See
   [Development](docs/REFERENCE.md#development).
 
 MIT licensed; see [LICENSE](LICENSE).

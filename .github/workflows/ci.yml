@@ -48,8 +48,11 @@ jobs:
       - uses: actions/checkout@v4
 
       # shellcheck is preinstalled on GitHub's Ubuntu runners.
-      - name: install.sh
+      - name: shell scripts
         run: |
+          bash -n scripts/install.sh scripts/e2e.sh
+          shellcheck scripts/install.sh scripts/e2e.sh
+|
           bash -n scripts/install.sh
           shellcheck scripts/install.sh
 
