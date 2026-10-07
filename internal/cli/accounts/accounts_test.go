@@ -1044,6 +1044,7 @@ func exhausted(email string, session, week *remote.Window, until int64, busy ...
 }
 
 func TestAccountsExhaustedState(t *testing.T) {
+	t.Setenv("TZ", "Europe/Istanbul") // expectations are in +03; CI runs in UTC
 	n := time.Unix(nowEpoch, 0)
 	loc := location()
 	cases := []struct {

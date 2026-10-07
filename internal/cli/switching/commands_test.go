@@ -173,6 +173,7 @@ func TestNextWarnsWhenEveryLocalAccountIsExhausted(t *testing.T) {
 }
 
 func TestUsableAgain(t *testing.T) {
+	t.Setenv("TZ", "Europe/Istanbul") // expectations are in +03; CI runs in UTC
 	loc := location()
 	if got := usableAgain("alpha", nil, nowT, loc); got != "alpha becomes usable when its limit resets" {
 		t.Errorf("unknown = %q", got)
