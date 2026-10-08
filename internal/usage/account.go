@@ -23,6 +23,13 @@ const (
 	CodeLogFailed    = "LOG_FAILED"
 	CodeSendFailed   = "SEND_FAILED"
 	CodeClockInvalid = "CLOCK_INVALID"
+	// CodeUsagePending records (throttled) that the status line input lacks a
+	// rate-limit window, with the payload's shape, so a "usage pending" that
+	// never goes away can be diagnosed.
+	CodeUsagePending = "USAGE_PENDING"
+	// CodeExhaustedFailed is send-exhausted's SEND_FAILED: the StopFailure
+	// hook's report that an account hit its limit did not reach the Worker.
+	CodeExhaustedFailed = "EXHAUSTED_FAILED"
 
 	// Codes for the session hooks and the detached claim-sync / send-usage
 	// maintenance (claims, allowlist refresh, update check).

@@ -65,6 +65,22 @@ type UsageReport struct {
 	Reporter    Identity    `json:"reporter"`
 }
 
+// Exhausted window names, as the Worker spells them in ExhaustedReport and in
+// the listing's exhausted_window.
+const (
+	WindowSession = "session"
+	WindowWeek    = "week"
+)
+
+// ExhaustedReport is the PUT /accounts/:email/exhausted body: Claude refused
+// a request for a usage limit. ResetsAt nil (sent as null) means the reset is
+// not known.
+type ExhaustedReport struct {
+	Window   string     `json:"window"`
+	ResetsAt *time.Time `json:"resets_at"`
+	Reporter Identity   `json:"reporter"`
+}
+
 // Window is a rate-limit window as returned by the Worker, including the
 // computed fields. Absent windows arrive as a nil *Window.
 type Window struct {
@@ -109,12 +125,17 @@ type Account struct {
 	State       string     `json:"state"`
 	BusyBy      []string   `json:"busy_by"` // other devs holding or actively using it, in every state
 
-	// Exhausted: a window is at 100%, so Claude refuses work until it resets.
-	// ExhaustedUntil is the reset after which the account is usable again
-	// (with both windows at 100%, the later one). Workers from before these
-	// fields omit them, which reads as false/nil.
+	// Exhausted: a window is at 100%, or Claude refused a request for a
+	// limit, so it refuses work until a reset. ExhaustedUntil is the reset
+	// after which the account is usable again (with both windows at 100%, the
+	// later one); nil when not known, also while Exhausted is true.
+	// ExhaustedWin is the Worker's exhausted_window ("session", "week", or
+	// null); read it through ExhaustedWindow, which falls back to inferring
+	// it. Workers from before these fields omit them, which reads as
+	// false/nil.
 	Exhausted      bool       `json:"exhausted"`
 	ExhaustedUntil *time.Time `json:"exhausted_until"`
+	ExhaustedWin   *string    `json:"exhausted_window"`
 
 	// Raw is the exact JSON object the Worker sent, kept so `--json` output can
 	// pass through fields this binary does not know about yet.
@@ -128,11 +149,19 @@ func (a *Account) IsExhausted() bool {
 	return a.Exhausted || a.State == "exhausted"
 }
 
-// ExhaustedWindow names the window the account waits on: "session" or "week",
-// the one at 100% whose reset is ExhaustedUntil (week on a tie, as the Worker
-// decides). "" when the account is not exhausted or no window matches.
+// ExhaustedWindow names the window the account waits on: "session" or
+// "week". The Worker's exhausted_window wins; a Worker without it (or with a
+// value this binary does not know) leaves the window inferred: the one at
+// 100% whose reset is ExhaustedUntil (week on a tie, as the Worker decides).
+// "" when the account is not exhausted or the window cannot be told.
 func (a *Account) ExhaustedWindow() string {
-	if !a.IsExhausted() || a.ExhaustedUntil == nil {
+	if !a.IsExhausted() {
+		return ""
+	}
+	if w := a.ExhaustedWin; w != nil && (*w == WindowSession || *w == WindowWeek) {
+		return *w
+	}
+	if a.ExhaustedUntil == nil {
 		return ""
 	}
 	blocks := func(w *Window) bool {
@@ -140,9 +169,9 @@ func (a *Account) ExhaustedWindow() string {
 	}
 	switch {
 	case blocks(a.Week):
-		return "week"
+		return WindowWeek
 	case blocks(a.Session):
-		return "session"
+		return WindowSession
 	default:
 		return ""
 	}
@@ -173,6 +202,9 @@ type Client interface {
 	// Unshare removes email and all its data from the allowlist.
 	Unshare(ctx context.Context, email string) error
 	PutUsage(ctx context.Context, email string, r UsageReport) error
+	// PutExhausted marks a shared account exhausted after Claude refused a
+	// request for a usage limit (IsNotShared for an unshared email).
+	PutExhausted(ctx context.Context, email string, r ExhaustedReport) error
 	// PutClaim adds or refreshes this dev+machine's claim.
 	PutClaim(ctx context.Context, email string, id Identity) error
 	// DeleteClaim removes only this dev+machine's claim (idempotent).

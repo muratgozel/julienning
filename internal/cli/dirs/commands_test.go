@@ -354,7 +354,7 @@ func TestForgetUnpatchesAndClearsCurrent(t *testing.T) {
 	out := h.mustRun(runForget, "one")
 	contains(t, out, "Forgot one (~/.claude-one, not logged in).\n")
 	contains(t, out, "Kept ~/.claude-one: no terminal to ask, and --delete was not passed.")
-	contains(t, out, "settings.json: restored previous statusLine, removed SessionStart hook, removed SessionEnd hook")
+	contains(t, out, "settings.json: restored previous statusLine, removed SessionStart hook, removed SessionEnd hook, removed StopFailure hook, removed empty hooks")
 	contains(t, out, "nothing is selected now")
 	if _, ok := h.config().Find("one"); ok {
 		t.Fatal("still registered")
@@ -362,6 +362,7 @@ func TestForgetUnpatchesAndClearsCurrent(t *testing.T) {
 	if got := h.read(filepath.Join(d1, "settings.json")); got != original {
 		t.Fatalf("settings.json not restored:\n%s", got)
 	}
+	notContains(t, h.read(filepath.Join(d1, "settings.json")), "stop-failure")
 	if _, ok, _ := h.config().Current(); ok {
 		t.Fatal("current not cleared")
 	}

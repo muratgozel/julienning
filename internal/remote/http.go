@@ -96,6 +96,15 @@ func (c *httpClient) PutUsage(ctx context.Context, email string, r UsageReport) 
 	return err
 }
 
+func (c *httpClient) PutExhausted(ctx context.Context, email string, r ExhaustedReport) error {
+	if r.ResetsAt != nil {
+		t := r.ResetsAt.UTC().Truncate(time.Second)
+		r.ResetsAt = &t
+	}
+	_, err := c.do(ctx, http.MethodPut, accountPath(email)+"/exhausted", nil, r)
+	return err
+}
+
 func (c *httpClient) PutClaim(ctx context.Context, email string, id Identity) error {
 	_, err := c.do(ctx, http.MethodPut, accountPath(email)+"/claim", nil, id)
 	return err

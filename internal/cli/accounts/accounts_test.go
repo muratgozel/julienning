@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/muratgozel/julienning/internal/claims"
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/livesess"
@@ -106,6 +107,10 @@ func (f *fixture) addConfig(name, email string) config.ConfigDir {
 		dir = filepath.Join(f.home, ".claude")
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	// Wired like setup leaves it, so commands have no setup warning to print.
+	if _, err := claudecfg.Patch(dir, "/usr/local/bin/julienning"); err != nil {
 		f.t.Fatal(err)
 	}
 	if email != "" {
@@ -1043,6 +1048,14 @@ func exhausted(email string, session, week *remote.Window, until int64, busy ...
 	return a
 }
 
+// withWindow sets the Worker's exhausted_window; "" stands for null.
+func withWindow(a remote.Account, w string) remote.Account {
+	if w != "" {
+		a.ExhaustedWin = &w
+	}
+	return a
+}
+
 func TestAccountsExhaustedState(t *testing.T) {
 	t.Setenv("TZ", "Europe/Istanbul") // expectations are in +03; CI runs in UTC
 	n := time.Unix(nowEpoch, 0)
@@ -1072,6 +1085,19 @@ func TestAccountsExhaustedState(t *testing.T) {
 			"exhausted (week resets Fri 10:00)"},
 		{"flag alone beats in_use", remote.Account{State: "in_use", Exhausted: true, Session: win(100, lateReset), ExhaustedUntil: ts(lateReset), BusyBy: []string{"ali"}},
 			"exhausted (session resets 23:40), in use by ali"},
+		// Worker exhausted_window (a refusal the StopFailure hook reported).
+		{"window field, reset unknown", withWindow(exhausted(email1, win(40, lateReset), win(70, friReset), 0), "week"),
+			"exhausted (week)"},
+		{"window field, reset unknown, busy", withWindow(exhausted(email1, nil, nil, 0, "ali"), "session"),
+			"exhausted (session), in use by ali"},
+		{"window field with reset", withWindow(exhausted(email1, nil, nil, friReset), "week"),
+			"exhausted (week resets Fri 10:00)"},
+		{"window field beats inference", withWindow(exhausted(email1, win(100, friReset), win(40, friReset), friReset), "session"),
+			"exhausted (session resets Fri 10:00)"},
+		{"unknown window value falls back", withWindow(exhausted(email1, win(100, lateReset), nil, lateReset), "opus"),
+			"exhausted (session resets 23:40)"},
+		{"null window, no reset", withWindow(exhausted(email1, nil, nil, 0), ""),
+			"exhausted"},
 	}
 	for _, tc := range cases {
 		if got := state(&tc.a, "murat", n, loc); got != tc.want {
@@ -1301,6 +1327,12 @@ func TestAccountsStateShowsYourOwnUse(t *testing.T) {
 		{"someone else only", remote.Account{State: "in_use", BusyBy: []string{"ali"}, CollectedAt: &recent}, "in use by ali (1m)"},
 		{"someone else and you", remote.Account{State: "in_use", BusyBy: []string{"ali"}, CollectedAt: &recent, Claims: []remote.Claim{me}}, "in use by ali (1m) and you"},
 		{"exhausted and you", exhaustedWith(me), "exhausted (week resets Fri 10:00), in use by you"},
+		{"exhausted, window only, and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}}, "week"),
+			"exhausted (week), in use by you"},
+		{"exhausted, window only, someone else and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}, BusyBy: []string{"ali"}}, "session"),
+			"exhausted (session), in use by ali and you"},
+		{"exhausted, nothing known, and you", remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}},
+			"exhausted, in use by you"},
 	}
 	for _, c := range cases {
 		a := c.a

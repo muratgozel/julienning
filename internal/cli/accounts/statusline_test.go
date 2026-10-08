@@ -88,22 +88,43 @@ func TestStatuslineHappyPath(t *testing.T) {
 	}
 }
 
+// An absent window is normal (no error row), but one that never shows up
+// must be diagnosable: a USAGE_PENDING line, throttled to one an hour, that
+// carries the payload's shape and nothing else.
 func TestStatuslinePendingWindows(t *testing.T) {
-	cases := map[string]string{
-		"no rate_limits":    `{"model":{"display_name":"Opus 5"}}`,
-		"null rate_limits":  `{"model":{"display_name":"Opus 5"},"rate_limits":null}`,
-		"missing seven_day": payload(fmt.Sprintf(`{"five_hour":{"used_percentage":1,"resets_at":%d}}`, fiveReset)),
+	cases := map[string]struct{ in, signature string }{
+		"no rate_limits":   {`{"model":{"display_name":"Opus 5"}}`, "rate_limits=absent"},
+		"null rate_limits": {`{"model":{"display_name":"Opus 5"},"rate_limits":null}`, "rate_limits=null"},
+		"missing seven_day": {payload(fmt.Sprintf(`{"five_hour":{"used_percentage":23.54,"resets_at":%d}}`, fiveReset)),
+			"five_hour={used_percentage:number,resets_at:number} seven_day=absent"},
+		"null five_hour": {payload(fmt.Sprintf(`{"five_hour":null,"seven_day":{"used_percentage":41,"resets_at":%d,"extra":"x"}}`, weekReset)),
+			"five_hour=null seven_day={used_percentage:number,resets_at:number,extra:string}"},
 	}
-	for name, in := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			f, spawn, _ := statuslineFixture(t)
-			got := f.run(in, "statusline")
-			assertCode(t, got, 0)
-			if !strings.HasSuffix(got.stdout, "· usage pending\n") {
-				t.Errorf("stdout = %q", got.stdout)
+			f, spawn, dir := statuslineFixture(t)
+			for i := 0; i < 3; i++ {
+				got := f.run(tc.in, "statusline")
+				assertCode(t, got, 0)
+				if !strings.HasSuffix(got.stdout, "· usage pending\n") || strings.Contains(got.stdout, "julienning:") {
+					t.Errorf("render %d: stdout = %q, want the pending line and no error row", i, got.stdout)
+				}
 			}
-			if f.errorLog() != "" {
-				t.Errorf("an absent window is normal, logged: %q", f.errorLog())
+			log := f.errorLog()
+			if n := strings.Count(log, " USAGE_PENDING config_dir="+dir+" "); n != 1 {
+				t.Errorf("USAGE_PENDING logged %d times, want 1 (throttled): %q", n, log)
+			}
+			if !strings.Contains(log, tc.signature) {
+				t.Errorf("errors.log = %q, want signature %q", log, tc.signature)
+			}
+			// Shapes only: no usage numbers, no resets, no account. The
+			// temp dir in config_dir has digits of its own, so only the
+			// message after it is checked.
+			_, msg, _ := strings.Cut(log, "config_dir="+dir+" ")
+			for _, leak := range []string{"23", "41", "1789", email1, "sixtynine.agency"} {
+				if strings.Contains(msg, leak) {
+					t.Errorf("errors.log carries %q: %q", leak, log)
+				}
 			}
 			if spawn.calls != 0 {
 				t.Errorf("must not report incomplete usage")
@@ -112,10 +133,27 @@ func TestStatuslinePendingWindows(t *testing.T) {
 	}
 }
 
+// Claude Code reports more than 100 once a limit is exceeded; the status
+// line reports it as 100 instead of calling the payload malformed.
+func TestStatuslineReportsUsageAbove100As100(t *testing.T) {
+	f, spawn, _ := statuslineFixture(t)
+	rl := fmt.Sprintf(`{"five_hour":{"used_percentage":112.5,"resets_at":%d},"seven_day":{"used_percentage":64,"resets_at":%d}}`, fiveReset, weekReset)
+	got := f.run(payload(rl), "statusline")
+	assertCode(t, got, 0)
+	if got.stdout != "Opus 5 · ctx 8%\n" {
+		t.Errorf("stdout = %q", got.stdout)
+	}
+	if f.errorLog() != "" {
+		t.Errorf("errors.log = %q", f.errorLog())
+	}
+	if spawn.calls != 1 || !strings.Contains(strings.Join(spawn.args, " "), "--session-used 100 --session-resets") {
+		t.Errorf("argv = %v, want --session-used 100", spawn.args)
+	}
+}
+
 func TestStatuslineUsageInvalid(t *testing.T) {
 	cases := map[string]string{
 		"percentage is a string":  fmt.Sprintf(`{"five_hour":{"used_percentage":"abc","resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":%d}}`, fiveReset, weekReset),
-		"percentage over 100":     fmt.Sprintf(`{"five_hour":{"used_percentage":150,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":%d}}`, fiveReset, weekReset),
 		"percentage negative":     fmt.Sprintf(`{"five_hour":{"used_percentage":-1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":%d}}`, fiveReset, weekReset),
 		"reset is a string":       fmt.Sprintf(`{"five_hour":{"used_percentage":1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":"soon"}}`, fiveReset),
 		"reset is fractional":     fmt.Sprintf(`{"five_hour":{"used_percentage":1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":1.5}}`, fiveReset),

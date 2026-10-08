@@ -84,7 +84,7 @@ func TestParseAbsentWindows(t *testing.T) {
 }
 
 func TestParseInvalidWindows(t *testing.T) {
-	for _, bad := range []string{`"abc"`, "150", "-1", "null", "{}", "true"} {
+	for _, bad := range []string{`"abc"`, "-1", "-0.01", "1e400", "null", "{}", "true"} {
 		payload := `{"rate_limits":{"five_hour":{"used_percentage":` + bad + `,"resets_at":1789491600},` +
 			`"seven_day":{"used_percentage":1,"resets_at":1793631600}}}`
 		in := parse(t, payload)
@@ -109,6 +109,30 @@ func TestParseInvalidWindows(t *testing.T) {
 	in := parse(t, `{"rate_limits":{"five_hour":"x","seven_day":{"used_percentage":1,"resets_at":1}}}`)
 	if !in.Invalid() {
 		t.Errorf("non-object window: want invalid")
+	}
+}
+
+// Claude Code reports more than 100 once a limit is exceeded: that is the
+// report that marks the account exhausted, so it is clamped, never dropped.
+// The signature still shows the shape only.
+func TestParseClampsUsageAbove100(t *testing.T) {
+	cases := map[string]float64{"100": 100, "100.04": 100, "100.5": 100, "150": 100, "1e6": 100, "99.96": 100, "99.94": 99.9}
+	for raw, want := range cases {
+		payload := `{"rate_limits":{"five_hour":{"used_percentage":` + raw + `,"resets_at":1789491600},` +
+			`"seven_day":{"used_percentage":` + raw + `,"resets_at":1793631600}}}`
+		in := parse(t, payload)
+		if !in.Complete() || in.Invalid() {
+			t.Fatalf("%s: windows = %+v %+v, want OK", raw, in.Session, in.Week)
+		}
+		if in.Session.Used != want || in.Week.Used != want {
+			t.Errorf("%s: used = %v / %v, want %v", raw, in.Session.Used, in.Week.Used, want)
+		}
+		if got := FormatPercent(in.Session.Used); want == 100 && got != "100" {
+			t.Errorf("%s: formatted = %q, want 100", raw, got)
+		}
+		if sig := in.RateLimitsSignature(); strings.ContainsAny(sig, "0123456789") {
+			t.Errorf("%s: signature carries a number: %q", raw, sig)
+		}
 	}
 }
 

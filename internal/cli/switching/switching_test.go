@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/livesess"
@@ -133,6 +134,10 @@ func (f *fixture) addConfig(name, email string) config.ConfigDir {
 		dir = filepath.Join(f.home, ".claude")
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	// Wired like setup leaves it, so commands have no setup warning to print.
+	if _, err := claudecfg.Patch(dir, "/usr/local/bin/julienning"); err != nil {
 		f.t.Fatal(err)
 	}
 	if email != "" {

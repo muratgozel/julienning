@@ -34,6 +34,17 @@ const patchedFresh = `{
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/julienning hook stop-failure"
+          }
+        ]
+      }
     ]
   }
 }
@@ -138,6 +149,17 @@ func TestPatchPreservesUserBytesAndUnpatchRestoresExactly(t *testing.T) {
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/julienning hook stop-failure"
+          }
+        ]
+      }
     ]
   },`, 1)
 	if got != want {
@@ -162,7 +184,7 @@ func TestPatchPreservesUserBytesAndUnpatchRestoresExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantChanges := "restored previous statusLine, removed SessionStart hook, removed SessionEnd hook"
+	wantChanges := "restored previous statusLine, removed SessionStart hook, removed SessionEnd hook, removed StopFailure hook"
 	if strings.Join(res.Changes, ", ") != wantChanges {
 		t.Fatalf("changes = %q", res.Changes)
 	}
@@ -425,6 +447,11 @@ func TestIsJulienningCommand(t *testing.T) {
 		"/opt/julienning/bin/other hook session-start":       false,
 		"": false,
 		"/usr/local/bin/julienning hook session-start --json": false,
+		"/usr/local/bin/julienning hook stop-failure":         true,
+		"'/Users/John Doe/bin/julienning' hook stop-failure":  true,
+		"/usr/local/bin/julienning hook stop":                 false,
+		"/usr/local/bin/julienning-old hook stop-failure":     false,
+		"echo hook stop-failure":                              false,
 	}
 	for cmd, want := range cases {
 		if got := IsJulienningCommand(cmd); got != want {

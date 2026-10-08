@@ -33,6 +33,7 @@ func runNext(env cli.Env) error {
 	if err != nil {
 		return err
 	}
+	warnSetup(env, cfg)
 	if err := cfg.RequireRemote(); err != nil {
 		return err
 	}

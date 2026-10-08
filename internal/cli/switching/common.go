@@ -113,6 +113,15 @@ func warnf(env cli.Env, format string, a ...any) {
 	fmt.Fprintf(env.Stderr, "julienning: warning: %s\n", fmt.Sprintf(format, a...))
 }
 
+// warnSetup prints one warning when a registered dir's settings.json lacks
+// an entry this julienning adds (a newer version wiring a new hook), so the
+// user knows to re-run setup.
+func warnSetup(env cli.Env, cfg *config.Config) {
+	if w := claudecfg.SetupWarning(cfg.Configs); w != "" {
+		warnf(env, "%s", w)
+	}
+}
+
 // clock honours JULIENNING_NOW_EPOCH so tests and bug reports can freeze it.
 func clock() (time.Time, error) { return usage.Now(os.Getenv) }
 

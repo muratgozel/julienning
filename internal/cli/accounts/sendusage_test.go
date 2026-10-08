@@ -164,8 +164,9 @@ func TestSendUsageValidation(t *testing.T) {
 	}{
 		{"missing email", []string{"send-usage"}, "--email must be a valid email address"},
 		{"bad email", sendArgs("--email", "nope"), "--email must be a valid email address"},
-		{"session over 100", sendArgs("--session-used", "101"), "--session-used must be a percentage in [0,100]"},
-		{"week negative", sendArgs("--week-used", "-2"), "--week-used must be a percentage in [0,100]"},
+		{"week negative", sendArgs("--week-used", "-2"), "--week-used must be a finite, non-negative percentage"},
+		{"session NaN", sendArgs("--session-used", "NaN"), "--session-used must be a finite, non-negative percentage"},
+		{"week infinite", sendArgs("--week-used", "+Inf"), "--week-used must be a finite, non-negative percentage"},
 		{"zero session reset", sendArgs("--session-resets", "0"), "--session-resets must be positive"},
 		{"negative week reset", sendArgs("--week-resets", "-1"), "--week-resets must be positive"},
 		{"zero collected at", sendArgs("--collected-at", "0"), "--collected-at must be positive"},
@@ -185,6 +186,26 @@ func TestSendUsageValidation(t *testing.T) {
 				t.Errorf("invalid input reached the Worker: %+v", f.fake.Calls)
 			}
 		})
+	}
+}
+
+// A usage above 100 (Claude Code's "limit exceeded") is sent as 100, which
+// the Worker reads as exhausted, instead of being refused.
+func TestSendUsageClampsAbove100(t *testing.T) {
+	f := setup(t)
+	f.save()
+	f.share(email1)
+	got := f.run("", sendArgs("--session-used", "104.5", "--week-used", "100")...)
+	assertCode(t, got, 0)
+	calls := f.fake.CallsFor("usage")
+	if len(calls) != 1 {
+		t.Fatalf("calls = %+v (stderr %q, errors.log %q)", f.fake.Calls, got.stderr, f.errorLog())
+	}
+	if s, w := calls[0].Usage.Session.Used, calls[0].Usage.Week.Used; s != 100 || w != 100 {
+		t.Errorf("sent session %v, week %v; want 100, 100", s, w)
+	}
+	if c := f.sent(email1); c == nil || c.SessionUsed != 100 {
+		t.Errorf("cache = %+v, want the clamped value", c)
 	}
 }
 
@@ -359,7 +380,7 @@ func TestInternalCommandsAreHiddenFromHelp(t *testing.T) {
 	f := setup(t)
 	got := f.run("", "help")
 	assertCode(t, got, 0)
-	for _, name := range []string{"send-usage", "hook", "claim-sync"} {
+	for _, name := range []string{"send-usage", "send-exhausted", "hook", "claim-sync"} {
 		if strings.Contains(got.stdout, "  "+name+" ") {
 			t.Errorf("%s must not be listed: %q", name, got.stdout)
 		}

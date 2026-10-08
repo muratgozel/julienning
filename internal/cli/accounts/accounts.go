@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/muratgozel/julienning/internal/claims"
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/remote"
@@ -39,6 +40,9 @@ func runAccounts(env cli.Env) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	if w := claudecfg.SetupWarning(cfg.Configs); w != "" {
+		warnf(env, "%s", w)
 	}
 	if err := cfg.RequireRemote(); err != nil {
 		return err
@@ -253,26 +257,29 @@ func state(a *remote.Account, self string, n time.Time, loc *time.Location) stri
 }
 
 // exhaustedState renders `exhausted (week resets Fri 10:00)`: the window the
-// account waits on and its reset in loc, `(resets …)` when no window can be
-// matched to exhausted_until, bare `exhausted` without one. Other devs on it
-// follow as `, in use by ali, can` (no age: in this state busy_by does not
-// say whether they hold a claim or reported usage).
+// account waits on and its reset in loc. Either part may be unknown:
+// `exhausted (week)` (a refusal reported without its reset), `exhausted
+// (resets …)` (no window matches exhausted_until), bare `exhausted` without
+// both. Other devs on it follow as `, in use by ali, can` (no age: in this
+// state busy_by does not say whether they hold a claim or reported usage).
 func exhaustedState(a *remote.Account, n time.Time, loc *time.Location) string {
-	var b strings.Builder
-	b.WriteString("exhausted")
+	var parts []string
+	if w := a.ExhaustedWindow(); w != "" {
+		parts = append(parts, w)
+	}
 	if until := a.ExhaustedUntil; until != nil {
-		b.WriteString(" (")
-		if w := a.ExhaustedWindow(); w != "" {
-			b.WriteString(w + " ")
-		}
 		if until.After(n) {
-			b.WriteString("resets " + usage.FormatReset(*until, n, loc))
+			parts = append(parts, "resets "+usage.FormatReset(*until, n, loc))
 		} else {
 			// Our clock is past the Worker's exhausted_until (clock skew):
 			// "resets reset" would be nonsense.
-			b.WriteString("has reset")
+			parts = append(parts, "has reset")
 		}
-		b.WriteString(")")
+	}
+	var b strings.Builder
+	b.WriteString("exhausted")
+	if len(parts) > 0 {
+		b.WriteString(" (" + strings.Join(parts, " ") + ")")
 	}
 	if len(a.BusyBy) > 0 {
 		b.WriteString(", in use by " + strings.Join(a.BusyBy, ", "))

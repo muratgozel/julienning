@@ -23,8 +23,8 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "hook",
-		Summary: "Claude Code SessionStart/SessionEnd hook: keeps claims in sync",
-		Usage:   "hook session-start|session-end",
+		Summary: "Claude Code hooks: SessionStart/SessionEnd keep claims in sync, StopFailure reports a usage-limit refusal",
+		Usage:   "hook session-start|session-end|stop-failure",
 		Hidden:  true,
 		Run:     runHook,
 	})
@@ -46,37 +46,63 @@ var (
 // make; on timeout the hook falls back to --ending-pid.
 const psParentWait = 100 * time.Millisecond
 
+// Hook events, as the argument after `hook`.
+const (
+	hookSessionStart = "session-start"
+	hookSessionEnd   = "session-end"
+	hookStopFailure  = "stop-failure"
+)
+
 // hookInput is the part of Claude Code's hook payload julienning uses.
 type hookInput struct {
 	SessionID string
 	Source    string // SessionStart: startup | resume | clear | compact
 	Reason    string // SessionEnd: clear | logout | prompt_input_exit | other
+	// StopFailure: the API error that ended the turn ("rate_limit" for a
+	// usage limit) and the refusal text, which names the limit and its
+	// reset. Never logged: it is free text.
+	Error                string
+	ErrorDetails         string
+	LastAssistantMessage string
 }
+
+// errNoSessionID is readHookInput's error for a payload without a usable
+// session_id; the other fields are still filled in.
+var errNoSessionID = errors.New("hook input has no valid session_id")
 
 // runHook never fails and never prints: Claude Code shows hook output and
 // errors to the user, and a claim is not worth interrupting a session for.
 // Every problem is logged (throttled) and the hook still exits 0. It never
-// touches the network: the detached claim-sync does that.
+// touches the network: the detached claim-sync (or send-exhausted) does that.
 func runHook(env cli.Env) error {
-	logger, _, err := backgroundLogger()
+	logger, n, err := backgroundLogger()
 	if err != nil {
 		return nil // julienning home unusable: nowhere to report it
 	}
 	logf := func(code, message string) { _ = logger.LogThrottled(code, message) }
 
-	if len(env.Args) != 1 || (env.Args[0] != "session-start" && env.Args[0] != "session-end") {
-		logf(usage.CodeHookInput, "hook expects exactly one of session-start, session-end")
+	if len(env.Args) != 1 || (env.Args[0] != hookSessionStart && env.Args[0] != hookSessionEnd && env.Args[0] != hookStopFailure) {
+		logf(usage.CodeHookInput, "hook expects exactly one of session-start, session-end, stop-failure")
 		return nil
 	}
-	ending := env.Args[0] == "session-end"
+	event := env.Args[0]
 
 	// Read before gating, so Claude Code never writes into a closed pipe.
 	in, err := readHookInput(env.Stdin, hookStdinWait)
-	if err != nil {
+	switch {
+	case err == nil:
+	case event == hookStopFailure && errors.Is(err, errNoSessionID):
+		// StopFailure has no use for the session id.
+	default:
 		logf(usage.CodeHookInput, err.Error()) // keep going: the ids only sharpen the sync
 	}
+	// The settings.json matcher already limits StopFailure to rate_limit;
+	// this keeps a hand-edited matcher from reporting other API errors.
+	if event == hookStopFailure && in.Error != "rate_limit" {
+		return nil
+	}
 
-	// Gate, all local: set up and registered for both events.
+	// Gate, all local: set up and registered, for every event.
 	cfg, err := config.Load()
 	if err != nil {
 		logf(usage.CodeNotSetup, err.Error())
@@ -94,8 +120,21 @@ func runHook(env cli.Env) error {
 		return nil
 	}
 
+	if event == hookStopFailure {
+		// Same gate as SessionStart, minus the pending share: an account is
+		// only reported once it is on the allowlist.
+		email, ok := sharedLogin(logf, envDir, false)
+		if !ok {
+			return nil
+		}
+		if err := spawner(self(), exhaustedArgs(logger.Dir, email, in, n)); err != nil {
+			logf(usage.CodeSpawnFailed, "cannot start send-exhausted: "+err.Error())
+		}
+		return nil
+	}
+
 	args := []string{"claim-sync"}
-	if ending {
+	if event == hookSessionEnd {
 		// /clear ends one session and starts another in the same process: the
 		// account stays in use. Syncing here would race the SessionStart run
 		// and could release a claim that is still live.
@@ -118,29 +157,7 @@ func runHook(env cli.Env) error {
 		// Same gate as the status line: only a shared login may be claimed,
 		// except in a dir new-config marked ShareOnLogin, whose login
 		// claim-sync shares first (claims.ResolvePendingShares).
-		// The login is read from the file this Claude process uses, which is
-		// not the registered dir's when CLAUDE_CONFIG_DIR=~/.claude is set.
-		accountFile, err := claudecfg.AccountFileForEnv(envDir)
-		if err != nil {
-			logf(usage.CodeAccountFile, "cannot resolve the account file: "+err.Error())
-			return nil
-		}
-		email, err := usage.LoginEmail(accountFile)
-		if errors.Is(err, claudecfg.ErrNotLoggedIn) {
-			return nil // a fresh dir waiting for its login: nothing to claim
-		}
-		if err != nil {
-			logf(usage.CodeAccountFile, err.Error())
-			return nil
-		}
-		pending := cd.ShareOnLogin != nil
-		cache, err := sharedcache.Load()
-		if err != nil && !pending {
-			logf(usage.CodeNotShared, "shared account cache is unreadable, treating the account as not shared: "+err.Error())
-			return nil
-		}
-		if !pending && !cache.Contains(email) {
-			logf(usage.CodeNotShared, "account is not on the team allowlist (shared.json)")
+		if _, ok := sharedLogin(logf, envDir, cd.ShareOnLogin != nil); !ok {
 			return nil
 		}
 		if in.SessionID != "" {
@@ -151,6 +168,53 @@ func runHook(env cli.Env) error {
 		logf(usage.CodeSpawnFailed, "cannot start claim-sync: "+err.Error())
 	}
 	return nil
+}
+
+// sharedLogin is the login gate of SessionStart and StopFailure: it returns
+// the (lowercased) login of the account file this Claude process uses when
+// it is on the team allowlist, or, with pending (a dir whose share waits for
+// its login), whatever it is. The file is not the registered dir's when
+// CLAUDE_CONFIG_DIR=~/.claude is set. ok is false when the hook must stop;
+// every reason but "not logged in" (a fresh dir: nothing to do) is logged.
+func sharedLogin(logf func(code, message string), envDir string, pending bool) (email string, ok bool) {
+	accountFile, err := claudecfg.AccountFileForEnv(envDir)
+	if err != nil {
+		logf(usage.CodeAccountFile, "cannot resolve the account file: "+err.Error())
+		return "", false
+	}
+	email, err = usage.LoginEmail(accountFile)
+	if errors.Is(err, claudecfg.ErrNotLoggedIn) {
+		return "", false
+	}
+	if err != nil {
+		logf(usage.CodeAccountFile, err.Error())
+		return "", false
+	}
+	cache, err := sharedcache.Load()
+	if err != nil && !pending {
+		logf(usage.CodeNotShared, "shared account cache is unreadable, treating the account as not shared: "+err.Error())
+		return "", false
+	}
+	if !pending && !cache.Contains(email) {
+		logf(usage.CodeNotShared, "account is not on the team allowlist (shared.json)")
+		return "", false
+	}
+	return email, true
+}
+
+// exhaustedArgs is the send-exhausted argv for a usage-limit refusal of
+// email, decided here from local state only (the hook has no time for the
+// network): the window and reset come from the refusal text, else from the
+// last report this machine sent for the account (sent/ under home).
+func exhaustedArgs(home, email string, in hookInput, now time.Time) []string {
+	text := in.ErrorDetails + "\n" + in.LastAssistantMessage
+	sent, _ := usage.LoadSent(home, email) // nil when missing or corrupt
+	window := usage.RefusalWindow(text, sent, now)
+	args := []string{"send-exhausted", "--email", email, "--window", window}
+	if reset, ok := usage.RefusalReset(text, window, sent, now); ok {
+		args = append(args, "--resets", strconv.FormatInt(reset.Unix(), 10))
+	}
+	return args
 }
 
 // endingArgs names the ending session for claim-sync when the SessionEnd
@@ -238,10 +302,13 @@ func readHookInput(r io.Reader, wait time.Duration) (hookInput, error) {
 		return hookInput{}, errors.New("hook input is not a JSON object")
 	}
 	str := func(k string) string { s, _ := res.doc[k].(string); return s }
-	in := hookInput{SessionID: str("session_id"), Source: str("source"), Reason: str("reason")}
+	in := hookInput{
+		SessionID: str("session_id"), Source: str("source"), Reason: str("reason"),
+		Error: str("error"), ErrorDetails: str("error_details"), LastAssistantMessage: str("last_assistant_message"),
+	}
 	if !sessionIDRe.MatchString(in.SessionID) {
 		in.SessionID = ""
-		return in, errors.New("hook input has no valid session_id")
+		return in, errNoSessionID
 	}
 	return in, nil
 }

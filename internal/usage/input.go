@@ -26,7 +26,8 @@ const (
 	// WindowAbsent means the key was missing or null: normal before the first
 	// reply and right after a reset, so it is not an error.
 	WindowAbsent WindowState = iota
-	// WindowOK means both fields were present, typed and in range.
+	// WindowOK means both fields were present, typed and in range (a usage
+	// above 100 is clamped to 100).
 	WindowOK
 	// WindowInvalid means the shape was unexpected: report it so we learn about it.
 	WindowInvalid
@@ -111,9 +112,13 @@ func parseWindow(rl map[string]any, key string) Window {
 		return Window{State: WindowInvalid}
 	}
 	used, ok := asFloat(obj["used_percentage"])
-	if !ok || math.IsNaN(used) || used < 0 || used > 100 {
+	if !ok || math.IsNaN(used) || math.IsInf(used, 0) || used < 0 {
 		return Window{State: WindowInvalid}
 	}
+	// Claude Code documents used_percentage as going above 100 once the limit
+	// is exceeded. That is the one report that says "exhausted", so it is
+	// clamped rather than rejected.
+	used = min(used, 100)
 	reset, ok := asFloat(obj["resets_at"])
 	if !ok || !validReset(reset) {
 		return Window{State: WindowInvalid}

@@ -7,12 +7,13 @@ import (
 
 // Call is one recorded request against a Fake.
 type Call struct {
-	Op       string // "list", "get", "share", "nickname", "unshare", "usage", "claim", "unclaim"
-	Nickname string
-	Email    string
-	Dev      string
-	Usage    *UsageReport
-	Identity *Identity
+	Op        string // "list", "get", "share", "nickname", "unshare", "usage", "exhausted", "claim", "unclaim"
+	Nickname  string
+	Email     string
+	Dev       string
+	Usage     *UsageReport
+	Exhausted *ExhaustedReport
+	Identity  *Identity
 }
 
 // Fake is an in-memory Client for tests. Zero value is usable: it returns an
@@ -24,14 +25,15 @@ type Fake struct {
 	Listing  *Listing
 	Accounts map[string]*Account // by email, for GetAccount
 
-	ListErr        error
-	GetErr         error
-	PutUsageErr    error
-	PutClaimErr    error
-	DeleteClaimErr error
-	ShareErr       error
-	SetNicknameErr error
-	UnshareErr     error
+	ListErr         error
+	GetErr          error
+	PutUsageErr     error
+	PutExhaustedErr error
+	PutClaimErr     error
+	DeleteClaimErr  error
+	ShareErr        error
+	SetNicknameErr  error
+	UnshareErr      error
 
 	// ErrFor, when set, is consulted first for every call; a non-nil result is
 	// returned instead of the per-operation error above. Lets one test make a
@@ -111,6 +113,11 @@ func (f *Fake) GetAccount(_ context.Context, email, dev string) (*Account, error
 
 func (f *Fake) PutUsage(_ context.Context, email string, r UsageReport) error {
 	return f.record(Call{Op: "usage", Email: email, Usage: &r}, f.PutUsageErr)
+}
+
+func (f *Fake) PutExhausted(_ context.Context, email string, r ExhaustedReport) error {
+	id := r.Reporter
+	return f.record(Call{Op: "exhausted", Email: email, Dev: id.Dev, Exhausted: &r, Identity: &id}, f.PutExhaustedErr)
 }
 
 func (f *Fake) PutClaim(_ context.Context, email string, id Identity) error {

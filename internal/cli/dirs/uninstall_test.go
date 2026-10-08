@@ -1,13 +1,16 @@
 package dirs
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/muratgozel/julienning/internal/claims"
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/jsonedit"
 )
 
 const userSettings = "{\n  \"model\": \"opus\",\n  \"statusLine\": {\"type\": \"command\", \"command\": \"mine.sh\"},\n  \"hooks\": {\n    \"SessionStart\": [\n      {\"hooks\": [{\"type\": \"command\", \"command\": \"echo hi\"}]}\n    ]\n  }\n}\n"
@@ -39,8 +42,8 @@ func TestUninstallUndoesSetupAndIsSafeTwice(t *testing.T) {
 	h.writeFile(filepath.Join(h.home, ".bashrc"), "export B=2\n"+legacy+"\nfoo # julienning\n")
 
 	out := h.mustRun(runUninstall)
-	contains(t, out, "Settings: ~/.claude-custom/settings.json: restored previous statusLine, removed SessionStart hook, removed SessionEnd hook")
-	contains(t, out, "Settings: ~/.claude-fresh/settings.json: removed statusLine, removed SessionStart hook, removed SessionEnd hook, removed empty hooks, deleted the settings.json julienning created")
+	contains(t, out, "Settings: ~/.claude-custom/settings.json: restored previous statusLine, removed SessionStart hook, removed SessionEnd hook, removed StopFailure hook\n")
+	contains(t, out, "Settings: ~/.claude-fresh/settings.json: removed statusLine, removed SessionStart hook, removed SessionEnd hook, removed StopFailure hook, removed empty hooks, deleted the settings.json julienning created")
 	contains(t, out, "Shell:    removed the julienning hook line from ~/.zshrc")
 	contains(t, out, "Shell:    removed the julienning hook line from ~/.bashrc")
 	contains(t, out, "Claims:   released 1")
@@ -50,6 +53,7 @@ func TestUninstallUndoesSetupAndIsSafeTwice(t *testing.T) {
 	if got := h.read(filepath.Join(custom, "settings.json")); got != userSettings {
 		t.Fatalf("custom settings not restored byte-for-byte:\n%s", got)
 	}
+	notContains(t, h.read(filepath.Join(custom, "settings.json")), "StopFailure")
 	if _, err := os.Stat(filepath.Join(fresh, "settings.json")); !os.IsNotExist(err) {
 		t.Fatal("settings.json julienning created is still there")
 	}
@@ -190,4 +194,90 @@ func TestUninstallBadArgs(t *testing.T) {
 	if !asUsage(h.run(runUninstall, "extra"), &ue) {
 		t.Fatal("want usage error")
 	}
+}
+
+// A julienning upgrade that wires a new hook (StopFailure) is applied by
+// re-running setup: only the missing entry is added, the dirs report
+// "updated", and uninstall still restores every byte.
+func TestSetupUpgradesAnOlderPatchAndUninstallUndoesIt(t *testing.T) {
+	h := newHarness(t)
+	custom, fresh := installed(t, h)
+	current := map[string]string{}
+	for _, dir := range []string{custom, fresh} {
+		p := filepath.Join(dir, "settings.json")
+		current[dir] = h.read(p)
+		h.writeFile(p, withoutStopFailure(t, current[dir]))
+	}
+	forgetCreatedStopFailure(t, h)
+
+	out := h.mustRun(runSetup, "--no-rc")
+	contains(t, out, "Settings: julienning1 updated, julienning2 updated")
+	for _, dir := range []string{custom, fresh} {
+		assertPatched(t, dir)
+		if got := h.read(filepath.Join(dir, "settings.json")); got != current[dir] {
+			t.Errorf("%s: upgrade wrote\n%s\nwant\n%s", dir, got, current[dir])
+		}
+	}
+
+	out = h.mustRun(runUninstall)
+	contains(t, out, "removed StopFailure hook")
+	if got := h.read(filepath.Join(custom, "settings.json")); got != userSettings {
+		t.Fatalf("custom settings not restored byte-for-byte:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(fresh, "settings.json")); !os.IsNotExist(err) {
+		t.Fatal("settings.json julienning created is still there")
+	}
+}
+
+// withoutStopFailure removes the StopFailure member from a settings.json
+// body, leaving it as a julienning without that hook wrote it.
+func withoutStopFailure(t *testing.T, body string) string {
+	t.Helper()
+	obj, err := jsonedit.Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, ok, err := obj.Object("hooks")
+	if err != nil || !ok {
+		t.Fatalf("no hooks object: %v\n%s", err, body)
+	}
+	if found, err := hooks.Delete("StopFailure"); err != nil || !found {
+		t.Fatalf("no StopFailure to remove: %v\n%s", err, body)
+	}
+	if err := obj.Set("hooks", hooks.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	return string(obj.Bytes())
+}
+
+// forgetCreatedStopFailure drops StopFailure from every patches.json record,
+// as a julienning without that hook recorded them.
+func forgetCreatedStopFailure(t *testing.T, h *harness) {
+	t.Helper()
+	p := filepath.Join(h.jl, claudecfg.PatchesFile)
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(h.read(p)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := doc["files"].(map[string]any)
+	for _, r := range files {
+		rec, _ := r.(map[string]any)
+		events, _ := rec["created_events"].([]any)
+		kept := []any{}
+		for _, e := range events {
+			if e != "StopFailure" {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) == 0 {
+			delete(rec, "created_events")
+		} else {
+			rec["created_events"] = kept
+		}
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.writeFile(p, string(raw))
 }

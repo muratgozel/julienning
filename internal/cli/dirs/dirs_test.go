@@ -260,7 +260,8 @@ type settingsDoc struct {
 		Command string `json:"command"`
 	} `json:"statusLine"`
 	Hooks map[string][]struct {
-		Hooks []struct {
+		Matcher string `json:"matcher"`
+		Hooks   []struct {
 			Type    string `json:"type"`
 			Command string `json:"command"`
 		} `json:"hooks"`
@@ -299,12 +300,17 @@ func assertPatched(t *testing.T, dir string) {
 		t.Errorf("%s: statusLine.command = %q, want %q", dir, got, wantCommand)
 	}
 	doc := settingsOf(t, dir)
-	for event, sub := range map[string]string{"SessionStart": "hook session-start", "SessionEnd": "hook session-end"} {
+	// StopFailure only runs julienning for usage-limit refusals.
+	matchers := map[string]string{"StopFailure": "rate_limit"}
+	for event, sub := range map[string]string{"SessionStart": "hook session-start", "SessionEnd": "hook session-end", "StopFailure": "hook stop-failure"} {
 		n := 0
 		for _, g := range doc.Hooks[event] {
 			for _, hk := range g.Hooks {
 				if hk.Command == fakeExe+" "+sub {
 					n++
+					if g.Matcher != matchers[event] {
+						t.Errorf("%s: %s matcher = %q, want %q", dir, event, g.Matcher, matchers[event])
+					}
 				}
 			}
 		}

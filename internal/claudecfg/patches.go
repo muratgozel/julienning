@@ -30,11 +30,22 @@ const (
 	subStatusLine   = "statusline"
 	subSessionStart = "hook session-start"
 	subSessionEnd   = "hook session-end"
+	subStopFailure  = "hook stop-failure"
 )
 
-var hookEvents = []struct{ name, sub string }{
-	{"SessionStart", subSessionStart},
-	{"SessionEnd", subSessionEnd},
+// hookEvent is one hook julienning wires: the event, the julienning
+// subcommand it runs and the matcher of the group Patch appends ("" for
+// none).
+type hookEvent struct{ name, sub, matcher string }
+
+// hookEvents is every hook julienning owns, in the order a fresh hooks
+// object lists them (hooksValue must agree). StopFailure fires when a turn
+// ends on an API error; the rate_limit matcher keeps it to usage-limit
+// refusals, which it reports as an exhausted account.
+var hookEvents = []hookEvent{
+	{EntrySessionStart, subSessionStart, ""},
+	{EntrySessionEnd, subSessionEnd, ""},
+	{EntryStopFailure, subStopFailure, "rate_limit"},
 }
 
 // Action is what Patch or Unpatch did to one settings.json.
@@ -79,17 +90,20 @@ type statusLineValue struct {
 }
 
 type hookGroup struct {
-	Hooks []statusLineValue `json:"hooks"`
+	Matcher string            `json:"matcher,omitempty"`
+	Hooks   []statusLineValue `json:"hooks"`
 }
 
-// hooksValue keeps SessionStart before SessionEnd (a map would sort them).
+// hooksValue keeps the events in hookEvents order (a map would sort them).
 type hooksValue struct {
 	SessionStart []hookGroup `json:"SessionStart"`
 	SessionEnd   []hookGroup `json:"SessionEnd"`
+	StopFailure  []hookGroup `json:"StopFailure"`
 }
 
-func newGroup(command string) hookGroup {
-	return hookGroup{Hooks: []statusLineValue{{Type: "command", Command: command}}}
+// group is the matcher group Patch adds for ev, running exe.
+func (ev hookEvent) group(exe string) hookGroup {
+	return hookGroup{Matcher: ev.matcher, Hooks: []statusLineValue{{Type: "command", Command: Command(exe, ev.sub)}}}
 }
 
 // Command is the settings.json command running `exe sub`. exe is quoted for
@@ -107,17 +121,29 @@ func shellQuote(s string) string {
 }
 
 // IsJulienningCommand is the SPEC ownership test: the command ends with
-// " statusline", " hook session-start" or " hook session-end" and its first
-// shell word (unquoted) either has the basename "julienning" or is an
-// installed version file (.../julienning/versions/<ver>), which is what a dev
-// build or a missing install symlink writes (paths.StableCommand, stable=false).
-// Without the second form a re-run would not recognise its own entries,
-// append duplicate hooks and record its own statusLine as the user's.
+// " statusline", " hook session-start", " hook session-end" or " hook
+// stop-failure" and its first shell word (unquoted) either has the basename
+// "julienning" or is an installed version file (.../julienning/versions/<ver>),
+// which is what a dev build or a missing install symlink writes
+// (paths.StableCommand, stable=false). Without the second form a re-run would
+// not recognise its own entries, append duplicate hooks and record its own
+// statusLine as the user's.
 func IsJulienningCommand(cmd string) bool {
+	return isJulienningCommandFor(cmd, "")
+}
+
+// isJulienningCommandFor is IsJulienningCommand limited to one subcommand
+// (sub "" accepts any of julienning's).
+func isJulienningCommandFor(cmd, sub string) bool {
 	cmd = strings.TrimSpace(cmd)
-	if !strings.HasSuffix(cmd, " "+subStatusLine) &&
-		!strings.HasSuffix(cmd, " "+subSessionStart) &&
-		!strings.HasSuffix(cmd, " "+subSessionEnd) {
+	subs := []string{sub}
+	if sub == "" {
+		subs = []string{subStatusLine}
+		for _, ev := range hookEvents {
+			subs = append(subs, ev.sub)
+		}
+	}
+	if !slices.ContainsFunc(subs, func(s string) bool { return strings.HasSuffix(cmd, " "+s) }) {
 		return false
 	}
 	first := firstWord(cmd)
@@ -161,11 +187,13 @@ func firstWord(s string) string {
 }
 
 // Patch wires julienning into <dir>/settings.json: statusLine plus one
-// SessionStart and one SessionEnd hook entry, all running exe (normally
-// paths.StableCommand). Every other byte of the file is preserved; the file
-// is written atomically, through symlinks, and only when it changes. A
-// non-julienning statusLine is recorded in patches.json before it is
-// replaced so Unpatch can restore it.
+// SessionStart, one SessionEnd and one StopFailure (matcher rate_limit) hook
+// entry, all running exe (normally paths.StableCommand). Every other byte of
+// the file is preserved; the file is written atomically, through symlinks,
+// and only when it changes. A non-julienning statusLine is recorded in
+// patches.json before it is replaced so Unpatch can restore it. On a file an
+// older julienning patched, the entries it lacks are added (and recorded as
+// created) and the action is Updated.
 func Patch(dir, exe string) (Result, error) {
 	path := SettingsPath(dir)
 	res := Result{Path: path}
@@ -217,30 +245,33 @@ func Patch(dir, exe string) (Result, error) {
 		return res, fmt.Errorf("%s: %q is not a JSON object; leaving the file alone", path, keyHooks)
 	case !has:
 		v := hooksValue{
-			SessionStart: []hookGroup{newGroup(Command(exe, subSessionStart))},
-			SessionEnd:   []hookGroup{newGroup(Command(exe, subSessionEnd))},
+			SessionStart: []hookGroup{hookEvents[0].group(exe)},
+			SessionEnd:   []hookGroup{hookEvents[1].group(exe)},
+			StopFailure:  []hookGroup{hookEvents[2].group(exe)},
 		}
 		if err := obj.SetValue(keyHooks, v); err != nil {
 			return res, editErr(path, err)
 		}
 		rec.CreatedHooks = true
-		rec.addEvent("SessionStart")
-		rec.addEvent("SessionEnd")
+		for _, ev := range hookEvents {
+			rec.addEvent(ev.name)
+		}
 	default:
 		for _, ev := range hookEvents {
-			wantHook := Command(exe, ev.sub)
 			arr, has, err := hooks.Array(ev.name)
 			if err != nil {
 				return res, fmt.Errorf("%s: hooks.%s is not a JSON array; leaving the file alone", path, ev.name)
 			}
 			if !has {
-				if err := hooks.SetValue(ev.name, []hookGroup{newGroup(wantHook)}); err != nil {
+				// Also how an older julienning's file gains a newer event:
+				// recorded as created, so Unpatch removes the container too.
+				if err := hooks.SetValue(ev.name, []hookGroup{ev.group(exe)}); err != nil {
 					return res, editErr(path, err)
 				}
 				rec.addEvent(ev.name)
 				continue
 			}
-			found, err := ensureHook(arr, wantHook)
+			found, err := ensureHook(arr, ev.group(exe))
 			if err != nil {
 				return res, editErr(path, err)
 			}
@@ -431,9 +462,12 @@ func stripOwned(obj *jsonedit.Object, path string, plan stripPlan) ([]string, er
 }
 
 // ensureHook makes arr (one hook event's matcher groups) hold exactly one
-// julienning entry running want: the first one found is updated in place,
-// later duplicates are removed, and a new group is appended when none exists.
-func ensureHook(arr *jsonedit.Array, want string) (found bool, err error) {
+// julienning entry running want's command: the first one found, in any
+// group, is updated in place (its group's matcher is left as it is), later
+// duplicates are removed, and want (with its matcher) is appended when none
+// exists.
+func ensureHook(arr *jsonedit.Array, want hookGroup) (found bool, err error) {
+	wantCmd := want.Hooks[0].Command
 	for gi := 0; gi < arr.Len(); gi++ {
 		group, err := arr.Object(gi)
 		if err != nil {
@@ -458,14 +492,14 @@ func ensureHook(arr *jsonedit.Array, want string) (found bool, err error) {
 				continue
 			}
 			found = true
-			if typ == "command" && cmd == want {
+			if typ == "command" && cmd == wantCmd {
 				continue
 			}
 			h, err := inner.Object(hi)
 			if err != nil {
 				return found, err
 			}
-			if err := updateCommand(h, "", want); err != nil {
+			if err := updateCommand(h, "", wantCmd); err != nil {
 				return found, err
 			}
 			if err := inner.Set(hi, h.Bytes()); err != nil {
@@ -487,7 +521,7 @@ func ensureHook(arr *jsonedit.Array, want string) (found bool, err error) {
 		}
 	}
 	if !found {
-		if err := arr.AppendValue(newGroup(want)); err != nil {
+		if err := arr.AppendValue(want); err != nil {
 			return false, err
 		}
 	}

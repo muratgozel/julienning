@@ -78,8 +78,8 @@ func TestPatchVersionsDirPathIsOwned(t *testing.T) {
 		t.Fatalf("patch with another version = %+v, %v", res, err)
 	}
 	body := readFile(t, filepath.Join(dir, SettingsFile))
-	if g := hookGroups(t, body); g["SessionStart"] != 2 || g["SessionEnd"] != 1 {
-		t.Fatalf("hook groups = %v, want SessionStart 2 (user + julienning), SessionEnd 1:\n%s", g, body)
+	if g := hookGroups(t, body); g["SessionStart"] != 2 || g["SessionEnd"] != 1 || g["StopFailure"] != 1 {
+		t.Fatalf("hook groups = %v, want SessionStart 2 (user + julienning), SessionEnd 1, StopFailure 1:\n%s", g, body)
 	}
 	if strings.Contains(body, v1) {
 		t.Fatalf("old version path left behind:\n%s", body)
@@ -126,7 +126,7 @@ func TestUnpatchIgnoresRecordedOwnStatusLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(res.Changes, ", ") != "removed statusLine, removed SessionStart hook, removed SessionEnd hook, removed empty hooks" {
+	if strings.Join(res.Changes, ", ") != "removed statusLine, removed SessionStart hook, removed SessionEnd hook, removed StopFailure hook, removed empty hooks" {
 		t.Fatalf("changes = %q", res.Changes)
 	}
 	if got := readFile(t, filepath.Join(dir, SettingsFile)); got != `{"model":"opus"}` {
@@ -140,6 +140,7 @@ func TestIsJulienningCommandVersionFiles(t *testing.T) {
 		"/Users/x/.local/share/julienning/versions/dev hook session-start":         true,
 		"'/Users/John Doe/.local/share/julienning/versions/1.0.0-rc.1' statusline": true,
 		"/opt/julienning/versions/0.3.0 hook session-end":                          true,
+		"/opt/julienning/versions/0.3.0 hook stop-failure":                         true,
 		"/opt/other/versions/0.3.0 statusline":                                     false,
 		"/opt/julienning/releases/0.3.0 statusline":                                false,
 		"/Users/x/.local/share/julienning/versions/0.3.0 status":                   false,

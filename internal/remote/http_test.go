@@ -154,6 +154,58 @@ func TestPutUsageBody(t *testing.T) {
 	}
 }
 
+func TestPutExhaustedBody(t *testing.T) {
+	c, got := newServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	reset := time.Unix(1791910800, 999).In(time.FixedZone("IST", 3*3600)) // 2026-10-13T20:00:00+03:00
+	id := Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}
+	if err := c.PutExhausted(context.Background(), "a+b@x.com", ExhaustedReport{Window: WindowWeek, ResetsAt: &reset, Reporter: id}); err != nil {
+		t.Fatalf("PutExhausted: %v", err)
+	}
+	if got.method != http.MethodPut || got.path != "/accounts/a+b@x.com/exhausted" || got.auth != "Bearer tok123" {
+		t.Errorf("request = %s %s (%s)", got.method, got.path, got.auth)
+	}
+	want := `{"window":"week","resets_at":"2026-10-13T17:00:00Z","reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"}}`
+	if got.body != want {
+		t.Errorf("body =\n%s\nwant\n%s", got.body, want)
+	}
+	if reset.Location().String() != "IST" || reset.Nanosecond() != 999 {
+		t.Errorf("the caller's time was modified: %v", reset)
+	}
+
+	// Unknown reset: null, not a zero time.
+	if err := c.PutExhausted(context.Background(), "a@x.com", ExhaustedReport{Window: WindowSession, Reporter: id}); err != nil {
+		t.Fatalf("PutExhausted: %v", err)
+	}
+	want = `{"window":"session","resets_at":null,"reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"}}`
+	if got.body != want {
+		t.Errorf("body =\n%s\nwant\n%s", got.body, want)
+	}
+}
+
+// The Worker's not-shared answer is recognised; an older Worker without the
+// route answers a plain 404, which is not.
+func TestPutExhaustedErrors(t *testing.T) {
+	c, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		io.WriteString(w, `{"error":"account is not shared"}`)
+	})
+	err := c.PutExhausted(context.Background(), "a@x.com", ExhaustedReport{Window: WindowWeek})
+	if !IsNotShared(err) || strings.Contains(err.Error(), "a@x.com") {
+		t.Errorf("err = %v, want not shared without the email", err)
+	}
+	c, _ = newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		io.WriteString(w, `{"error":"not found"}`)
+	})
+	err = c.PutExhausted(context.Background(), "a@x.com", ExhaustedReport{Window: WindowWeek})
+	if IsNotShared(err) || !IsNotFound(err) {
+		t.Errorf("err = %v, want a plain 404", err)
+	}
+	if err := NewHTTP("", "", time.Second).PutExhausted(context.Background(), "a@x.com", ExhaustedReport{}); !errors.Is(err, ErrNotConfigured) {
+		t.Errorf("unconfigured: %v", err)
+	}
+}
+
 func TestClaimRoutes(t *testing.T) {
 	c, got := newServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	id := Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}
@@ -495,8 +547,14 @@ func TestFakeRecordsCalls(t *testing.T) {
 	_ = f.Share(ctx, "c@d.com", "cee", id)
 	_ = f.SetNickname(ctx, "c@d.com", "dee")
 	_ = f.Unshare(ctx, "c@d.com")
-	if got := strings.Join(f.Ops(), ","); got != "list,claim,unclaim,share,nickname,unshare" {
+	reset := time.Unix(1791910800, 0).UTC()
+	_ = f.PutExhausted(ctx, "e@f.com", ExhaustedReport{Window: WindowWeek, ResetsAt: &reset, Reporter: id})
+	if got := strings.Join(f.Ops(), ","); got != "list,claim,unclaim,share,nickname,unshare,exhausted" {
 		t.Errorf("ops = %s", got)
+	}
+	if c := f.CallsFor("exhausted"); len(c) != 1 || c[0].Email != "e@f.com" || c[0].Dev != "murat" || c[0].Exhausted == nil ||
+		c[0].Exhausted.Window != WindowWeek || !c[0].Exhausted.ResetsAt.Equal(reset) || c[0].Identity == nil || *c[0].Identity != id {
+		t.Errorf("exhausted not recorded: %+v", c)
 	}
 	if c := f.CallsFor("share"); len(c) != 1 || c[0].Nickname != "cee" || c[0].Identity == nil || *c[0].Identity != id {
 		t.Errorf("share not recorded with nickname and identity: %+v", c)
@@ -531,13 +589,17 @@ func TestFakeRecordsCalls(t *testing.T) {
 	if len(f.Calls) != 2 {
 		t.Errorf("calls after Reset = %d", len(f.Calls))
 	}
+	f.PutExhaustedErr = errors.New("exhausted failed")
+	if err := f.PutExhausted(ctx, "ok@b.com", ExhaustedReport{}); err == nil || err.Error() != "exhausted failed" {
+		t.Errorf("PutExhaustedErr not returned: %v", err)
+	}
 }
 
 // Guards the Account struct against silent JSON tag drift, and the Worker
 // contract that claims and busy_by are always arrays.
 func TestAccountTags(t *testing.T) {
 	raw, _ := json.Marshal(Account{Email: "a@b.com", State: "free"})
-	if string(raw) != `{"email":"a@b.com","claims":[],"state":"free","busy_by":[],"exhausted":false,"exhausted_until":null}` {
+	if string(raw) != `{"email":"a@b.com","claims":[],"state":"free","busy_by":[],"exhausted":false,"exhausted_until":null,"exhausted_window":null}` {
 		t.Errorf("marshal = %s", raw)
 	}
 	a := &Account{Email: "a@b.com", State: "claimed", BusyBy: []string{"ali"},
@@ -617,6 +679,38 @@ func TestExhaustedDecoding(t *testing.T) {
 	})
 	if _, err := c.GetAccount(context.Background(), "a@x.com", "murat"); err == nil || !strings.Contains(err.Error(), "malformed response from remote") {
 		t.Errorf("invalid exhausted_until: err = %v", err)
+	}
+}
+
+// exhausted_window: present wins over the inference, null and absent (an
+// older Worker) fall back to it, and exhausted_until may be null while
+// exhausted is true.
+func TestExhaustedWindowField(t *testing.T) {
+	body := `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","accounts":[
+	  {"email":"a@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":"week"},
+	  {"email":"b@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":"session",
+	   "session":{"used":40,"resets_at":"2026-09-16T23:40:00Z"},"week":{"used":100,"resets_at":"2026-09-16T23:40:00Z"}},
+	  {"email":"c@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":null,
+	   "session":{"used":100,"resets_at":"2026-09-16T23:40:00Z"}},
+	  {"email":"d@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null},
+	  {"email":"e@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":"opus"},
+	  {"email":"f@x.com","state":"free","busy_by":[],"claims":[],"exhausted":false,"exhausted_until":null,"exhausted_window":"week"}]}`
+	c, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) })
+	l, err := c.ListAccounts(context.Background(), "murat")
+	if err != nil {
+		t.Fatalf("ListAccounts: %v", err)
+	}
+	want := map[string]string{"a@x.com": "week", "b@x.com": "session", "c@x.com": "session", "d@x.com": "", "e@x.com": "", "f@x.com": ""}
+	for _, a := range l.Accounts {
+		if got := a.ExhaustedWindow(); got != want[a.Email] {
+			t.Errorf("%s: ExhaustedWindow = %q, want %q", a.Email, got, want[a.Email])
+		}
+	}
+	if a := l.Accounts[0]; !a.IsExhausted() || a.ExhaustedUntil != nil || a.ExhaustedWin == nil || *a.ExhaustedWin != "week" {
+		t.Errorf("a = %+v", a)
+	}
+	if a := l.Accounts[3]; a.ExhaustedWin != nil {
+		t.Errorf("absent exhausted_window decoded as %q", *a.ExhaustedWin)
 	}
 }
 

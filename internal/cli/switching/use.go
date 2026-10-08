@@ -57,13 +57,14 @@ func runUse(env cli.Env) error {
 			return err
 		}
 		if !curOK {
-			return runNext(env)
+			return runNext(env) // warns about setup itself
 		}
 	} else if err != nil {
 		// The selection only breaks ties between dirs of one account.
 		warnf(env, "ignoring the current selection (%v)", err)
 		curOK = false
 	}
+	warnSetup(env, cfg)
 	now, err := clock()
 	if err != nil {
 		return err

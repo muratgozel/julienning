@@ -59,8 +59,11 @@ func (s *statusline) run() {
 		s.report(usage.CodeUsageInvalid, "rate_limits in status line input are malformed", in.RateLimitsSignature())
 		return
 	}
-	// An absent window is normal before the first reply and right after a reset.
+	// An absent window is normal before the first reply and right after a
+	// reset, so there is no error row; the throttled log line (shape only,
+	// never numbers) is what explains a "usage pending" that never clears.
 	if !in.Complete() {
+		s.logThrottled(usage.CodeUsagePending, "status line input lacks a rate limit window; usage is not reported until both are there "+in.RateLimitsSignature())
 		s.printf("%s · %s\n", s.line, usage.Pending)
 		return
 	}

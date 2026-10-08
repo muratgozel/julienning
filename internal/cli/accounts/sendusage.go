@@ -2,6 +2,7 @@ package accounts
 
 import (
 	"context"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -46,10 +47,11 @@ func runSendUsage(env cli.Env) error {
 	if !claudecfg.ValidEmail(*email) {
 		return cli.Usagef("--email must be a valid email address")
 	}
-	if err := checkPercent("--session-used", *sessionUsed); err != nil {
+	var err error
+	if *sessionUsed, err = checkPercent("--session-used", *sessionUsed); err != nil {
 		return err
 	}
-	if err := checkPercent("--week-used", *weekUsed); err != nil {
+	if *weekUsed, err = checkPercent("--week-used", *weekUsed); err != nil {
 		return err
 	}
 	if err := checkEpoch("--session-resets", *sessionResets); err != nil {
@@ -214,11 +216,14 @@ func sendFailed(logger usage.Logger, email, message string) {
 	_ = logger.LogThrottledEvery(usage.CodeSendFailed, email, scrub(message, email), usage.SendFailedEvery)
 }
 
-func checkPercent(flag string, v float64) error {
-	if v < 0 || v > 100 {
-		return cli.Usagef("%s must be a percentage in [0,100]", flag)
+// checkPercent returns the percentage to send. Claude Code reports more than
+// 100 once a limit is exceeded; that is clamped to 100 (the Worker's
+// "exhausted"), not refused.
+func checkPercent(flag string, v float64) (float64, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0, cli.Usagef("%s must be a finite, non-negative percentage", flag)
 	}
-	return nil
+	return min(v, 100), nil
 }
 
 func checkEpoch(flag string, v int64) error {
