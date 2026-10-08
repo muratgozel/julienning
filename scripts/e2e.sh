@@ -197,6 +197,14 @@ mkdir_claude() { # DIR EMAIL ACCOUNT_FILE
 mkdir_claude "$HOME/.claude" personal@example.com "$HOME/.claude.json"
 mkdir_claude "$HOME/.claude-work" alpha@example.com "$HOME/.claude-work/.claude.json"
 mkdir_claude "$HOME/.claude-two" beta@example.com "$HOME/.claude-two/.claude.json"
+# A dir an older julienning patched: statusLine and session hooks, no StopFailure.
+mkdir -p "$HOME/.claude-old/projects"
+printf '{"oauthAccount":{"emailAddress":"gamma@example.com"}}' >"$HOME/.claude-old/.claude.json"
+old_layout() {
+  printf '{\n  "model": "opus",\n  "statusLine": {\n    "type": "command",\n    "command": "%s statusline"\n  },\n  "hooks": {\n    "SessionStart": [\n      {\n        "hooks": [\n          {\n            "type": "command",\n            "command": "%s hook session-start"\n          }\n        ]\n      }\n    ],\n    "SessionEnd": [\n      {\n        "hooks": [\n          {\n            "type": "command",\n            "command": "%s hook session-end"\n          }\n        ]\n      }\n    ]\n  }\n}\n' \
+    "$JULIENNING_BIN_DIR/julienning" "$JULIENNING_BIN_DIR/julienning" "$JULIENNING_BIN_DIR/julienning" >"$HOME/.claude-old/settings.json"
+}
+old_layout
 cat >"$rc" <<'RC'
 # hand-written before julienning
 alias claude-two='CLAUDE_CONFIG_DIR=~/.claude-two claude'
@@ -266,7 +274,10 @@ ok "command is a symlink into the versions dir"
 
 # --- setup ------------------------------------------------------------------------------
 run julienning setup --dev e2e --remote-url "$W" --token "$token" --yes --shell bash \
-  --share alpha@example.com --share beta@example.com --nick beta@example.com=bravo
+  --share alpha@example.com --share beta@example.com --share gamma@example.com --nick beta@example.com=bravo
+expect_contains "setup upgrades a settings.json from an older julienning" "updated" "$out"
+expect_contains "the upgrade adds the StopFailure hook" "hook stop-failure" "$(cat "$HOME/.claude-old/settings.json")"
+expect_contains "the StopFailure hook carries the rate_limit matcher" '"matcher": "rate_limit"' "$(cat "$HOME/.claude-work/settings.json")"
 expect_contains "setup registers the work dir" ".claude-work" "$out"
 run julienning configs
 expect_contains "configs lists alpha's dir" ".claude-work" "$out"
@@ -293,6 +304,15 @@ expect_contains "use --clear returns plain claude to the default dir" "dir=<unse
 run julienning use bravo --no-launch
 run_fail julienning use nobody --no-launch
 expect_contains "use of an unknown target fails with a hint" "nobody" "$out"
+
+# --- the "run setup" warning for a settings.json an older julienning patched -----------------
+old_layout
+run julienning accounts
+expect_contains "accounts warns when a dir lacks the new hook" "run: julienning setup" "$out"
+run julienning setup --dev e2e --remote-url "$W" --token "$token" --yes --shell bash \
+  --share alpha@example.com --share beta@example.com --share gamma@example.com --nick beta@example.com=bravo
+run julienning accounts
+expect_missing "the warning is gone after setup" "run: julienning setup" "$out"
 
 # --- accounts ---------------------------------------------------------------------------
 run julienning accounts
@@ -342,6 +362,21 @@ expect_contains "the personal dir is logged as not shared" "NOT_SHARED" "$(cat "
 sleep 1
 expect_missing "the Worker never sees a personal account" "personal@example.com" "$(julienning accounts --json 2>/dev/null)"
 
+# --- exhaustion from a rate-limit refusal ---------------------------------------------------
+# Claude Code runs the StopFailure hook when a turn ends on a 429; the hook
+# reports the refusal through a detached send-exhausted.
+printf '{"session_id":"e2e-session-1","hook_event_name":"StopFailure","error":"rate_limit","error_details":"You have hit your weekly limit · resets Oct 13 at 8pm (Europe/Istanbul) (error type rate_limit)","last_assistant_message":"You have hit your weekly limit · resets Oct 13 at 8pm (Europe/Istanbul)"}' |
+  CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning hook stop-failure
+wait_for "a rate-limit refusal marks the account exhausted" 15 "exhausted (week" row alpha
+[ "$(row alpha | awk '{ print $1 }')" = "3" ] || fail "the exhausted account should rank last, got:" "$(julienning accounts 2>&1)"
+ok "the exhausted account ranks last"
+expect_contains "the Worker names the exhausted window" '"exhausted_window": "week"' "$(account_json alpha)"
+expect_contains "the stale 93%-style numbers stay visible" "23%" "$(row alpha)"
+printf '{"session_id":"e2e-session-1","hook_event_name":"StopFailure","error":"overloaded","error_details":"Overloaded"}' |
+  CLAUDE_CONFIG_DIR="$HOME/.claude-two" julienning hook stop-failure
+sleep 1
+expect_contains "other StopFailure errors change nothing" "free" "$(row bravo)"
+
 # --- forget -----------------------------------------------------------------------------------
 run julienning forget bravo --keep
 run julienning configs
@@ -372,6 +407,7 @@ expect_same "the personal settings.json was never touched" "$T/before/personal.j
 [ ! -e "$JULIENNING_BIN_DIR/julienning" ] || fail "uninstall --purge left the command"
 [ ! -e "$JULIENNING_VERSIONS_DIR" ] || fail "uninstall --purge left $JULIENNING_VERSIONS_DIR"
 ok "uninstall --purge removed julienning's own files"
+expect_missing "uninstall strips the upgraded dir too" "julienning" "$(cat "$HOME/.claude-old/settings.json")"
 [ -f "$HOME/.claude-work/.claude.json" ] || fail "uninstall touched a Claude config dir"
 ok "Claude config dirs survive uninstall"
 
