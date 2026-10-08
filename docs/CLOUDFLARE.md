@@ -234,9 +234,11 @@ workflows triggered from forks, so a fork's pull request cannot deploy.
 ## 14. KV limits
 
 Each writer owns its own key (`share:<email>`, `usage:<email>`,
-`claim:<email>:<dev>:<machine_id>`; see "Worker" in `docs/SPEC.md`), so
-concurrent requests never overwrite each other's data. All data lives in KV
-metadata, which keeps listings to a single operation.
+`claim:<email>:<dev>:<machine_id>`, `exhausted:<email>:<dev>:<machine_id>`;
+see "Worker" in `docs/SPEC.md`), so concurrent requests never overwrite each
+other's data. All data lives in KV metadata, which keeps the account listing
+to a single list operation (`GET /accounts/:email` and unshare use two, one
+per key prefix).
 
 KV has no transactions or conditional writes, so two nickname edge cases are
 accepted rather than prevented. Both need two people acting at the same
@@ -265,6 +267,9 @@ Writes happen on:
   older than the stored one writes nothing;
 - `PUT claim`: one write to that holder's own key, on session start plus a
   refresh at most hourly;
+- `PUT exhausted`: one write to that reporter's own key, once per refused
+  request (Claude refuses every request while a limit is hit, but the hook
+  runs once per turn, and nobody keeps prompting an exhausted account);
 - share (`PUT /accounts/:email`) and nickname rename
   (`PUT /accounts/:email/nickname`): one write each, none when the email is
   already shared or the nickname is unchanged. Rare.

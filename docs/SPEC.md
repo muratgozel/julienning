@@ -1,3 +1,5 @@
+| PUT | `/accounts/:email/exhausted` | `{window: "session"|"week", resets_at?: ISO|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first || PUT | `/accounts/:email/exhausted` | `{window: "session"|"week", resets_at?: ISO|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter. `resets_at` is resolved at write time: the body's value if in the future, else the usage record's matching window reset if in the future, else null |
+| `exhausted:<email>:<dev>:<machine_id>` | PUT exhausted of that reporter | `{window, resets_at, at}` (`window` `session`/`week`, `resets_at` ISO or null, `at` server-stamped); `expirationTtl` = until `resets_at` when known (min 60 s), else 5 h for `session`, 7 d for `week` |
 # julienning — design spec (v2)
 
 Shared Claude Code account switching, session hand-off and usage tracking for
@@ -475,13 +477,14 @@ julienning adds, using `C = paths.StableCommand()`:
 "statusLine": { "type": "command", "command": "C statusline" },
 "hooks": {
   "SessionStart": [ { "hooks": [ { "type": "command", "command": "C hook session-start" } ] } ],
-  "SessionEnd":   [ { "hooks": [ { "type": "command", "command": "C hook session-end" } ] } ]
+  "SessionEnd":   [ { "hooks": [ { "type": "command", "command": "C hook session-end" } ] } ],
+  "StopFailure":  [ { "matcher": "rate_limit", "hooks": [ { "type": "command", "command": "C hook stop-failure" } ] } ]
 }
 ```
 
 - Ownership test: a statusLine or hook command is julienning's when its
-  command ends with ` statusline`, ` hook session-start` or
-  ` hook session-end` and its first word (shell-unquoted) either has the
+  command ends with ` statusline`, ` hook session-start`, ` hook session-end`
+  or ` hook stop-failure` and its first word (shell-unquoted) either has the
   basename `julienning` or is a versions-dir file
   (`…/julienning/versions/<ver>`, `paths.IsVersionFile`). A prior statusLine
   that is itself julienning's is never recorded as the one to restore.
@@ -489,7 +492,13 @@ julienning adds, using `C = paths.StableCommand()`:
   updated in place when the command path changes.
 - The first time a non-julienning `statusLine` is replaced, its raw JSON is
   stored in `patches.json` so uninstall/forget can restore it.
-- Report per dir: `added` / `updated` / `unchanged`.
+- Report per dir: `added` / `updated` / `unchanged`. A re-run on a file patched
+  by an older julienning adds only the entries it lacks (the StopFailure hook
+  arrived in 0.7.0), records them as created, and reports `updated`.
+- `accounts`, `next` and `use` check every registered dir's settings.json for
+  julienning's four entries (`claudecfg.MissingEntries`) and print one warning
+  naming the dirs and `run: julienning setup` when any is missing; the
+  command then continues. Hidden commands never check.
 
 ### shell integration (`internal/shell`)
 
@@ -866,6 +875,51 @@ sessions whose SessionEnd never ran. A pending share usually lands at the
 first SessionStart after the login, at the latest at that session's
 SessionEnd (which needs only a registered dir).
 
+### Exhaustion from refusals (`hook stop-failure`, `send-exhausted`)
+
+Usage numbers alone cannot show an exhausted account: Claude Code documents
+`used_percentage` as going above 100 once the limit is exceeded, and after
+the API refuses a request (HTTP 429, Claude Code error type `rate_limit`) the
+status line may keep showing the last numbers from before the refusal. The
+refusal itself is the signal. settings.json gets a `StopFailure` hook with
+matcher `rate_limit` running `julienning hook stop-failure`; Claude Code
+calls it when a turn ends on that error, with stdin JSON carrying the common
+fields plus `error`, `error_details` and `last_assistant_message`. Exit code
+and output are ignored by Claude Code.
+
+The hook does nothing unless `error` is `rate_limit`, gates like
+`session-start` (set up, registered, logged in, email in `shared.json`; a
+pending share is not enough), decides the window and the reset locally, spawns
+a detached `julienning send-exhausted --email E --window session|week
+[--resets EPOCH]` and exits 0 within 100 ms, without network.
+
+- Window: the refusal text (`error_details` + `last_assistant_message`)
+  contains "week" (case-insensitive) → `week`; else the window with the higher
+  `used` in the local sent cache (`~/.julienning/sent/<hash>.json`), where a
+  window whose reset has passed since that report counts as 0 (the session
+  rolls over every five hours while the week keeps filling); ties → `session`;
+  no usable cache → `session` (`usage.RefusalWindow`).
+- Reset: parsed from the text, best effort, forms `resets Oct 13 at 8pm
+  (Europe/Istanbul)`, `resets Oct 13 at 8:30pm (…)`, `resets 3pm (…)`, `resets
+  3:15am (…)`; the zone in parentheses is loaded with `time.LoadLocation`
+  (unknown zone → no reset). The dated form takes the current year (next year
+  when that lands more than 30 days in the past); the time-only form is today
+  in that zone, or tomorrow when that is not after now; the result must be
+  after now and at most 32 days ahead (a "resets Dec 31" read on Jan 2 must
+  not pin an account for a year). Built with `time.Date` in the zone, never by
+  adding hours (DST). `usage.ParseRefusalReset`, `usage.RefusalReset`.
+  When parsing fails, the sent cache's reset for that window if still in the
+  future; else no reset (the Worker falls back to its own usage record, then
+  to a window-length TTL).
+
+`send-exhausted` validates its flags, re-checks the allowlist, and
+`PUT /accounts/<email>/exhausted` with a 5 s timeout. Failures go to
+`errors.log` as `EXHAUSTED_FAILED` (throttled like `SEND_FAILED`, per account
+by email hash; a plain 404 from a Worker that predates the route says it
+needs a redeploy); a 404 `account is not shared` is logged as `NOT_SHARED`
+and drops the email from `shared.json`, as send-usage does. Nothing is
+returned, nothing printed.
+
 ### statusline / send-usage
 
 As v1, plus: the gate is "config dir registered AND email in `shared.json`"
@@ -873,7 +927,13 @@ As v1, plus: the gate is "config dir registered AND email in `shared.json`"
 reporting once its share has landed in `shared.json`. The config dir is resolved via `claudecfg.ActiveDir` and the
 account file via `claudecfg.AccountFileForEnv` (an explicitly exported
 `CLAUDE_CONFIG_DIR=~/.claude` reads `~/.claude/.claude.json`). Every
-status-line error code is log-throttled. The
+status-line error code is log-throttled. A `used_percentage` above 100 is
+clamped to 100 at parse time and again in `send-usage` (Claude Code reports
+more than 100 once a limit is exceeded; v0.6 and earlier rejected such
+payloads as malformed, which hid exactly the exhausted accounts). A payload
+with a window missing still renders `usage pending` and now also logs
+`USAGE_PENDING` (throttled, hourly) with the shape signature, never numbers,
+so a silent run can be diagnosed afterwards. The
 send-usage child refreshes `shared.json` when stale and runs claim
 reconciliation at most every 10 minutes; when it did either, it then runs
 the daily update check / auto-update outside the claim-sync lock. A 404 `account is not shared` from
@@ -901,7 +961,8 @@ listing needs no per-key reads):
 An email is shared iff `share:<email>` exists. The listing shows only shared
 emails; orphaned `usage:`/`claim:` keys (written by a request that raced an
 unshare) are ignored and expire on their own. Unshare deletes the share key,
-the usage key and every claim key under `claim:<email>:`. Each key's metadata
+the usage key and every claim and exhausted key under `claim:<email>:` and
+`exhausted:<email>:`. Each key's metadata
 is validated independently: an invalid claim key drops only that holder.
 `collected_at` later than the Worker's clock is clamped to now before storing
 and comparing. The JSON response shape per account (below) is unchanged.
@@ -940,19 +1001,34 @@ Ranking and state: holders with `at` older than `CLAIM_TTL_MIN` are ignored.
 `busy_by` = sorted unique devs ≠ querying `dev` that hold a fresh claim or
 reported within `ACTIVITY_TTL_MIN` (all such devs when no `dev` query).
 `exhausted`: any present window with effective usage ≥ 100 (Claude refuses
-work until it resets); `exhausted_until` = the reset after which the account
-is usable again (null otherwise). `state`: `exhausted` first, else `in_use`
+work until it resets), or an `exhausted:` record that still counts
+(`worker/src/exhausted.ts`). A record's stored `resets_at` is the reported
+one when believable, else the usage record's reset for the same window when
+believable, else null; believable means in the future and at most one window
+length plus an hour away (a misparsed far-future date must not pin an
+account). A record counts until its `resets_at`, or until `at` plus one
+window length (5 h / 7 d) when the reset is unknown, and is superseded
+earlier when the usage window of the same name resets more than an hour
+after that end (a new window started; the hour absorbs the refusal message's
+minute precision against the status line's seconds). A newer usage report
+under 100% never clears a record, because Claude Code keeps feeding
+pre-refusal numbers after a refusal. `exhausted_until` =
+the latest known reset among the windows at 100% and the valid records (null
+when none is known); `exhausted_window` = `session`/`week` of that reset, or
+of the records when no reset is known (`week` when both), null when not
+exhausted. `state`: `exhausted` first, else `in_use`
 when another dev reported within the activity TTL, `claimed` when only fresh
 claims by others exist, else `free`; `busy_by` is populated in every state.
 Sort: not exhausted first → not busy first → known usage before unknown →
 effective session asc → effective week asc → session reset asc → email asc
-(exhausted accounts order by `exhausted_until` asc first). The CLI's
+(exhausted accounts order by `exhausted_until` asc first, unknown last). The CLI's
 `accounts` also appends `syncing (just shared)` rows for emails this machine
 shared within `sharedcache.LocalAddGrace` that the listing does not show yet. JSON: `claims` always an array,
 `busy_by` always an array. `nickname` is always present (null for legacy
 records). Text columns: `#  NICK  ACCOUNT  SESSION  WEEK  STATE  UPDATED`
 (NICK `-` when null; the CLI adds LOCAL). Text STATE: `free`,
-`in use by ali (12m)`, `claimed by ali, can`.
+`in use by ali (12m)`, `claimed by ali, can`, `exhausted (week resets Tue
+20:00)`, `exhausted (week)` when the reset is unknown.
 
 Other v1 rules (validation, body limit, timestamps, text format, corrupt and
 non-email keys skipped) stay.

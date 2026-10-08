@@ -78,7 +78,8 @@ Env overrides are read at runtime and never written to `config.json`.
   the Worker by hand and teammates' CLIs auto-update within a day, so a newer
   CLI meets an older Worker and vice versa. New Worker fields are optional,
   existing fields keep their meaning, and the CLI tolerates missing fields.
-- Worker storage: one KV key per fact (`share:`, `usage:`, `claim:`), all data
+- Worker storage: one KV key per fact (`share:`, `usage:`, `claim:`,
+  `exhausted:`), all data
   in metadata so `GET /accounts` is a single `list()`. No request may
   read-modify-write a key another request writes; `worker/test/race.test.ts`
   guards this.
@@ -112,7 +113,14 @@ Each item names the only package that touches it.
 - Status line stdin JSON: `rate_limits.five_hour` and `seven_day` with
   `used_percentage` and `resets_at`; an unexpected shape is reported as
   `USAGE_INVALID` with a type signature (`internal/usage`).
-- Hooks `SessionStart` and `SessionEnd` drive claims (`internal/claims`).
+- Hooks `SessionStart` and `SessionEnd` drive claims (`internal/claims`); the
+  `StopFailure` hook with matcher `rate_limit` (stdin: `error`,
+  `error_details`, `last_assistant_message`) drives exhausted reports
+  (`internal/cli/accounts/hook.go`); the refusal text it parses for the window
+  and reset (`You've hit your weekly limit · resets Oct 13 at 8pm
+  (Europe/Istanbul)`) lives in `internal/usage/refusal.go`. Claude Code
+  reports `used_percentage` above 100 once a limit is exceeded; never reject
+  such values, clamp them.
 
 ## Releasing and docs
 

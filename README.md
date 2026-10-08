@@ -11,7 +11,7 @@ be installed.
 
 - **No auth tokens.** julienning never reads, copies or sends Claude credentials; signing in stays Claude Code's own flow.
 - **Only `CLAUDE_CONFIG_DIR`.** That is how it switches accounts; from Claude it takes just the account email and the usage numbers the status line shows.
-- **Reports go to your team's own Worker:** that email and its nickname, those numbers, whether you have it open, your username and a random machine id. Session lists stay local.
+- **Reports go to your team's own Worker:** that email and its nickname, those numbers, whether you have it open, when Claude refused it a request for a limit, your username and a random machine id. Session lists stay local.
 - **Personal accounts never report.** An account that is not shared with the team sends no usage and no claims.
 
 Details: [Policy note](docs/REFERENCE.md#policy-note).
@@ -88,7 +88,7 @@ $ julienning accounts
 SESSION and WEEK are the used % and when it resets, in your local time. STATE
 names the teammates on the account (`in use by you` when it is yours), says
 `exhausted (week resets Fri 10:00)`
-when a limit is used up (those rank last), and `syncing (just shared)` for an
+when a limit is used up or Claude refused a request for it (those rank last), and `syncing (just shared)` for an
 account you shared a moment ago that the Worker does not list yet. LOCAL is
 the dir here that is logged into it (`*` is your selection). `next` takes the
 highest account that is logged in on this machine, and warns when all of them
@@ -119,7 +119,9 @@ lists every project).
   claims nothing.
 - **Updates install themselves:** once a day a background process installs a
   newer release, and your next command prints `julienning updated to 0.3.0`.
-  `julienning update` updates right away. To opt out, set
+  `julienning update` updates right away. When an update adds something to your
+  Claude settings (0.7.0 added a rate-limit hook), commands print one warning
+  until you re-run `julienning setup`, which adds only what is missing. To opt out, set
   `"auto_update": false` in `~/.julienning/config.json` (or export
   `JULIENNING_AUTO_UPDATE=0`); commands then print a one-line hint when a
   newer release is out.

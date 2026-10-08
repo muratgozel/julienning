@@ -1,3 +1,5 @@
+| `EXHAUSTED_FAILED` | the exhausted report after a rate-limit refusal failed; the rest says why (a plain `404` means the Worker predates 0.7.0 and needs a redeploy). At most every 10 minutes per account || `EXHAUSTED_FAILED` | the exhausted report after a rate-limit refusal failed; the rest says why. At most every 10 minutes |
+| `USAGE_PENDING` | the status line input lacked a rate-limit window (normal before the first reply of a session); the rest of the line is the shape it got, such as `five_hour=absent seven_day={used_percentage:number,resets_at:number}`. Hourly, diagnostic only |
 # julienning reference
 
 Every julienning command, flag, output, file and error in one page, with output from real runs; for the quick start, see the [README](../README.md).
@@ -19,6 +21,7 @@ Every julienning command, flag, output, file and error in one page, with output 
   - [Other commands](#other-commands)
 - [How claims work](#how-claims-work)
 - [How usage reaches KV](#how-usage-reaches-kv)
+- [How exhaustion is detected](#how-exhaustion-is-detected)
 - [Undo](#undo)
 - [Web view](#web-view)
 - [Deploying the Worker](#deploying-the-worker)
@@ -377,7 +380,8 @@ reporting until that email is shared.
   "statusLine": { "type": "command", "command": "/Users/you/.local/bin/julienning statusline" },
   "hooks": {
     "SessionStart": [ { "hooks": [ { "type": "command", "command": "/Users/you/.local/bin/julienning hook session-start" } ] } ],
-    "SessionEnd":   [ { "hooks": [ { "type": "command", "command": "/Users/you/.local/bin/julienning hook session-end" } ] } ]
+    "SessionEnd":   [ { "hooks": [ { "type": "command", "command": "/Users/you/.local/bin/julienning hook session-end" } ] } ],
+    "StopFailure":  [ { "matcher": "rate_limit", "hooks": [ { "type": "command", "command": "/Users/you/.local/bin/julienning hook stop-failure" } ] } ]
   }
   ```
 
@@ -426,7 +430,11 @@ Nothing else. Config dirs themselves are never created or deleted by setup.
 
 **Safe to re-run**: steps that have nothing to do report `unchanged`, and the
 rc line is found by its `# julienning-shell-hook` marker (a line with the
-older `# julienning` marker is rewritten in place). Re-run it after logging a
+older `# julienning` marker is rewritten in place). A settings.json patched by
+an older julienning gets only the entries it lacks (the `StopFailure` hook
+arrived in 0.7.0); until you re-run setup, `accounts`, `next` and `use`
+print one warning naming the dirs:
+`julienning: warning: … settings.json of julienning3 lacks …; run: julienning setup`. Re-run it after logging a
 dir into another account, or with `--token` when the token is rotated. New
 `claude-<nickname>` functions appear in new terminals.
 
@@ -626,8 +634,11 @@ prints the ranking:
   when a window is at 100%, so Claude refuses work on it until then: the
   window named is the one that resets last (week on a tie), in your local
   zone (`exhausted (resets …)` when the Worker's reset matches neither
-  window). Exhausted wins over the other states; anyone else on the account
-  follows, `exhausted (week resets Fri 10:00), in use by ali`.
+  window), and `exhausted (week)` when Claude refused a request for that
+  limit and no reset time is known (see
+  [How exhaustion is detected](#how-exhaustion-is-detected)). Exhausted wins
+  over the other states; anyone else on the account follows,
+  `exhausted (week resets Fri 10:00), in use by ali`.
 - `syncing (just shared)`: an account shared from this machine in the last
   10 minutes that the Worker's listing does not show yet (its listings lag
   writes by up to a minute). The row has no rank (`-`), no usage and
@@ -639,7 +650,8 @@ prints the ranking:
   first on top), then not busy, then accounts with usage before those
   without, then session %, week %, session reset, email.
 - `--json`: the Worker document (each account's `nickname` is `null` when it
-  has none; `exhausted` and `exhausted_until`, `null` unless exhausted) with
+  has none; `exhausted`, `exhausted_until` and `exhausted_window`, `null`
+  unless exhausted) with
   `local_config` and `local_configs` (config names) added to every account,
   plus a top-level `syncing` array (always present) of
   `{"email", "nickname", "local_configs"}` for the syncing accounts, which
@@ -821,7 +833,10 @@ registry can keep a claim but never releases it; the TTL does.
 1. Claude Code runs `julienning statusline` and pipes it JSON. It prints
    `<model> · ctx <n>%` (for example `Opus 4.6 · ctx 31%`), adds
    ` · usage pending` until both rate-limit windows are present (normal before
-   the first reply), always exits 0 and does no network I/O.
+   the first reply; it also logs `USAGE_PENDING` once an hour with the shape
+   of what it got, never the numbers), always exits 0 and does no network
+   I/O. A `used_percentage` above 100, which Claude Code reports once a limit
+   is exceeded, counts as 100.
 2. Gate, all local: set up, `CLAUDE_CONFIG_DIR` (or `~/.claude` when unset) is
    a registered dir, its email is readable and is in `shared.json`. Otherwise
    it prints the line and stops.
@@ -845,6 +860,30 @@ holds only the latest snapshot per account: a report older than the stored
 one is dropped, and a `collected_at` ahead of the Worker's clock is clamped to
 it, so one machine with a fast clock cannot make everyone else's reports look
 stale.
+
+## How exhaustion is detected
+
+Two signals mark an account exhausted; either is enough, and the account
+ranks last until the window resets.
+
+1. A usage report at 100% for a window (see above).
+2. Claude refusing a request for a limit. Claude Code runs the `StopFailure`
+   hook (matcher `rate_limit`) when a turn ends on that error;
+   `julienning hook stop-failure` checks locally that the dir is registered
+   and its account shared, reads which window the refusal names (`weekly`
+   → week, otherwise the window closest to 100% in the last report here) and
+   the reset time in the message (`resets Oct 13 at 8pm (Europe/Istanbul)`),
+   then starts a detached `julienning send-exhausted`, which sends
+   `PUT /accounts/<email>/exhausted`. Nothing else from the message leaves the
+   machine. The Worker keeps that fact until the reset (or, when no reset is
+   known, for the window's length: 5 hours or 7 days), and ignores it once a
+   later report shows a new window. A later report with the old, lower
+   numbers does not clear it: after a refusal, Claude Code keeps showing the
+   numbers from before it.
+
+STATE then reads `exhausted (week resets Tue 20:00)`, or `exhausted (week)`
+when no reset time is known. Failures of the report go to `errors.log` as
+`EXHAUSTED_FAILED`.
 
 ## Undo
 
