@@ -10,6 +10,8 @@ import {
   claimsOf,
   ControlledKV,
   deleteClaim,
+  exhaustedKey,
+  exhaustedOf,
   getJson,
   holders,
   iso,
@@ -18,10 +20,12 @@ import {
   MURAT,
   NOT_SHARED,
   putClaim,
+  putExhausted,
   putUsage,
   rename,
   seed,
   sendClaim,
+  sendExhausted,
   sendUsage,
   share,
   shared,
@@ -29,6 +33,7 @@ import {
   shareOf,
   unshare,
   usageKey,
+  usageOf,
   viaKv,
 } from "./helpers";
 
@@ -97,10 +102,27 @@ describe("unshare racing a write", () => {
     await expectUnshared(A);
   });
 
+  it("is not undone by an exhausted report that passed its share check first", async () => {
+    await shared(A, B);
+    const kv = new ControlledKV(env.USAGE);
+    const gate = kv.pause("put", exhaustedKey(A, ALI));
+    const pending = sendExhausted(A, "week", null, ALI, viaKv(kv));
+    await gate.reached;
+
+    expect((await unshare(A)).status).toBe(204);
+    gate.release();
+    expect((await pending).status).toBe(204);
+
+    expect(await keyNames()).toEqual([exhaustedKey(A, ALI), shareKey(B)]);
+    await expectUnshared(A);
+    expect((await listJson()).accounts.map((a) => a.email)).toEqual([B]);
+  });
+
   it("closes the account to writes as soon as the share key is gone", async () => {
     await shared(A);
     await putUsage(A);
     await putClaim(A, ALI);
+    await putExhausted(A, "session", null, ALI);
     const kv = new ControlledKV(env.USAGE);
     // Held after the share key is deleted, before usage and claims are.
     const gate = kv.pause("list", `claim:${A}:`);
@@ -112,10 +134,48 @@ describe("unshare racing a write", () => {
     expect(late.status).toBe(404);
     expect(await late.json()).toEqual(NOT_SHARED);
     expect((await sendUsage(A)).status).toBe(404);
+    expect((await sendExhausted(A, "week", null, CAN)).status).toBe(404);
 
     gate.release();
     expect((await held).status).toBe(204);
     expect(await keyNames()).toEqual([]);
+  });
+});
+
+describe("exhausted reports racing other writes", () => {
+  it("neither loses nor is lost to a usage report written in between", async () => {
+    await shared(A);
+    await putUsage(A, MURAT, 40, 40);
+    const refusedReset = (await usageOf(A))!.session.resets_at;
+    const kv = new ControlledKV(env.USAGE);
+    // Has read the usage record to resolve its reset; about to write.
+    const gate = kv.pause("put", exhaustedKey(A, ALI));
+    const pending = sendExhausted(A, "session", null, ALI, viaKv(kv));
+    await gate.reached;
+
+    await putUsage(A, CAN, 55, 41);
+    gate.release();
+    expect((await pending).status).toBe(204);
+
+    const account = await getJson(A, "murat");
+    expect(account.session!.used).toBe(55);
+    expect(account.reporter!.dev).toBe("can");
+    expect((await exhaustedOf(A, ALI))!.record.resets_at).toBe(refusedReset);
+    expect(account).toMatchObject({ exhausted: true, exhausted_window: "session" });
+  });
+
+  it("keeps every reporter's record when several report at once", async () => {
+    await shared(A);
+    const kv = new ControlledKV(env.USAGE);
+    const who = [MURAT, ALI, CAN];
+    const gates = who.map((w) => kv.pause("put", exhaustedKey(A, w)));
+    const pending = who.map((w, i) => sendExhausted(A, i === 0 ? "week" : "session", null, w, viaKv(kv)));
+    await Promise.all(gates.map((g) => g.reached));
+    for (const g of gates.reverse()) g.release();
+
+    for (const res of await Promise.all(pending)) expect(res.status).toBe(204);
+    expect(await keyNames("exhausted:")).toEqual(who.map((w) => exhaustedKey(A, w)).sort());
+    expect(await getJson(A)).toMatchObject({ exhausted: true, exhausted_until: null, exhausted_window: "week" });
   });
 });
 

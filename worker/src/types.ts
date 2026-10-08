@@ -14,6 +14,9 @@ export interface UsageWindow {
   resets_at: string;
 }
 
+/** The two rate-limit windows: Claude Code's `five_hour` and `seven_day`. */
+export type WindowName = "session" | "week";
+
 /** Who did something: a developer on one machine. */
 export interface Identity {
   dev: string;
@@ -52,10 +55,27 @@ export interface ClaimRecord {
 }
 
 /**
- * The logical account assembled from its `share:`, `usage:` and `claim:` keys
- * (see src/store.ts). `session`/`week`/`collected_at`/`reporter` are absent
- * until the first valid report; `added_by`/`added_at` are optional only so
- * ranking and formatting can be exercised without a share record.
+ * Metadata of `exhausted:<email>:<dev>:<machine_id>`: Claude Code refused that
+ * holder a request for `window`'s limit (HTTP 429, error type `rate_limit`).
+ * `resets_at` is resolved when the report is written (see src/exhausted.ts)
+ * and null when unknown; `at` is server-stamped.
+ */
+export interface ExhaustedRecord {
+  window: WindowName;
+  resets_at: string | null;
+  at: string;
+}
+
+/** One stored refusal report with its reporter; the reporter is in the key. */
+export interface ExhaustedReport extends Identity, ExhaustedRecord {}
+
+/**
+ * The logical account assembled from its `share:`, `usage:`, `claim:` and
+ * `exhausted:` keys (see src/store.ts). `session`/`week`/`collected_at`/
+ * `reporter` are absent until the first valid report; `added_by`/`added_at`
+ * are optional only so ranking and formatting can be exercised without a share
+ * record. `exhausted` is always set by the store; absent reads as none, so
+ * fixtures need not spell it out.
  */
 export interface StoredAccount {
   email: string;
@@ -67,6 +87,7 @@ export interface StoredAccount {
   collected_at?: string;
   reporter?: Reporter;
   claims: Claim[];
+  exhausted?: ExhaustedReport[];
 }
 
 export interface RankedWindow extends UsageWindow {
@@ -93,13 +114,23 @@ export interface RankedAccount {
   state: AccountState;
   /** Sorted, unique, never the querying dev; empty when nobody else is on it. Populated in every state. */
   busy_by: string[];
-  /** A present window is at 100% effective usage. Always present. */
+  /**
+   * A present window is at 100% effective usage, or a live `exhausted:` record
+   * says Claude refused a request for a limit (src/exhausted.ts). Always present.
+   */
   exhausted: boolean;
   /**
-   * When the account takes work again: the latest reset among the windows at
-   * 100% (all of them must reset). null when not exhausted. Always present.
+   * When the account takes work again: the latest known reset among the
+   * windows at 100% and the live refusal records (all of them must reset).
+   * null when not exhausted, or exhausted with no known reset. Always present.
    */
   exhausted_until: string | null;
+  /**
+   * The window `exhausted_until` belongs to (week on a tie); with no known
+   * reset, the refused window (week when both were). null only when not
+   * exhausted. Always present.
+   */
+  exhausted_window: WindowName | null;
 }
 
 export interface AccountsResponse {

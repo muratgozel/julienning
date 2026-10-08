@@ -255,6 +255,56 @@ describe("text table", () => {
       }
     });
 
+    describe("from refusal records", () => {
+      const refused = (window: "session" | "week", resets_at: string | null, extra: Partial<StoredAccount> = {}) => ({
+        ...FIXTURE[0]!,
+        ...extra,
+        exhausted: [{ dev: "ali", machine_id: "aabbccddeeff", window, resets_at, at: "2026-10-31T11:50:00Z" }],
+      });
+
+      it("names the refused window and its reset while usage looks fine", () => {
+        // Usage stale at 50% for the refused session window.
+        const line = stateOf(render("Europe/Istanbul", [refused("session", "2026-10-31T18:00:00Z")]), "claude1@");
+        expect(line).toContain("50% → 21:00");
+        expect(line).toContain("  exhausted (session resets 21:00)  ");
+      });
+
+      it("says exhausted (week) when the reset is unknown", () => {
+        const out = render("Europe/Istanbul", [refused("week", null)]);
+        expect(stateOf(out, "claude1@")).toMatch(/ {2}exhausted \(week\) {2}/);
+      });
+
+      it("shows the later of a window at 100% and a record, as in the JSON", () => {
+        const acc = refused("week", "2026-11-02T18:00:00Z", {
+          session: { used: 100, resets_at: "2026-10-31T18:00:00Z" },
+        });
+        const res: AccountsResponse = {
+          generated_at: NOW.toISOString(),
+          tz: "America/New_York",
+          accounts: rank([acc], { now: NOW, dev: "murat", claimTtlMin: 720, activityTtlMin: 15 }),
+        };
+        expect(res.accounts[0]).toMatchObject({ exhausted_window: "week", exhausted_until: "2026-11-02T18:00:00Z" });
+        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("exhausted (week resets Mon 13:00)");
+      });
+
+      it("renders only the ranked fields, not the windows", () => {
+        const res: AccountsResponse = {
+          generated_at: NOW.toISOString(),
+          tz: "UTC",
+          accounts: rank([{ ...FIXTURE[0]! }], { now: NOW, claimTtlMin: 720, activityTtlMin: 15 }).map((a) => ({
+            ...a,
+            state: "exhausted" as const,
+            exhausted: true,
+          })),
+        };
+        expect(stateOf(formatText(res, NOW), "claude1@")).toMatch(/ {2}exhausted {2}/);
+        res.accounts[0]!.exhausted_window = "session";
+        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("  exhausted (session)  ");
+        res.accounts[0]!.exhausted_until = "2026-10-31T20:00:00Z";
+        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("  exhausted (session resets 20:00)  ");
+      });
+    });
+
     it("leaves a reset-passed 100% window alone", () => {
       const out = render("Europe/Istanbul", [
         { ...FIXTURE[0]!, session: { used: 100, resets_at: "2026-10-31T10:00:00Z" } },

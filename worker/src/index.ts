@@ -1,6 +1,7 @@
+import { resolveExhaustedResetsAt } from "./exhausted";
 import { formatText } from "./format";
 import { rank, type RankOptions } from "./rank";
-import { claimTtlSec, Store } from "./store";
+import { claimTtlSec, exhaustedTtlSec, Store } from "./store";
 import type { AccountsResponse, Env } from "./types";
 import {
   clampToNow,
@@ -12,6 +13,7 @@ import {
   ttlMinutes,
   validateClaimBody,
   validateEmail,
+  validateExhaustedBody,
   validateFormat,
   validateHolderQuery,
   validateNicknameBody,
@@ -174,7 +176,7 @@ async function handleRename(ctx: RouteContext): Promise<Response> {
   return noContent();
 }
 
-/** Unshare: the share key, the usage key and every claim key go together. */
+/** Unshare: the share key, the usage key and every claim and exhausted key go together. */
 async function handleUnshare(ctx: RouteContext): Promise<Response> {
   // Deleted unconditionally rather than after a read: a lagging KV read must
   // never leave an email shared after the user asked to remove it.
@@ -234,12 +236,53 @@ async function handleDeleteClaim(ctx: RouteContext): Promise<Response> {
   return noContent();
 }
 
+/**
+ * Exhausted: Claude Code refused this reporter a request for a limit (the
+ * CLI's StopFailure hook, matcher `rate_limit`). Writes only the reporter's
+ * own `exhausted:` key; the usage record is read, never written, to fill in an
+ * unknown reset (see src/exhausted.ts for how the reset is resolved and how
+ * long the record counts).
+ */
+async function handlePutExhausted(ctx: RouteContext): Promise<Response> {
+  const body = validateExhaustedBody(await readJsonBody(ctx.request));
+  const [share, usage] = await Promise.all([
+    ctx.store.getShare(ctx.email),
+    ctx.store.getUsage(ctx.email),
+  ]);
+  if (share === null) return notShared();
+  const resets_at = resolveExhaustedResetsAt(body.window, body.resets_at, usage, ctx.now);
+  await ctx.store.putExhausted(
+    ctx.email,
+    body.reporter,
+    { window: body.window, resets_at, at: nowStamp(ctx.now) },
+    exhaustedTtlSec(body.window, resets_at, ctx.now),
+  );
+  return noContent();
+}
+
+/**
+ * Every route but /healthz needs the token (Bearer; `?token=` on GET only).
+ *
+ *   GET    /accounts                    ranked listing (?format, ?tz, ?dev)
+ *   GET    /accounts/:email             one account (?dev); 404 not shared
+ *   PUT    /accounts/:email             share {added_by, nickname}: 201 new, 204 existed, 409 nickname taken
+ *   DELETE /accounts/:email             unshare (idempotent)
+ *   PUT    /accounts/:email/nickname    rename {nickname}: 204, 404 not shared, 409 taken
+ *   PUT    /accounts/:email/usage       usage report {session, week, collected_at, reporter}: 204, 404 not shared
+ *   PUT    /accounts/:email/claim       claim {dev, machine_id}: 204, 404 not shared
+ *   DELETE /accounts/:email/claim       release ?dev=&machine_id= (idempotent, no share check)
+ *   PUT    /accounts/:email/exhausted   refusal {window, resets_at?, reporter}: 204, 404 not shared
+ *
+ * Bodies are validated before the share check, so a bad body is a 400 even
+ * for an email that is not shared.
+ */
 const ROUTES: Route[] = [
   { segments: 1, methods: { GET: handleAccounts } },
   { segments: 2, methods: { GET: handleGetAccount, PUT: handleShare, DELETE: handleUnshare } },
   { segments: 3, tail: "nickname", methods: { PUT: handleRename } },
   { segments: 3, tail: "usage", methods: { PUT: handlePutUsage } },
   { segments: 3, tail: "claim", methods: { PUT: handlePutClaim, DELETE: handleDeleteClaim } },
+  { segments: 3, tail: "exhausted", methods: { PUT: handlePutExhausted } },
 ];
 
 async function route(request: Request, url: URL, env: Env): Promise<Response> {

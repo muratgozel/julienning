@@ -4,9 +4,11 @@ import worker from "../src/index";
 import type {
   AccountsResponse,
   Claim,
+  ExhaustedRecord,
   RankedAccount,
   ShareRecord,
   UsageRecord,
+  UsageWindow,
 } from "../src/types";
 
 export const TOKEN = "test-token";
@@ -137,6 +139,56 @@ export function deleteClaim(email: string, who: Who, via: Via = viaSelf): Promis
   );
 }
 
+/**
+ * The PUT /accounts/:email/exhausted body. `resetsAt` undefined leaves the
+ * field out (unknown, as the CLI sends when it could not parse a reset).
+ */
+export function exhaustedBody(window: string, resetsAt?: string | null, who: Who = MURAT): string {
+  return JSON.stringify({
+    window,
+    ...(resetsAt !== undefined ? { resets_at: resetsAt } : {}),
+    reporter: who,
+  });
+}
+
+export function sendExhausted(
+  email: string,
+  window: string,
+  resetsAt?: string | null,
+  who: Who = MURAT,
+  via: Via = viaSelf,
+): Promise<Response> {
+  return call(
+    `/accounts/${email}/exhausted`,
+    { method: "PUT", body: exhaustedBody(window, resetsAt, who) },
+    via,
+  );
+}
+
+export async function putExhausted(
+  email: string,
+  window: string,
+  resetsAt?: string | null,
+  who: Who = MURAT,
+): Promise<void> {
+  expect((await sendExhausted(email, window, resetsAt, who)).status).toBe(204);
+}
+
+/** A usage report with explicit windows, for tests that care about resets. */
+export async function putWindows(
+  email: string,
+  session: UsageWindow,
+  week: UsageWindow,
+  who: Who = MURAT,
+  collectedAt = iso(0),
+): Promise<void> {
+  const res = await call(`/accounts/${email}/usage`, {
+    method: "PUT",
+    body: JSON.stringify({ session, week, collected_at: collectedAt, reporter: who }),
+  });
+  expect(res.status).toBe(204);
+}
+
 export async function listJson(query = ""): Promise<AccountsResponse> {
   const res = await call(`/accounts?format=json${query}`);
   expect(res.status).toBe(200);
@@ -167,6 +219,8 @@ export const shareKey = (email: string): string => `share:${email}`;
 export const usageKey = (email: string): string => `usage:${email}`;
 export const claimKey = (email: string, who: Who): string =>
   `claim:${email}:${who.dev}:${who.machine_id}`;
+export const exhaustedKey = (email: string, who: Who): string =>
+  `exhausted:${email}:${who.dev}:${who.machine_id}`;
 
 /** Every key in the namespace, with its metadata and expiration. */
 export async function rawKeys(prefix?: string): Promise<KVNamespaceListKey<unknown>[]> {
@@ -209,6 +263,16 @@ export async function claimsOf(email: string): Promise<Claim[]> {
     const [, , dev, machine_id] = k.name.split(":");
     return { dev: dev!, machine_id: machine_id!, at: (k.metadata as { at: string }).at };
   });
+}
+
+/** The stored refusal record and its absolute expiration (epoch seconds), or null. */
+export async function exhaustedOf(
+  email: string,
+  who: Who,
+): Promise<{ record: ExhaustedRecord; expiration: number | undefined } | null> {
+  const key = (await rawKeys(exhaustedKey(email, who))).find((k) => k.name === exhaustedKey(email, who));
+  if (key === undefined) return null;
+  return { record: key.metadata as ExhaustedRecord, expiration: key.expiration };
 }
 
 /** Writes a key the way a bug, an old deployment or a hand edit might. */

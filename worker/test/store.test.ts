@@ -19,6 +19,7 @@ import {
   CAN,
   claimKey,
   ControlledKV,
+  exhaustedKey,
   getJson,
   holders,
   iso,
@@ -27,6 +28,7 @@ import {
   MURAT_LAPTOP,
   NOT_SHARED,
   putClaim,
+  putExhausted,
   putUsage,
   seed,
   sendClaim,
@@ -52,10 +54,11 @@ function byEmailSorted(accounts: StoredAccount[]): StoredAccount[] {
 }
 
 describe("key layout", () => {
-  it("parses the three key kinds", () => {
+  it("parses the four key kinds", () => {
     expect(parseKey(`share:${A}`)).toEqual({ kind: "share", email: A });
     expect(parseKey(`usage:${A}`)).toEqual({ kind: "usage", email: A });
     expect(parseKey(claimKey(A, ALI))).toEqual({ kind: "claim", email: A, holder: ALI });
+    expect(parseKey(exhaustedKey(A, ALI))).toEqual({ kind: "exhausted", email: A, holder: ALI });
   });
 
   it("rejects foreign and non-canonical names", () => {
@@ -71,6 +74,13 @@ describe("key layout", () => {
       `claim:${A}:Ali:${ALI.machine_id}`,
       `claim:${A}:ali:AABBCCDDEEFF`,
       `claim:Claude1@sixtynine.agency:ali:${ALI.machine_id}`,
+      "exhausted:",
+      `exhausted:${A}`,
+      `exhausted:${A}:ali`,
+      `exhausted:${A}:ali:${ALI.machine_id}:session`,
+      `exhausted:${A}:Ali:${ALI.machine_id}`,
+      `exhausted:${A}:ali:AABBCCDDEEFF`,
+      `exhausted:Claude1@sixtynine.agency:ali:${ALI.machine_id}`,
       "SHARE:a@x.io",
     ])
       expect(parseKey(bad), bad).toBeNull();
@@ -100,6 +110,7 @@ describe("KV size limits", () => {
       [`share:${email}`, { added_by: holder, added_at: stamp, nickname: "n".repeat(32) }],
       [`usage:${email}`, usage],
       [`claim:${email}:${holder.dev}:${holder.machine_id}`, { at: stamp }],
+      [`exhausted:${email}:${holder.dev}:${holder.machine_id}`, { window: "session", resets_at: stamp, at: stamp }],
     ] as const;
     for (const [key, meta] of worst) {
       expect(() => checkKvLimits(key, meta)).not.toThrow();
@@ -139,6 +150,7 @@ describe("GET /accounts reads", () => {
       `getWithMetadata ${shareKey(A)}`,
       `getWithMetadata ${usageKey(A)}`,
       `list claim:${A}:`,
+      `list exhausted:${A}:`,
     ]);
 
     kv.calls.length = 0;
@@ -225,6 +237,23 @@ describe("list pagination", () => {
     expect(kv.calls.filter((c) => c.op === "list").length).toBeGreaterThanOrEqual(3);
   });
 
+  it("assembles refusal records whose keys span pages, for the listing and the single read", async () => {
+    await shared(A, B);
+    const many = Array.from({ length: 5 }, (_, i) => ({ dev: `dev${i}`, machine_id: `00000000000${i}` }));
+    for (const who of many) await putExhausted(A, "week", null, who);
+    await putExhausted(B, "session", null, ALI);
+
+    const kv = new ControlledKV(env.USAGE);
+    const store = new Store(kv.binding, { claimTtlSec: 43_200, listPageSize: 2 });
+    const listed = (await store.listAccounts()).find((a) => a.email === A)!;
+    const single = (await store.getAccount(A))!;
+    for (const account of [listed, single]) {
+      expect(holders(account.exhausted!)).toEqual(holders(many));
+      expect(account.exhausted!.every((r) => r.window === "week" && r.resets_at === null)).toBe(true);
+    }
+    expect(kv.calls.filter((c) => c.op === "list" && c.key === `exhausted:${A}:`).length).toBeGreaterThanOrEqual(3);
+  });
+
   it("follows the cursor past KV's 1000-key page", async () => {
     await shared(A);
     const holdersOf = Array.from({ length: 1005 }, (_, i) => ({
@@ -268,7 +297,7 @@ describe("per-key validation", () => {
   it("shows an account with an invalid usage record without windows", async () => {
     await shared(A);
     await putClaim(A, ALI);
-    await seed(usageKey(A), { ...validUsage(), session: { used: 500, resets_at: iso(60) } });
+    await seed(usageKey(A), { ...validUsage(), session: { used: -5, resets_at: iso(60) } });
 
     for (const account of [byEmail(await listJson("&dev=murat"), A), await getJson(A, "murat")]) {
       expect(account.added_by).toEqual(MURAT);

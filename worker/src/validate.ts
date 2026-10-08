@@ -1,11 +1,13 @@
 import type {
   Claim,
   ClaimRecord,
+  ExhaustedRecord,
   Identity,
   Reporter,
   ShareRecord,
   UsageRecord,
   UsageWindow,
+  WindowName,
 } from "./types";
 
 /** Rejected at the boundary; the router turns this into 400 {error, field}. */
@@ -148,12 +150,21 @@ export function clampToNow(ts: string, now: Date): string {
   return Date.parse(ts) > now.getTime() ? nowStamp(now) : ts;
 }
 
+/** The most a window can be used; anything above means the same. */
+const MAX_USED = 100;
+
+/**
+ * Claude Code documents `used_percentage` as going above 100 once a limit is
+ * exceeded. Such a value is clamped, never rejected: rejecting it dropped the
+ * one report that marks the account exhausted. Also applied to stored records
+ * (parseUsageRecord), so one written before the clamp still reads.
+ */
 function validateUsed(raw: unknown, field: string): number {
   if (typeof raw !== "number" || !Number.isFinite(raw))
     throw new ValidationError(field, `${field} must be a finite number`);
-  if (raw < 0 || raw > 100)
-    throw new ValidationError(field, `${field} must be between 0 and 100`);
-  return Math.round(raw * 10) / 10;
+  if (raw < 0)
+    throw new ValidationError(field, `${field} must not be negative`);
+  return Math.min(MAX_USED, Math.round(raw * 10) / 10);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -189,6 +200,35 @@ export function validateUsageBody(body: unknown): UsageRecord {
     session: validateWindow(body.session, "session"),
     week: validateWindow(body.week, "week"),
     collected_at: validateTimestamp(body.collected_at, "collected_at"),
+    reporter: validateReporter(body.reporter),
+  };
+}
+
+export function validateWindowName(raw: unknown, field = "window"): WindowName {
+  if (raw !== "session" && raw !== "week")
+    throw new ValidationError(field, `${field} must be 'session' or 'week'`);
+  return raw;
+}
+
+/** Absent and null both mean "unknown"; anything else must be a timestamp. */
+function validateOptionalReset(raw: unknown, field: string): string | null {
+  return raw === undefined || raw === null ? null : validateTimestamp(raw, field);
+}
+
+export interface ExhaustedBody {
+  window: WindowName;
+  /** As reported, past or future; the handler decides whether it is usable. */
+  resets_at: string | null;
+  reporter: Reporter;
+}
+
+/** PUT /accounts/:email/exhausted body. */
+export function validateExhaustedBody(body: unknown): ExhaustedBody {
+  if (!isRecord(body))
+    throw new ValidationError("body", "body must be a JSON object");
+  return {
+    window: validateWindowName(body.window),
+    resets_at: validateOptionalReset(body.resets_at, "resets_at"),
     reporter: validateReporter(body.reporter),
   };
 }
@@ -406,4 +446,16 @@ export function parseUsageRecord(raw: unknown): UsageRecord | null {
 
 export function parseClaimRecord(raw: unknown): ClaimRecord | null {
   return parseRecord(raw, (v) => ({ at: validateTimestamp(v.at, "at") }));
+}
+
+/** `resets_at` must be present: the Worker always writes it, null when unknown. */
+export function parseExhaustedRecord(raw: unknown): ExhaustedRecord | null {
+  return parseRecord(raw, (v) => {
+    if (v.resets_at === undefined) throw new ValidationError("resets_at", "resets_at is missing");
+    return {
+      window: validateWindowName(v.window),
+      resets_at: validateOptionalReset(v.resets_at, "resets_at"),
+      at: validateTimestamp(v.at, "at"),
+    };
+  });
 }

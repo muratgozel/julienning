@@ -1,10 +1,13 @@
 import { freshFor, liveClaims } from "./claims";
+import { liveExhausted } from "./exhausted";
 import type {
   AccountState,
+  ExhaustedReport,
   RankedAccount,
   RankedWindow,
   StoredAccount,
   UsageWindow,
+  WindowName,
 } from "./types";
 
 export interface RankOptions {
@@ -28,25 +31,22 @@ function rankWindow(w: UsageWindow | undefined, nowMs: number): RankedWindow | u
 
 /**
  * Usage at which Claude refuses work until the window resets. The status line
- * reports at most 100 (validate.ts rejects more); `>=` keeps that a non-issue.
+ * reports more than 100 once a limit is exceeded; validate.ts clamps that to
+ * 100, and `>=` would cover it anyway.
  */
 const EXHAUSTED_AT = 100;
 
-export type WindowName = "session" | "week";
-
-export interface BlockingWindow {
+interface BlockingWindow {
   name: WindowName;
   window: RankedWindow;
 }
 
 /**
- * The window an exhausted account is waiting on, or undefined when it is not
- * exhausted. With both windows at 100% this is the one that resets LAST: the
- * account stays unusable until every exhausted window has reset. Ties go to
- * week. Shared with format.ts so the text STATE names the same window whose
- * reset is `exhausted_until`.
+ * The window at 100% an account is waiting on, or undefined when none is.
+ * With both windows at 100% this is the one that resets LAST: the account
+ * stays unusable until every exhausted window has reset. Ties go to week.
  */
-export function blockingWindow(
+function blockingWindow(
   session: RankedWindow | undefined,
   week: RankedWindow | undefined,
 ): BlockingWindow | undefined {
@@ -62,10 +62,45 @@ export function blockingWindow(
   return blocking;
 }
 
+interface Exhaustion {
+  window: WindowName;
+  until: string | null;
+}
+
+/**
+ * Why the account cannot take work, or undefined when it can: a window at
+ * 100% and/or live refusal records (src/exhausted.ts). `until` is the latest
+ * known reset among all of them, since every one must pass, and `window` the
+ * window it belongs to (week on a tie). When none has a known reset, `until`
+ * is null and `window` is the refused window, week when both were. format.ts
+ * renders these fields, so the text STATE and the JSON always agree.
+ */
+function exhaustion(
+  blocking: BlockingWindow | undefined,
+  refusals: readonly ExhaustedReport[],
+): Exhaustion | undefined {
+  const known: { window: WindowName; until: string }[] = [];
+  if (blocking) known.push({ window: blocking.name, until: blocking.window.resets_at });
+  for (const r of refusals) if (r.resets_at !== null) known.push({ window: r.window, until: r.resets_at });
+
+  let latest: { window: WindowName; until: string; ms: number } | undefined;
+  for (const k of known) {
+    const ms = Date.parse(k.until);
+    if (!latest || ms > latest.ms || (ms === latest.ms && k.window === "week"))
+      latest = { ...k, ms };
+  }
+  if (latest) return { window: latest.window, until: latest.until };
+  if (refusals.length === 0) return undefined;
+  return { window: refusals.some((r) => r.window === "week") ? "week" : "session", until: null };
+}
+
 interface Scored {
   account: RankedAccount;
   exhausted: boolean;
-  /** `exhausted_until` in ms; only compared between two exhausted accounts. */
+  /**
+   * `exhausted_until` in ms, +Infinity when unknown so those sort after known
+   * ones; only compared between two exhausted accounts.
+   */
   until: number;
   busy: boolean;
   known: boolean;
@@ -76,10 +111,10 @@ interface Scored {
 
 /**
  * Pure ranking. `now` is injected so both the Worker and the tests control it.
- * Ordering: not exhausted (an account at 100% sinks below every usable one,
- * whatever its other window says), then within the exhausted band the earliest
- * `exhausted_until`; then not busy, known usage, effective session %, effective
- * week %, earliest session reset, email.
+ * Ordering: not exhausted (an account at 100% or refused for a limit sinks
+ * below every usable one, whatever its usage says), then within the exhausted
+ * band the earliest `exhausted_until`, unknown last; then not busy, known
+ * usage, effective session %, effective week %, earliest session reset, email.
  */
 export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccount[] {
   const nowMs = opts.now.getTime();
@@ -99,11 +134,14 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
     const claimingDevs = claims.map((c) => c.dev).filter((d) => d !== opts.dev);
 
     const busy_by = [...new Set([...(activeDev ? [activeDev] : []), ...claimingDevs])].sort();
-    const blocking = blockingWindow(session, week);
+    const exhausted = exhaustion(
+      blockingWindow(session, week),
+      liveExhausted(a.exhausted ?? [], a, nowMs),
+    );
     // Exhaustion beats everything: nobody can use it, whoever is on it. busy_by
     // stays populated so clients still see who is. Activity beats a claim:
     // someone typing right now is the better signal.
-    const state: AccountState = blocking
+    const state: AccountState = exhausted
       ? "exhausted"
       : activeDev
         ? "in_use"
@@ -124,14 +162,18 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
       claims,
       state,
       busy_by,
-      exhausted: blocking !== undefined,
-      exhausted_until: blocking?.window.resets_at ?? null,
+      exhausted: exhausted !== undefined,
+      exhausted_until: exhausted?.until ?? null,
+      exhausted_window: exhausted?.window ?? null,
     };
 
     return {
       account,
-      exhausted: blocking !== undefined,
-      until: blocking ? Date.parse(blocking.window.resets_at) : Number.POSITIVE_INFINITY,
+      exhausted: exhausted !== undefined,
+      until:
+        exhausted !== undefined && exhausted.until !== null
+          ? Date.parse(exhausted.until)
+          : Number.POSITIVE_INFINITY,
       busy: busy_by.length > 0,
       known: session !== undefined || week !== undefined,
       session: session?.effective ?? Number.POSITIVE_INFINITY,

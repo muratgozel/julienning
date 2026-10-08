@@ -66,6 +66,7 @@ describe("health and auth", () => {
       [`/accounts/${A}/claim?dev=murat&machine_id=${MURAT.machine_id}`, "DELETE", undefined],
       [`/accounts/${A}`, "PUT", JSON.stringify({ added_by: MURAT, nickname: "alpha" })],
       [`/accounts/${A}/nickname`, "PUT", JSON.stringify({ nickname: "alpha" })],
+      [`/accounts/${A}/exhausted`, "PUT", JSON.stringify({ window: "week", reporter: MURAT })],
       [`/accounts/${A}`, "DELETE", undefined],
     ];
     for (const [path, method, body] of writes) {
@@ -109,6 +110,7 @@ describe("routing", () => {
       [`/accounts/${A}/usage`, "DELETE", "PUT"],
       [`/accounts/${A}/claim`, "POST", "PUT, DELETE"],
       [`/accounts/${A}/nickname`, "GET", "PUT"],
+      [`/accounts/${A}/exhausted`, "DELETE", "PUT"],
       ["/healthz", "POST", "GET"],
     ];
     for (const [path, method, allow] of cases) {
@@ -141,7 +143,7 @@ describe("validation", () => {
 
   it("returns 400 {error, field} for bad usage bodies, before the allowlist check", async () => {
     const cases: [unknown, string][] = [
-      [{ ...JSON.parse(usageBody()), session: { used: 150, resets_at: iso(60) } }, "session.used"],
+      [{ ...JSON.parse(usageBody()), session: { used: -1, resets_at: iso(60) } }, "session.used"],
       [{ ...JSON.parse(usageBody()), week: { used: 5, resets_at: "nope" } }, "week.resets_at"],
       [{ ...JSON.parse(usageBody()), collected_at: "2026-01-01" }, "collected_at"],
       [{ ...JSON.parse(usageBody()), reporter: { dev: "MURAT", machine_id: "3fa9c2d1e07b" } }, "reporter.dev"],
@@ -240,6 +242,7 @@ describe("share and unshare", () => {
       busy_by: [],
       exhausted: false,
       exhausted_until: null,
+      exhausted_window: null,
     });
 
     const text = await (await call("/accounts?dev=murat")).text();
@@ -662,6 +665,8 @@ describe("kv hygiene", () => {
       `claim:${A}:ALI:${ALI.machine_id}`,
       `claim:${A}:ali:AABBCCDDEEFF`,
       `claim:${A}:ali:${ALI.machine_id}:extra`,
+      `exhausted:${A}:ali`,
+      `exhausted:${A}:ali:AABBCCDDEEFF`,
     ];
     for (const key of malformed) await seed(key, key.startsWith("share:") ? share : { at: iso(0) });
 
@@ -778,6 +783,7 @@ describe("response formats", () => {
       "email",
       "exhausted",
       "exhausted_until",
+      "exhausted_window",
       "nickname",
       "rank",
       "reporter",

@@ -1,8 +1,19 @@
-import type { Claim, Identity, ShareRecord, StoredAccount, UsageRecord } from "./types";
+import { WINDOW_SEC } from "./exhausted";
+import type {
+  Claim,
+  ExhaustedRecord,
+  ExhaustedReport,
+  Identity,
+  ShareRecord,
+  StoredAccount,
+  UsageRecord,
+  WindowName,
+} from "./types";
 import {
   canonicalEmail,
   canonicalHolder,
   parseClaimRecord,
+  parseExhaustedRecord,
   parseShareRecord,
   parseUsageRecord,
   storedNicknameDropped,
@@ -14,17 +25,21 @@ import {
  * one exception: a nickname rename rewrites `share:<email>` (its races are
  * described on the rename handler in src/index.ts).
  *
- *   share:<email>                     share / rename / unshare {added_by, added_at, nickname}
- *   usage:<email>                     PUT usage                {session, week, collected_at, reporter}, 8-day TTL
- *   claim:<email>:<dev>:<machine_id>  that holder's claim PUT/DELETE, and its own usage refresh   {at}, claim TTL
+ *   share:<email>                         share / rename / unshare {added_by, added_at, nickname}
+ *   usage:<email>                         PUT usage                {session, week, collected_at, reporter}, 8-day TTL
+ *   claim:<email>:<dev>:<machine_id>      that holder's claim PUT/DELETE, and its own usage refresh   {at}, claim TTL
+ *   exhausted:<email>:<dev>:<machine_id>  that reporter's PUT exhausted   {window, resets_at, at}, TTL until resets_at
+ *                                         (min 60 s), or one window length (5 h / 7 d) when resets_at is null
  *
  * All data lives in KV *metadata* (the value is a constant) because `list()`
  * returns metadata: GET /accounts is one paginated list with no per-key reads.
- * An email is shared iff its `share:` key exists and is valid. `usage:`/`claim:`
- * keys without one (left by a request that raced an unshare) are ignored and
- * expire on their own. Emails, devs and machine ids never contain ':', so key
- * names split unambiguously. `nickname` is missing on share records written
- * before nicknames existed; such accounts list with `nickname: null`.
+ * An email is shared iff its `share:` key exists and is valid. `usage:`/`claim:`/
+ * `exhausted:` keys without one (left by a request that raced an unshare) are
+ * ignored and expire on their own. Emails, devs and machine ids never contain
+ * ':', so key names split unambiguously. `nickname` is missing on share records
+ * written before nicknames existed; such accounts list with `nickname: null`.
+ * A reporter's second `exhausted:` report replaces its first, whichever window
+ * each named (one key per reporter, like claims).
  *
  * KV is still eventually consistent (another location can see a write up to
  * ~60 s late); this layout removes lost updates, not staleness.
@@ -39,6 +54,7 @@ export const MAX_KEY_BYTES = 512;
 const SHARE = "share:";
 const USAGE = "usage:";
 const CLAIM = "claim:";
+const EXHAUSTED = "exhausted:";
 const MARKER = "1";
 
 export const keys = {
@@ -47,12 +63,25 @@ export const keys = {
   claimPrefix: (email: string): string => `${CLAIM}${email}:`,
   claim: (email: string, holder: Identity): string =>
     `${CLAIM}${email}:${holder.dev}:${holder.machine_id}`,
+  exhaustedPrefix: (email: string): string => `${EXHAUSTED}${email}:`,
+  exhausted: (email: string, holder: Identity): string =>
+    `${EXHAUSTED}${email}:${holder.dev}:${holder.machine_id}`,
 };
 
 export type ParsedKey =
   | { kind: "share"; email: string }
   | { kind: "usage"; email: string }
-  | { kind: "claim"; email: string; holder: Identity };
+  | { kind: "claim"; email: string; holder: Identity }
+  | { kind: "exhausted"; email: string; holder: Identity };
+
+/** `<email>:<dev>:<machine_id>`, each part canonical, or null. */
+function parseHolderKey(rest: string): { email: string; holder: Identity } | null {
+  const parts = rest.split(":");
+  if (parts.length !== 3) return null;
+  const email = canonicalEmail(parts[0]!);
+  const holder = canonicalHolder(parts[1]!, parts[2]!);
+  return email === null || holder === null ? null : { email, holder };
+}
 
 /** Null for foreign keys and for names this Worker would never have written. */
 export function parseKey(name: string): ParsedKey | null {
@@ -65,21 +94,29 @@ export function parseKey(name: string): ParsedKey | null {
     return email === null ? null : { kind: "usage", email };
   }
   if (name.startsWith(CLAIM)) {
-    const parts = name.slice(CLAIM.length).split(":");
-    if (parts.length !== 3) return null;
-    const email = canonicalEmail(parts[0]!);
-    const holder = canonicalHolder(parts[1]!, parts[2]!);
-    return email === null || holder === null ? null : { kind: "claim", email, holder };
+    const parsed = parseHolderKey(name.slice(CLAIM.length));
+    return parsed === null ? null : { kind: "claim", ...parsed };
+  }
+  if (name.startsWith(EXHAUSTED)) {
+    const parsed = parseHolderKey(name.slice(EXHAUSTED.length));
+    return parsed === null ? null : { kind: "exhausted", ...parsed };
   }
   return null;
 }
 
 function hasOwnPrefix(name: string): boolean {
-  return name.startsWith(SHARE) || name.startsWith(USAGE) || name.startsWith(CLAIM);
+  return [SHARE, USAGE, CLAIM, EXHAUSTED].some((p) => name.startsWith(p));
 }
 
 export function claimTtlSec(claimTtlMin: number): number {
   return Math.max(MIN_EXPIRATION_TTL_SEC, Math.ceil(claimTtlMin * 60));
+}
+
+/** Until the reset when known, else one window length: a refusal cannot outlast its window. */
+export function exhaustedTtlSec(window: WindowName, resetsAt: string | null, now: Date): number {
+  if (resetsAt === null) return WINDOW_SEC[window];
+  const sec = Math.ceil((Date.parse(resetsAt) - now.getTime()) / 1000);
+  return Math.max(MIN_EXPIRATION_TTL_SEC, sec);
 }
 
 function byteLength(s: string): number {
@@ -111,8 +148,16 @@ function assemble(
   share: ShareRecord,
   usage: UsageRecord | null,
   claims: Claim[],
+  exhausted: ExhaustedReport[],
 ): StoredAccount {
-  return { email, ...share, ...(usage ?? {}), claims };
+  return { email, ...share, ...(usage ?? {}), claims, exhausted };
+}
+
+/** Appends `item` to the list under `email`, creating it. */
+function push<T>(map: Map<string, T[]>, email: string, item: T): void {
+  const list = map.get(email);
+  if (list) list.push(item);
+  else map.set(email, [item]);
 }
 
 export interface StoreOptions {
@@ -197,26 +242,53 @@ export class Store {
     return out;
   }
 
+  /** Overwrites this reporter's previous report, whichever window it named. */
+  async putExhausted(
+    email: string,
+    reporter: Identity,
+    record: ExhaustedRecord,
+    expirationTtl: number,
+  ): Promise<void> {
+    await this.write(keys.exhausted(email, reporter), record, expirationTtl);
+  }
+
+  async listExhausted(email: string): Promise<ExhaustedReport[]> {
+    const out: ExhaustedReport[] = [];
+    for await (const k of this.listKeys(keys.exhaustedPrefix(email))) {
+      const report = this.exhaustedFrom(k);
+      if (report !== null && report.email === email) out.push(report.report);
+    }
+    return out;
+  }
+
   async unshare(email: string): Promise<void> {
     // The share key goes first and on its own: from then on the account is
-    // hidden and every usage/claim PUT 404s, so a write that passed its share
-    // check just before can only leave an orphan, which listings ignore and
-    // KV expires. If a later delete fails the account is already unshared and
-    // a retry (unshare is idempotent) finishes the cleanup.
+    // hidden and every usage/claim/exhausted PUT 404s, so a write that passed
+    // its share check just before can only leave an orphan, which listings
+    // ignore and KV expires. If a later delete fails the account is already
+    // unshared and a retry (unshare is idempotent) finishes the cleanup.
     await this.kv.delete(keys.share(email));
-    const claimKeys: string[] = [];
-    for await (const k of this.listKeys(keys.claimPrefix(email))) claimKeys.push(k.name);
+    const holderKeys = (
+      await Promise.all([
+        this.keyNames(keys.claimPrefix(email)),
+        this.keyNames(keys.exhaustedPrefix(email)),
+      ])
+    ).flat();
     await Promise.all([
       this.kv.delete(keys.usage(email)),
-      ...claimKeys.map((k) => this.kv.delete(k)),
+      ...holderKeys.map((k) => this.kv.delete(k)),
     ]);
   }
 
   async getAccount(email: string): Promise<StoredAccount | null> {
     const [share, usage] = await Promise.all([this.getShare(email), this.getUsage(email)]);
-    // Checked before listing claims: list operations share a small daily quota.
+    // Checked before listing: list operations share a small daily quota.
     if (share === null) return null;
-    return assemble(email, share, usage, await this.listClaims(email));
+    const [claims, exhausted] = await Promise.all([
+      this.listClaims(email),
+      this.listExhausted(email),
+    ]);
+    return assemble(email, share, usage, claims, exhausted);
   }
 
   /** Every shared account, from one paginated list and no per-key reads. */
@@ -224,6 +296,7 @@ export class Store {
     const shares = new Map<string, ShareRecord>();
     const usage = new Map<string, UsageRecord>();
     const claims = new Map<string, Claim[]>();
+    const exhausted = new Map<string, ExhaustedReport[]>();
 
     for await (const k of this.listKeys()) {
       const parsed = parseKey(k.name);
@@ -245,17 +318,25 @@ export class Store {
         }
         case "claim": {
           const claim = this.claimFrom(k);
-          if (claim === null) break;
-          const list = claims.get(claim.email);
-          if (list) list.push(claim.claim);
-          else claims.set(claim.email, [claim.claim]);
+          if (claim !== null) push(claims, claim.email, claim.claim);
+          break;
+        }
+        case "exhausted": {
+          const report = this.exhaustedFrom(k);
+          if (report !== null) push(exhausted, report.email, report.report);
           break;
         }
       }
     }
 
     return [...shares].map(([email, share]) =>
-      assemble(email, share, usage.get(email) ?? null, claims.get(email) ?? []),
+      assemble(
+        email,
+        share,
+        usage.get(email) ?? null,
+        claims.get(email) ?? [],
+        exhausted.get(email) ?? [],
+      ),
     );
   }
 
@@ -273,6 +354,23 @@ export class Store {
     const record = parseClaimRecord(k.metadata);
     if (record === null) return skipInvalid(k.name);
     return { email: parsed.email, claim: { ...parsed.holder, at: record.at } };
+  }
+
+  /** A corrupt record drops only itself, like a claim. */
+  private exhaustedFrom(
+    k: KVNamespaceListKey<unknown>,
+  ): { email: string; report: ExhaustedReport } | null {
+    const parsed = parseKey(k.name);
+    if (parsed?.kind !== "exhausted") return skipInvalid(k.name);
+    const record = parseExhaustedRecord(k.metadata);
+    if (record === null) return skipInvalid(k.name);
+    return { email: parsed.email, report: { ...parsed.holder, ...record } };
+  }
+
+  private async keyNames(prefix: string): Promise<string[]> {
+    const out: string[] = [];
+    for await (const k of this.listKeys(prefix)) out.push(k.name);
+    return out;
   }
 
   private async *listKeys(prefix?: string): AsyncGenerator<KVNamespaceListKey<unknown>> {

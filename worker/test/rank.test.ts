@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { rank } from "../src/rank";
-import type { Claim, StoredAccount } from "../src/types";
+import type { Claim, ExhaustedReport, StoredAccount, WindowName } from "../src/types";
 
 const NOW = new Date("2026-09-16T12:00:00Z");
 const BASE = { now: NOW, claimTtlMin: 720, activityTtlMin: 15 };
@@ -15,6 +15,20 @@ function account(email: string, extra: Partial<StoredAccount> = {}): StoredAccou
 
 function holder(dev: string, agoMin: number, machine_id = "aabbccddeeff"): Claim {
   return { dev, machine_id, at: at(-agoMin) };
+}
+
+function refusal(
+  window: WindowName,
+  resetsInMin: number | null,
+  opts: { agoMin?: number; dev?: string; machine_id?: string } = {},
+): ExhaustedReport {
+  return {
+    dev: opts.dev ?? "zoe",
+    machine_id: opts.machine_id ?? "aabbccddeeff",
+    window,
+    resets_at: resetsInMin === null ? null : at(resetsInMin),
+    at: at(-(opts.agoMin ?? 10)),
+  };
 }
 
 function reported(
@@ -352,5 +366,144 @@ describe("exhaustion", () => {
     expect(json.exhausted_until).toBeNull();
     const [b] = rank([reported("b@x.io", 100, 0)], BASE);
     expect(typeof (JSON.parse(JSON.stringify(b)) as Record<string, unknown>).exhausted_until).toBe("string");
+  });
+});
+
+describe("exhaustion from refusal records", () => {
+  const exhaustedFields = (a: StoredAccount) => {
+    const [r] = rank([a], BASE);
+    return { state: r!.state, exhausted: r!.exhausted, until: r!.exhausted_until, window: r!.exhausted_window };
+  };
+
+  it("marks an account exhausted whatever its usage says", () => {
+    // Claude Code keeps reporting the refused window's stale numbers.
+    const acc = { ...reported("a@x.io", 3, 4, { sessionResets: 90 }), exhausted: [refusal("session", 90)] };
+    expect(exhaustedFields(acc)).toEqual({ state: "exhausted", exhausted: true, until: at(90), window: "session" });
+    const noUsage = account("b@x.io", { exhausted: [refusal("week", 3000)] });
+    expect(exhaustedFields(noUsage)).toEqual({ state: "exhausted", exhausted: true, until: at(3000), window: "week" });
+  });
+
+  it("sets exhausted_window null when usable, and treats a missing list as none", () => {
+    const [a] = rank([reported("a@x.io", 3, 4)], BASE);
+    expect(a).toHaveProperty("exhausted_window", null);
+    expect(exhaustedFields(account("b@x.io", { exhausted: [] }))).toMatchObject({ exhausted: false, window: null });
+  });
+
+  it("ignores a record whose reset has passed, exactly at now included", () => {
+    for (const resets of [-1, 0])
+      expect(exhaustedFields(account("a@x.io", { exhausted: [refusal("week", resets)] })).exhausted).toBe(false);
+  });
+
+  it("counts a record with an unknown reset for one window length after it was reported", () => {
+    const live = account("a@x.io", { exhausted: [refusal("session", null, { agoMin: 299 })] });
+    expect(exhaustedFields(live)).toEqual({ state: "exhausted", exhausted: true, until: null, window: "session" });
+    const lapsed = account("a@x.io", { exhausted: [refusal("session", null, { agoMin: 300 })] });
+    expect(exhaustedFields(lapsed).exhausted).toBe(false);
+    const week = account("a@x.io", { exhausted: [refusal("week", null, { agoMin: 6 * 24 * 60 })] });
+    expect(exhaustedFields(week)).toMatchObject({ exhausted: true, window: "week" });
+  });
+
+  it("is not cleared by usage under 100% on the same window, even with a slightly later reset", () => {
+    for (const usageReset of [90, 91, 90 + 59]) {
+      const acc = { ...reported("a@x.io", 12, 30, { sessionResets: usageReset }), exhausted: [refusal("session", 90)] };
+      expect(exhaustedFields(acc), String(usageReset)).toMatchObject({ exhausted: true, until: at(90) });
+    }
+  });
+
+  it("is superseded once the same-named usage window resets later than the refused one can", () => {
+    // A new session window: it resets at least most of five hours after the refused one.
+    const known = { ...reported("a@x.io", 12, 30, { sessionResets: 90 + 300 }), exhausted: [refusal("session", 90)] };
+    expect(exhaustedFields(known)).toMatchObject({ state: "free", exhausted: false, until: null, window: null });
+    // Unknown reset reported 3 h ago: the refused window resets within 2 h; a
+    // usage window resetting in 4 h started after the refusal.
+    const unknown = {
+      ...reported("a@x.io", 12, 30, { sessionResets: 240 }),
+      exhausted: [refusal("session", null, { agoMin: 180 })],
+    };
+    expect(exhaustedFields(unknown).exhausted).toBe(false);
+    // ...while one resetting in 2.5 h may still be the refused window.
+    const same = {
+      ...reported("a@x.io", 12, 30, { sessionResets: 150 }),
+      exhausted: [refusal("session", null, { agoMin: 180 })],
+    };
+    expect(exhaustedFields(same).exhausted).toBe(true);
+  });
+
+  it("is not superseded by the other window", () => {
+    const acc = {
+      ...reported("a@x.io", 12, 30, { sessionResets: 60, weekResets: 9000 }),
+      exhausted: [refusal("session", 90)],
+    };
+    expect(exhaustedFields(acc)).toMatchObject({ exhausted: true, window: "session" });
+  });
+
+  it("waits on the latest known reset among windows at 100% and records", () => {
+    const windowLater = {
+      ...reported("a@x.io", 10, 100, { sessionResets: 90, weekResets: 4000 }),
+      exhausted: [refusal("session", 90)],
+    };
+    expect(exhaustedFields(windowLater)).toMatchObject({ until: at(4000), window: "week" });
+    const recordLater = {
+      ...reported("a@x.io", 100, 10, { sessionResets: 120, weekResets: 3000 }),
+      exhausted: [refusal("week", 3000)],
+    };
+    expect(exhaustedFields(recordLater)).toMatchObject({ until: at(3000), window: "week" });
+    const twoRecords = account("a@x.io", {
+      exhausted: [refusal("session", 120, { dev: "ali" }), refusal("session", 200, { dev: "can" })],
+    });
+    expect(exhaustedFields(twoRecords)).toMatchObject({ until: at(200), window: "session" });
+  });
+
+  it("prefers week on a tie", () => {
+    const tie = {
+      ...reported("a@x.io", 100, 10, { sessionResets: 120, weekResets: 120 }),
+      exhausted: [refusal("week", 120)],
+    };
+    expect(exhaustedFields(tie)).toMatchObject({ until: at(120), window: "week" });
+    const tieRecords = account("a@x.io", { exhausted: [refusal("week", 120, { dev: "ali" }), refusal("session", 120)] });
+    expect(exhaustedFields(tieRecords)).toMatchObject({ until: at(120), window: "week" });
+  });
+
+  it("uses a known reset over an unknown one, and names week when none is known", () => {
+    const mixed = account("a@x.io", { exhausted: [refusal("week", null, { dev: "ali" }), refusal("session", 100)] });
+    expect(exhaustedFields(mixed)).toMatchObject({ until: at(100), window: "session" });
+    const withWindow = { ...reported("a@x.io", 100, 10, { sessionResets: 120 }), exhausted: [refusal("week", null)] };
+    expect(exhaustedFields(withWindow)).toMatchObject({ until: at(120), window: "session" });
+    const both = account("a@x.io", { exhausted: [refusal("session", null, { dev: "ali" }), refusal("week", null)] });
+    expect(exhaustedFields(both)).toMatchObject({ exhausted: true, until: null, window: "week" });
+    const sessionOnly = account("a@x.io", { exhausted: [refusal("session", null)] });
+    expect(exhaustedFields(sessionOnly)).toMatchObject({ until: null, window: "session" });
+  });
+
+  it("keeps busy_by and the usual states' signals on a refused account", () => {
+    const acc = {
+      ...reported("a@x.io", 10, 10, { dev: "ali", agoMin: 1, sessionResets: 60 }),
+      claims: [holder("can", 5)],
+      exhausted: [refusal("session", 60)],
+    };
+    const [a] = rank([acc], { ...BASE, dev: "murat" });
+    expect(a).toMatchObject({ state: "exhausted", busy_by: ["ali", "can"] });
+  });
+
+  it("sorts refused accounts last, by exhausted_until, unknown after known", () => {
+    const ranked = rank(
+      [
+        account("unknown-reset@x.io", { exhausted: [refusal("week", null)] }),
+        account("late@x.io", { exhausted: [refusal("week", 3000)] }),
+        { ...reported("soon@x.io", 0, 0, { sessionResets: 30 }), exhausted: [refusal("session", 30)] },
+        reported("window@x.io", 100, 0, { sessionResets: 60 }),
+        { ...reported("busy@x.io", 90, 90), claims: [holder("ali", 5)] },
+        account("never@x.io"),
+      ],
+      { ...BASE, dev: "murat" },
+    );
+    expect(ranked.map((r) => r.email)).toEqual([
+      "never@x.io",
+      "busy@x.io",
+      "soon@x.io",
+      "window@x.io",
+      "late@x.io",
+      "unknown-reset@x.io",
+    ]);
   });
 });
