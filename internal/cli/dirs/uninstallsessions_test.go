@@ -556,3 +556,29 @@ func TestUninstallMergesMemoryOfProjectsWithoutAMovedSession(t *testing.T) {
 	out = h.mustRun(runUninstall, "--move-sessions")
 	notContains(t, out, "merged project memory")
 }
+
+// An explicit --move-sessions never goes unanswered: an unreadable
+// config.json (the list of registered dirs) is an error, and nothing to
+// move is said.
+func TestUninstallMoveSessionsSaysWhenItCannotRun(t *testing.T) {
+	h := newHarness(t)
+	custom, _ := installed(t, h)
+	rel := h.transcript(custom, filepath.Join(h.home, "proj"), sidA, "fix login")
+	good := h.read(filepath.Join(h.jl, config.ConfigFile))
+	h.writeFile(filepath.Join(h.jl, config.ConfigFile), "{nope")
+
+	err := h.run(runUninstall, "--move-sessions")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	contains(t, h.stderr.String(), "julienning: cannot move sessions: the registered dirs are listed in config.json, which could not be read (see above); fix it and run `julienning uninstall --move-sessions` again\n")
+	notContains(t, h.stdout.String(), "New terminals run claude natively")
+	assertExists(t, filepath.Join(custom, rel))
+
+	h.writeFile(filepath.Join(h.jl, config.ConfigFile), good)
+	if err := os.Remove(filepath.Join(custom, rel)); err != nil {
+		t.Fatal(err)
+	}
+	out := h.mustRun(runUninstall, "--move-sessions")
+	contains(t, out, "Sessions: nothing to move; no registered config dir holds a session.\n")
+}
