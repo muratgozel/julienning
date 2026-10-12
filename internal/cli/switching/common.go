@@ -113,6 +113,10 @@ func warnf(env cli.Env, format string, a ...any) {
 	fmt.Fprintf(env.Stderr, "julienning: warning: %s\n", fmt.Sprintf(format, a...))
 }
 
+func notef(env cli.Env, format string, a ...any) {
+	fmt.Fprintf(env.Stderr, "julienning: note: %s\n", fmt.Sprintf(format, a...))
+}
+
 // warnSetup prints one warning when a registered dir's settings.json lacks
 // an entry this julienning adds (a newer version wiring a new hook), so the
 // user knows to re-run setup.
@@ -178,13 +182,20 @@ type selection struct {
 	account  *remote.Account // nil when the Worker did not list it
 	shared   bool            // email on the team allowlist
 	stay     bool            // next: already the current dir
+	// personal: an account not shared with the team, opened by `use EMAIL`
+	// without becoming the selection. cd.Name is "" unless the dir happens
+	// to be registered.
+	personal bool
 }
 
 // label is how users see the target (SPEC "Nicknames"): the account
-// nickname, else the config name.
+// nickname, else the email of a personal account, else the config name.
 func (s selection) label() string {
 	if s.nickname != "" {
 		return s.nickname
+	}
+	if s.personal {
+		return s.email
 	}
 	return s.cd.Name
 }
@@ -199,6 +210,9 @@ func (s selection) label() string {
 //	Now using julienning3 (claude3@x.io) — …
 //	Staying on julienning3 (best available) — …
 func summaryLine(sel selection, now time.Time, loc *time.Location) string {
+	if sel.personal {
+		return "Using " + sel.email + " in " + shortenHome(sel.cd.Dir) + " (personal; your selection is unchanged)."
+	}
 	var b strings.Builder
 	if sel.stay {
 		b.WriteString("Staying on " + sel.label())
@@ -243,10 +257,20 @@ func window(w *remote.Window, now time.Time, loc *time.Location) string {
 // jsonDoc is the --json output: the Worker's account object (unknown fields
 // preserved) plus "config" and "nickname"; without an account, just config,
 // email and nickname. Unknown values are null.
+//
+// A personal account adds "dir" and "personal": true; its "config" is null
+// unless the dir is registered.
 func jsonDoc(sel selection) (map[string]any, error) {
 	var nick any
 	if sel.nickname != "" {
 		nick = sel.nickname
+	}
+	if sel.personal {
+		var name any
+		if sel.cd.Name != "" {
+			name = sel.cd.Name
+		}
+		return map[string]any{"config": name, "email": sel.email, "nickname": nil, "dir": sel.cd.Dir, "personal": true}, nil
 	}
 	if sel.account != nil {
 		obj, err := sel.account.Object()

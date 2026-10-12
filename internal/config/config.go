@@ -77,6 +77,12 @@ func (s *ShareOnLogin) NicknameFor(email string) string {
 	return DefaultNickname(email)
 }
 
+// PersonalDir is one remembered login of a personal account.
+type PersonalDir struct {
+	Email string `json:"email"` // lowercased
+	Dir   string `json:"dir"`   // absolute and cleaned
+}
+
 // DefaultNickname is the suggested team nickname for an email: its local
 // part (claude1@x.io → claude1). Characters a nickname cannot hold become
 // dashes (john+team@x.io → john-team), leading dots, underscores and dashes
@@ -116,6 +122,11 @@ type Config struct {
 	// DeclinedEmails are accounts this machine's user said are personal, so
 	// setup does not offer to share them again. Lowercased.
 	DeclinedEmails []string `json:"declined_emails,omitempty"`
+	// PersonalDirs remembers where `use EMAIL` last found an account that
+	// is not shared with the team. It is only a shortcut past
+	// discovery: the dir's login is checked on every use, and a mismatch
+	// searches again (resolve.Personal). These dirs are never registered.
+	PersonalDirs []PersonalDir `json:"personal_dirs,omitempty"`
 	// SendMinIntervalSec throttles usage reports per account (KV write budget).
 	SendMinIntervalSec int `json:"send_min_interval_sec,omitempty"`
 	// NamePrefix names the dirs julienning registers without an explicit
@@ -301,7 +312,56 @@ func (c *Config) Validate() error {
 		seenName[cd.Name] = true
 		seenDir[cd.Dir] = true
 	}
+	seenEmail := map[string]bool{}
+	for _, pd := range c.PersonalDirs {
+		at := strings.Index(pd.Email, "@")
+		if pd.Email != strings.ToLower(pd.Email) || at < 1 || at == len(pd.Email)-1 || strings.ContainsAny(pd.Email, " \t\r\n") {
+			return fmt.Errorf("personal_dirs: invalid email %q (lowercase address; fix or remove the entry)", pd.Email)
+		}
+		if !filepath.IsAbs(pd.Dir) || filepath.Clean(pd.Dir) != pd.Dir {
+			return fmt.Errorf("personal_dirs: %s: dir must be an absolute, clean path, got %q (fix or remove the entry)", pd.Email, pd.Dir)
+		}
+		if seenEmail[pd.Email] {
+			return fmt.Errorf("personal_dirs: duplicate email %q", pd.Email)
+		}
+		seenEmail[pd.Email] = true
+	}
 	return nil
+}
+
+// PersonalDirOf returns the remembered dir of a personal account.
+func (c *Config) PersonalDirOf(email string) (string, bool) {
+	email = strings.ToLower(email)
+	for _, pd := range c.PersonalDirs {
+		if pd.Email == email {
+			return pd.Dir, true
+		}
+	}
+	return "", false
+}
+
+// RememberPersonalDir re-reads config.json, records dir as where the
+// personal account email is logged in (replacing an older entry) and saves.
+// It re-reads for the same reason as UpdateDir: another command may have
+// saved its own changes since this process loaded config.json.
+func RememberPersonalDir(email, dir string) error {
+	c, err := Load()
+	if err != nil {
+		return err
+	}
+	email, dir = strings.ToLower(email), filepath.Clean(dir)
+	if cur, ok := c.PersonalDirOf(email); ok && cur == dir {
+		return nil
+	}
+	kept := c.PersonalDirs[:0]
+	for _, pd := range c.PersonalDirs {
+		if pd.Email != email {
+			kept = append(kept, pd)
+		}
+	}
+	c.PersonalDirs = append(kept, PersonalDir{Email: email, Dir: dir})
+	sort.Slice(c.PersonalDirs, func(i, j int) bool { return c.PersonalDirs[i].Email < c.PersonalDirs[j].Email })
+	return c.Save()
 }
 
 // ErrRemoteNotConfigured is returned by RequireRemote when the Worker URL or

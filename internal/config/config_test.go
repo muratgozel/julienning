@@ -230,3 +230,82 @@ func TestAutoUpdateEnv(t *testing.T) {
 		t.Fatalf("invalid env: got %v, %v; want off with an error", got, err)
 	}
 }
+
+// RememberPersonalDir re-reads config.json (a concurrent change survives),
+// replaces an older entry for the email, keeps entries sorted, and leaks no
+// env override into the file.
+func TestRememberPersonalDir(t *testing.T) {
+	t.Setenv(EnvHome, t.TempDir())
+	t.Setenv("JULIENNING_TOKEN", "")
+	t.Setenv("JULIENNING_REMOTE_URL", "")
+	newSaved(t, Remote{URL: "https://w.example.dev", Token: "file-token"})
+	stale, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another command declines an email after this process loaded config.
+	other, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Decline("me@personal.io")
+	if err := other.Save(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("JULIENNING_TOKEN", "env-token")
+
+	if err := RememberPersonalDir("Zed@Personal.io", "/h/.claude-zed/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RememberPersonalDir("me@personal.io", "/h/.claude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RememberPersonalDir("me@personal.io", "/h/.claude-me"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PersonalDir{{Email: "me@personal.io", Dir: "/h/.claude-me"}, {Email: "zed@personal.io", Dir: "/h/.claude-zed"}}
+	if len(c.PersonalDirs) != 2 || c.PersonalDirs[0] != want[0] || c.PersonalDirs[1] != want[1] {
+		t.Fatalf("personal_dirs = %+v, want %+v", c.PersonalDirs, want)
+	}
+	if !c.Declined("me@personal.io") {
+		t.Error("RememberPersonalDir lost a change saved after this process loaded config.json")
+	}
+	if d, ok := c.PersonalDirOf("ME@personal.io"); !ok || d != "/h/.claude-me" {
+		t.Errorf("PersonalDirOf = %q %v", d, ok)
+	}
+	if _, ok := stale.PersonalDirOf("me@personal.io"); ok {
+		t.Error("the stale copy must not see the change")
+	}
+	if raw := readConfig(t); strings.Contains(raw, "env-token") || !strings.Contains(raw, `"personal_dirs"`) {
+		t.Fatalf("config.json:\n%s", raw)
+	}
+}
+
+func TestValidatePersonalDirs(t *testing.T) {
+	base := func(pd ...PersonalDir) *Config {
+		return &Config{Version: SchemaVersion, Dev: "murat", MachineID: "3fa9c2d1e07b", PersonalDirs: pd}
+	}
+	if err := base(PersonalDir{Email: "me@x.io", Dir: "/h/.claude"}).Validate(); err != nil {
+		t.Fatalf("valid entry rejected: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		pd   []PersonalDir
+		want string
+	}{
+		"uppercase":    {[]PersonalDir{{Email: "Me@x.io", Dir: "/h"}}, "invalid email"},
+		"no at":        {[]PersonalDir{{Email: "mex.io", Dir: "/h"}}, "invalid email"},
+		"empty domain": {[]PersonalDir{{Email: "me@", Dir: "/h"}}, "invalid email"},
+		"relative":     {[]PersonalDir{{Email: "me@x.io", Dir: "h/.claude"}}, "absolute"},
+		"unclean":      {[]PersonalDir{{Email: "me@x.io", Dir: "/h/../.claude"}}, "clean"},
+		"duplicate":    {[]PersonalDir{{Email: "me@x.io", Dir: "/a"}, {Email: "me@x.io", Dir: "/b"}}, "duplicate"},
+	} {
+		err := base(tc.pd...).Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+}

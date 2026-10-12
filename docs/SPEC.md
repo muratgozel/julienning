@@ -35,6 +35,10 @@ Cloudflare Workers + KV) and the repo plumbing. Keep it current.
 - **claim**: advisory "in use" marker. Holders are dev+machine pairs; an
   account can have several. Claims are driven by live Claude sessions.
 - **session**: a Claude Code conversation, `projects/<enc-cwd>/<id>.jsonl`.
+- **personal account**: any email not on the allowlist. Its dir is found by
+  `use EMAIL` wherever it is logged in, registered or not, and is never
+  registered by that, never reports, never claims and never feeds the team
+  picker (see "Personal accounts").
 
 ## Nicknames
 
@@ -150,7 +154,7 @@ integration"); dir-name aliases no longer exist.
 
 | File | Owner | Purpose |
 |------|-------|---------|
-| `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, name prefix |
+| `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, remembered personal dirs, name prefix |
 | `current` | config | absolute path of the selected config dir |
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
 | `claims.json` | claims | emails this machine currently holds a claim on |
@@ -177,6 +181,7 @@ integration"); dir-name aliases no longer exist.
       "share_on_login": { "nickname": "delta" } }
   ],
   "declined_emails": ["me@personal.com"],
+  "personal_dirs": [{ "email": "me@personal.com", "dir": "/Users/murat/.claude" }],
   "send_min_interval_sec": 300,
   "name_prefix": "julienning",
   "auto_update": false
@@ -188,6 +193,11 @@ dir's first login (see new-config); `nickname` absent = the email's local
 part, decided at share time. It must pass the nickname rule (checked on load
 and save). It is removed once the share lands, the email turns out to be
 shared already, or the email is declined; `forget` drops it with the dir.
+`personal_dirs` is optional: where `use EMAIL` last found each personal
+account (lowercased email, absolute clean dir, one entry per email; checked
+on load and save). It is a shortcut past discovery, never trusted blindly
+(see "Personal accounts"). `config.RememberPersonalDir` re-reads config.json
+before saving, like `UpdateDir`.
 `name_prefix` is optional (absent = `julienning`, `config.Prefix()`).
 `auto_update` is optional (absent = on; `cfg.AutoUpdateEnabled()`, which also
 honours `JULIENNING_AUTO_UPDATE`).
@@ -639,8 +649,9 @@ is exhausted (only then).
 
 `julienning next [--all] [--limit N] [--no-launch] [--json]`
 `julienning use [TARGET] [--all] [--limit N] [--no-launch] [--json]` (TARGET:
-a nickname, email or config name, see Nicknames; no TARGET: the current
-selection without re-ranking; nothing selected → same as `next`)
+a nickname, email or config name, see Nicknames; an email not on the
+allowlist takes the personal path, see "Personal accounts"; no TARGET: the
+current selection without re-ranking; nothing selected → same as `next`)
 `julienning use --clear`
 
 1. Target: `next` ranks via the Worker and picks the first shared account
@@ -658,7 +669,10 @@ selection without re-ranking; nothing selected → same as `next`)
    past it);
    `use` refreshes the allowlist from the Worker when it can (falling back to
    `shared.json` with a warning), then resolves TARGET (`resolve.Target`; a
-   `NotLocalError` or unknown target is the error). A dir reached by config
+   `NotLocalError` or unknown target is the error). A TARGET with `@` that is
+   not on the (refreshed) allowlist is validated (`"x" is not a valid email
+   address`) and leaves this flow for "Personal accounts" before
+   `resolve.Target`. A dir reached by config
    name may be not logged in or not shared — then warn
    (`julienning3 is not logged in yet; run: julienning login julienning3`),
    skip the session list's move/merge and launch plain.
@@ -707,14 +721,53 @@ selection without re-ranking; nothing selected → same as `next`)
 `use --clear` removes `current` (replaces the removed `release`). `use` and
 `next` no longer claim; claims come from sessions.
 
+#### Personal accounts (`resolve.Personal`, `use EMAIL`)
+
+An email not on the allowlist is opened where it is logged in, without
+touching team state. `resolve.Personal(cfg, email)`:
+
+1. The dir remembered in `personal_dirs`, when it is a directory, not
+   `discover.IsUnsafeConfigDir`, and its live login (`claudecfg.ReadEmail`,
+   so `~/.claude.json` for the default dir) is that email. An account file
+   that cannot be read is an error (`cannot read the login in ~/.claude-x:
+   …`), not a reason to look elsewhere.
+2. Otherwise `discover.Find` (the default dir, the top level of `$HOME`,
+   rc-file `CLAUDE_CONFIG_DIR` dirs, the current `$CLAUDE_CONFIG_DIR`) plus
+   the registered dirs it does not cover; the first logged into the email in
+   that order wins (default dir first, then by path, then registered dirs by
+   name). Notes, printed as `julienning: note:`:
+   `me@x.io is no longer logged in at ~/.claude; found it at ~/.claude-me`,
+   `me@x.io is also logged in at ~/.claude-b; using ~/.claude-a`. The result
+   is remembered (`PersonalMatch.Remember`; a failure is a warning).
+3. None: `no Claude config dir on this machine is logged in as me@x.io
+   (searched ~/.claude, the top level of your home directory, the
+   CLAUDE_CONFIG_DIR settings in your shell startup files and the registered
+   dirs); sign in first, for example: CLAUDE_CONFIG_DIR=~/.claude-me command
+   claude` (`~/.claude-<default nickname>`, `personal` when there is none);
+   after a remembered dir lost the login: `me@x.io is no longer logged in at
+   ~/.claude-me, and no other … is (…); sign in again with:
+   CLAUDE_CONFIG_DIR=~/.claude-me command claude` (`command claude` for the
+   default dir).
+
+`use EMAIL` then never sets `current`, never registers or patches the dir,
+and sends nothing about the account (the allowlist fetch `use` always makes
+carries no email). Summary line:
+`Using me@x.io in ~/.claude (personal; your selection is unchanged).`
+`--json`: `{config (the config name when the dir is registered, else null),
+email, nickname: null, dir, personal: true}`. Launch mode lists the sessions
+of that dir only (rows labelled by the email, `New session` `in me@x.io`),
+resumes in place and never moves; cancel prints `Not starting claude; your
+selection is unchanged.`. Reaching a registered dir by its config name keeps
+the team behaviour above (selected, warned, plain launch).
+
 #### Session listing (`sessions.List`)
 
 Sources: the target plus every registered dir whose current login is on the
 allowlist (`sharedSources`: the refreshed cache, else `shared.json`); a dir
 logged into a personal account, not logged in, or with an unreadable login
-is left out, so personal sessions are never listed or moved. Within a
-source: the project folder for the current working directory, or all
-project folders with `--all`. Folder name:
+is left out, so personal sessions are never listed or moved. A personal
+target lists its own dir only. Within a source: the project folder for the
+current working directory, or all project folders with `--all`. Folder name:
 `cwd` with every non-alphanumeric character replaced by `-`; when that
 exceeds 200 characters Claude truncates and appends a hash, so match folders
 by the 200-character prefix and confirm with the `cwd` field inside the

@@ -16,6 +16,7 @@ Every julienning command, flag, output, file and error in one page, with output 
   - [Default dir](#default-dir)
 - [Daily use](#daily-use)
   - [Session picker](#session-picker)
+  - [Personal accounts](#personal-accounts)
   - [Other commands](#other-commands)
 - [How claims work](#how-claims-work)
 - [How usage reaches KV](#how-usage-reaches-kv)
@@ -65,7 +66,9 @@ entered at `julienning setup` and shared out of band.
   `julienning share`).
 - **Personal accounts never report.** A dir logged into an email that is not on
   the allowlist sends no usage and no claims, and `julienning current` does not
-  ask the Worker about it.
+  ask the Worker about it. `julienning use <personal email>` sends nothing
+  about it either; where it is logged in is remembered in
+  `~/.julienning/config.json`, on this machine only.
 - `~/.julienning/errors.log` never contains email addresses, and no file name
   under `~/.julienning` does either (per-account files are named by a short
   hash of the email).
@@ -446,7 +449,8 @@ be shared does not stop setup: every step still runs, then setup exits 1
 Setting `CLAUDE_CONFIG_DIR=~/.claude` is not the same as leaving it unset
 (Claude Code then reads another account file and credential). When the target
 is `~/.claude` (registered as `default`), every launcher unsets the variable
-instead: `next`, `use`, `login`, the `claude` function, and a
+instead: `next`, `use` (also `use <personal email>` for an account logged in
+there), `login`, the `claude` function, and a
 `claude-<nickname>` function whose account is logged in there, which runs
 `env -u CLAUDE_CONFIG_DIR claude`.
 
@@ -459,6 +463,7 @@ julienning use delta             # an account by nickname (or email, or config n
 claude-delta                     # plain claude on delta; the selection stays as it is
 julienning next --no-launch      # switch only
 julienning use --clear           # no selection: plain claude uses your default config
+julienning use me@personal.com   # a personal account, wherever it is logged in; the selection stays
 ```
 
 ```
@@ -602,6 +607,39 @@ link to a conflicting file or to a file the target's index already lists. A
 `MEMORY.md` that is a symlink stays one; the file it points to gets the lines.
 A move is refused while the session is open, when it may be open, or when the
 target already has that id.
+
+### Personal accounts
+
+Accounts that are not shared with the team (declined at setup, or never
+offered) are opened by email:
+
+```
+$ julienning use me@personal.com
+Using me@personal.com in ~/.claude (personal; your selection is unchanged).
+```
+
+- julienning finds the dir logged into the email the way setup does
+  (`~/.claude`, the top level of your home directory, `CLAUDE_CONFIG_DIR` in
+  your shell startup files) plus the registered dirs, and remembers it in
+  `config.json`. Next time it checks that the dir is still logged into that
+  email; if you signed it into something else, it searches again:
+  `julienning: note: me@personal.com is no longer logged in at ~/.claude; found it at ~/.claude-me`.
+  With several dirs on one email it takes `~/.claude` first, then by path,
+  and names the others in a note.
+- The selection is not changed, so plain `claude` elsewhere keeps using the
+  team account; nothing is registered, patched, claimed or reported.
+- In a terminal the picker lists that dir's own sessions only (rows show the
+  email), resumes in place and never moves a session in or out; Esc prints
+  `Not starting claude; your selection is unchanged.`. `--no-launch` and
+  non-terminals print the line above; `--json` prints `config` (the config
+  name when the dir happens to be registered, else `null`), `email`,
+  `nickname` (`null`), `dir` and `"personal": true`.
+- Not logged in anywhere:
+  `` julienning: no Claude config dir on this machine is logged in as me@personal.com (searched …); sign in first, for example: CLAUDE_CONFIG_DIR=~/.claude-me command claude ``.
+  Run that, sign in, and `use` finds it.
+- A registered dir reached by its config name (`julienning use julienning3`)
+  keeps the old behaviour even when its account is personal: it becomes the
+  selection and `claude` starts plain, with a warning.
 
 ### Other commands
 
@@ -1143,6 +1181,11 @@ Common messages:
   account right now. Sign one in (`julienning new-config`, or
   `julienning login <config>` for an existing dir); a dir julienning does not
   know yet also needs `julienning setup` or `julienning adopt DIR`.
+- **`no Claude config dir on this machine is logged in as …`** (`use EMAIL`): that personal account is not signed in in any dir julienning looks
+  at. Run the `command claude` line the message shows, sign in, and try again;
+  a dir outside your home directory's top level is found once its
+  `CLAUDE_CONFIG_DIR=` line is in your shell rc file, or after
+  `julienning adopt DIR`.
 - **`unknown target "…": not a team nickname, an email, or a config name ...`**:
   `julienning accounts` lists the nicknames (and refreshes the cached
   allowlist, in case a teammate just shared or renamed the account),
@@ -1172,7 +1215,7 @@ Common messages:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
+| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
 | `current` | path of the selected config dir (read by the `claude` function) |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |
 | `claims.json` | emails this machine holds a claim on |

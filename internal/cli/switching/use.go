@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
@@ -17,7 +18,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "use",
-		Summary: "start or resume a session on an account (TARGET: team nickname, email or config name; none: the current selection, or like next when nothing is selected; --clear: back to your default)",
+		Summary: "start or resume a session on an account (TARGET: nickname, email or config name; none: the selection, else like next; --clear: back to your default)",
 		Usage:   "use [TARGET] [--all] [--limit N] [--no-launch] [--json] | use --clear",
 		Run:     runUse,
 	})
@@ -87,6 +88,18 @@ func runUse(env cli.Env) error {
 		cache = loadCache(env)
 	}
 
+	// An email that is not a team account is personal: it is opened where
+	// it is logged in, registered or not, and never becomes the selection.
+	if len(pos) == 1 && strings.Contains(pos[0], "@") {
+		email := strings.ToLower(strings.TrimSpace(pos[0]))
+		if !resolve.Shared(cache, email) {
+			if !claudecfg.ValidEmail(email) {
+				return fmt.Errorf("%q is not a valid email address", pos[0])
+			}
+			return usePersonal(env, cfg, cache, email, o, now)
+		}
+	}
+
 	cd := cur
 	if len(pos) == 1 {
 		var curPtr *config.ConfigDir
@@ -133,5 +146,24 @@ func runUse(env cli.Env) error {
 	if err := config.SetCurrent(cd); err != nil {
 		return err
 	}
+	return finish(env, cfg, cache, sel, o, now)
+}
+
+// usePersonal opens a personal account: the dir it is logged in (remembered
+// in config.json, searched again when the login moved), its own sessions
+// only, and never a move, a claim, a report or a change of the selection.
+func usePersonal(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, email string, o options, now time.Time) error {
+	pm, err := resolve.Personal(cfg, email)
+	if err != nil {
+		return err
+	}
+	for _, n := range pm.Notes() {
+		notef(env, "%s", n)
+	}
+	if err := pm.Remember(); err != nil {
+		// Only a shortcut for next time: the account was found anyway.
+		warnf(env, "%v", err)
+	}
+	sel := selection{cd: config.ConfigDir{Name: pm.Name, Dir: pm.Dir}, email: email, personal: true}
 	return finish(env, cfg, cache, sel, o, now)
 }
