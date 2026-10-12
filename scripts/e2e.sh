@@ -13,8 +13,9 @@
 # pseudo-terminal (scripts/e2e/ptydrive.go), personal accounts opened by
 # email, directory pins through the claude wrapper, the status line, usage
 # reports, claims driven by the session hooks and a fake live session,
-# forget, self-update, and that uninstall restores every file setup touched
-# byte for byte.
+# forget, self-update, and that uninstall moves the registered dirs' sessions
+# into ~/.claude, leaves plain claude native (in new terminals and in one
+# left open) and restores every file setup touched byte for byte.
 #
 # Needs go, node (worker/node_modules installed, `npm ci` runs if missing),
 # bash, curl, tar, sha256sum or shasum, ps and pgrep. The sandbox is kept
@@ -456,7 +457,7 @@ run julienning unpin "$T/proj/side2"
 run claude_in "$T/proj/side/web" bash
 expect_contains "after unpin plain claude follows the selection again" "dir=$HOME/.claude-two args=-p hi" "$out"
 [ -f "$JULIENNING_HOME/pins.json" ] || fail "pins.json is gone while teamx is still pinned"
-ok "the teamx pin stays for uninstall --purge to remove"
+ok "the teamx pin stays for uninstall to remove"
 
 # --- the "run setup" warning for a settings.json an older julienning patched -----------------
 old_layout
@@ -552,16 +553,68 @@ run julienning update
 expect_contains "update is a no-op when current" "9.0.1" "$out"
 
 # --- uninstall ------------------------------------------------------------------------------
-run julienning uninstall --purge --yes
+# Plain uninstall on a terminal, run from a shell that loaded the integration
+# before it (a terminal left open). It offers to move the registered dirs'
+# sessions into ~/.claude, leaves an open one where it is, drops the pins,
+# and afterwards plain claude is native: the real command in new terminals,
+# and the default dir even in the old one, inside a dir that was pinned.
+mkdir -p "$HOME/.claude-work/projects/$enc/memory" "$HOME/.claude-work/sessions"
+printf 'remember the build flags\n' >"$HOME/.claude-work/projects/$enc/memory/notes.md"
+sleep 600 &
+session_pid=$!
+disown
+proc_start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$session_pid" | sed 's/^ *//;s/ *$//')"
+printf '{"pid":%d,"sessionId":"%s","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","startedAt":%d,"updatedAt":%d}\n' \
+  "$session_pid" "$sid_alpha" "$T/proj" "$proc_start" "$now_ms" "$now_ms" >"$HOME/.claude-work/sessions/$session_pid.json"
+steps=('expect=Move them into ~/.claude?' 'send=\r' 'expect=Terminals already open')
+# shellcheck disable=SC2016 # expanded by the inner shell
+out="$(cd "$T/proj/teamx" && bash -c 'eval "$(julienning shell-init bash)"; "$@" || exit; claude -p open-terminal' _ \
+  "$T/ptydrive" "${steps[@]}" -- env TERM=dumb julienning uninstall 2>&1)" || fail "uninstall on a terminal failed" "$out"
+expect_contains "uninstall counts the sessions and names the account plain claude will use" \
+  "Sessions: 3 sessions in 2 registered config dirs. Without julienning, plain claude opens ~/.claude (signed in as personal@example.com) and cannot resume them." "$out"
+expect_contains "uninstall names an open session before asking" "\"Team alpha task\" in ~/.claude-work" "$out"
+expect_contains "uninstall moves the sessions and merges memory" "Sessions: moved 2 sessions into ~/.claude (memory: 1 file added)" "$out"
+expect_contains "the open session stays, with the command that resumes it" "CLAUDE_CONFIG_DIR=~/.claude-work claude --resume $sid_alpha" "$out"
+expect_contains "plain uninstall drops the pins" "Pins:     removed 1 pin" "$out"
+expect_contains "uninstall says new terminals run claude natively" "New terminals run claude natively: plain claude opens ~/.claude (signed in as personal@example.com)." "$out"
+expect_contains "a terminal opened before uninstall runs claude natively in a formerly pinned dir" "dir=<unset> args=-p open-terminal" "$out"
+for moved in "$sid_bravo" 33333333-3333-4333-8333-333333333333; do
+  [ -f "$HOME/.claude/projects/$enc/$moved.jsonl" ] || fail "session $moved is not in ~/.claude"
+done
+if [ -e "$HOME/.claude-work/projects/$enc/$sid_bravo.jsonl" ] || [ -e "$HOME/.claude-mine/projects/$enc/33333333-3333-4333-8333-333333333333.jsonl" ]; then
+  fail "a moved session is still in its old dir"
+fi
+ok "the team and registered personal sessions are now in ~/.claude only"
+[ -f "$HOME/.claude-work/projects/$enc/$sid_alpha.jsonl" ] || fail "the open session moved"
+ok "the open session stays in its dir"
+if [ ! -f "$HOME/.claude/projects/$enc/$sid_default.jsonl" ] || [ ! -f "$HOME/.claude-side/projects/$enc/55555555-5555-4555-8555-555555555555.jsonl" ]; then
+  fail "uninstall touched sessions outside the registered dirs"
+fi
+ok "sessions outside the registered dirs stay put"
+expect_same "project memory is merged into ~/.claude" "$HOME/.claude-work/projects/$enc/memory/notes.md" "$HOME/.claude/projects/$enc/memory/notes.md"
+# shellcheck disable=SC2016 # expanded by the inner shell
+run bash -c 'source "$1"; type -t claude; claude -p new-terminal' _ "$rc"
+expect_contains "a new terminal runs the real claude command" "file" "$out"
+expect_contains "a new terminal opens the default dir" "dir=<unset> args=-p new-terminal" "$out"
 expect_same "uninstall restores the work settings.json byte for byte" "$T/before/work.json" "$HOME/.claude-work/settings.json"
 expect_same "uninstall restores the rc file byte for byte" "$T/before/rc" "$rc"
 expect_same "the personal settings.json was never touched" "$T/before/personal.json" "$HOME/.claude/settings.json"
+expect_same "the personal login was never touched" "$T/before/claude.json" "$HOME/.claude.json"
 expect_same "the unregistered personal dir's settings.json was never touched" "$T/before/side.json" "$HOME/.claude-side/settings.json"
+expect_missing "uninstall strips the upgraded dir too" "julienning" "$(cat "$HOME/.claude-old/settings.json")"
+
+# Once that session has exited, --purge --move-sessions moves it without a
+# question and removes julienning.
+kill "$session_pid" 2>/dev/null || true
+wait "$session_pid" 2>/dev/null || true
+session_pid=""
+run julienning uninstall --purge --yes --move-sessions
+expect_contains "uninstall --move-sessions moves the rest without asking" "Sessions: moved 1 session into ~/.claude" "$out"
+[ -f "$HOME/.claude/projects/$enc/$sid_alpha.jsonl" ] || fail "the exited session did not move"
 [ ! -e "$JULIENNING_HOME" ] || fail "uninstall --purge left $JULIENNING_HOME"
 [ ! -e "$JULIENNING_BIN_DIR/julienning" ] || fail "uninstall --purge left the command"
 [ ! -e "$JULIENNING_VERSIONS_DIR" ] || fail "uninstall --purge left $JULIENNING_VERSIONS_DIR"
 ok "uninstall --purge removed julienning's own files"
-expect_missing "uninstall strips the upgraded dir too" "julienning" "$(cat "$HOME/.claude-old/settings.json")"
 [ -f "$HOME/.claude-work/.claude.json" ] || fail "uninstall touched a Claude config dir"
 ok "Claude config dirs survive uninstall"
 

@@ -1197,11 +1197,14 @@ Worker only: `cd worker && npm ci && npm test && npm run typecheck`.
 releases host (`scripts/e2e/fakereleases.go`) into a throwaway HOME, starts
 `wrangler dev` on a local KV namespace, builds fake Claude config dirs and a
 fake `claude`, and drives setup, the shell functions, switching, the session
-hooks with a fake live session, the status line and its usage report,
-`forget`, `update` and `uninstall`, checking at the end that every file setup
-touched is byte-for-byte what it was. Nothing on the machine is touched; the
-sandbox is kept on failure (`E2E_KEEP=1` keeps it always, `E2E_WORKER_PORT`
-changes the port). The session picker is not covered (it needs a terminal).
+picker and the uninstall question on a pseudo-terminal (`scripts/e2e/ptydrive.go`),
+pins, the session hooks with a fake live session, the status line and its
+usage report, `forget`, `update` and `uninstall`, checking at the end that the
+sessions moved into `~/.claude`, that plain `claude` is native in a new
+terminal and in one left open, and that every file setup touched is
+byte-for-byte what it was. Nothing on the machine is touched; the sandbox is
+kept on failure (`E2E_KEEP=1` keeps it always, `E2E_WORKER_PORT` changes the
+port).
 
 CI (`.github/workflows/ci.yml`, every push and PR): gofmt, `go vet`,
 `go test -race`; `bash -n` and shellcheck on `scripts/install.sh` plus

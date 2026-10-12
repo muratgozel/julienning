@@ -59,8 +59,10 @@ style: `expect=`/`send=`/`sleep=` steps, stdlib ioctls for darwin and linux),
 personal accounts and pins through the generated `claude` function, the
 session hooks with a fake live session (a `sleep` registered in
 `sessions/<pid>.json`), the status line and its detached usage report,
-`forget`, `update` and `uninstall`, and asserts byte-for-byte restoration at
-the end. Run it after any change to setup, uninstall, forget, the installer,
+`forget`, `update` and `uninstall` (its session move into `~/.claude`, with
+an open session left behind, and plain `claude` checked native in a new shell
+and in one that loaded the integration before), and asserts byte-for-byte
+restoration at the end. Run it after any change to setup, uninstall, forget, the installer,
 self-update, claims, switching, pins or the Worker API; add a check there
 when you add a user-visible flow. It is not in CI (it needs a Worker
 process); say in the final message whether it ran. On failure the sandbox is
