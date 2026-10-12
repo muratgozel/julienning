@@ -598,7 +598,8 @@ expect_same "project memory is merged into ~/.claude" "$HOME/.claude-work/projec
 expect_same "memory of a project without sessions is merged too" "$HOME/.claude-work/projects/-gone-project/memory/decisions.md" "$HOME/.claude/projects/-gone-project/memory/decisions.md"
 # shellcheck disable=SC2016 # expanded by the inner shell
 run bash -c 'source "$1"; type -t claude; claude -p new-terminal' _ "$rc"
-expect_contains "a new terminal runs the real claude command" "file" "$out"
+if [ "$(printf '%s\n' "$out" | head -n 1)" != file ]; then fail "a new terminal does not run the real claude command" "$out"; fi
+ok "a new terminal runs the real claude command"
 expect_contains "a new terminal opens the default dir" "dir=<unset> args=-p new-terminal" "$out"
 expect_same "uninstall restores the work settings.json byte for byte" "$T/before/work.json" "$HOME/.claude-work/settings.json"
 expect_same "uninstall restores the rc file byte for byte" "$T/before/rc" "$rc"
@@ -609,8 +610,15 @@ expect_missing "uninstall strips the upgraded dir too" "julienning" "$(cat "$HOM
 
 # Once that session has exited, --purge --move-sessions moves it without a
 # question and removes julienning.
+# A killed process can linger as a zombie, which kill -0 and ps still report
+# alive: wait until it is gone, then drop its entry as Claude does on exit.
 kill "$session_pid" 2>/dev/null || true
-wait "$session_pid" 2>/dev/null || true
+for _ in $(seq 1 50); do
+  if ! kill -0 "$session_pid" 2>/dev/null; then break; fi
+  sleep 0.2
+done
+if kill -0 "$session_pid" 2>/dev/null; then fail "the fake session $session_pid did not exit"; fi
+rm -f "$HOME/.claude-work/sessions/$session_pid.json"
 session_pid=""
 run julienning uninstall --purge --yes --move-sessions
 expect_contains "uninstall --move-sessions moves the rest without asking" "Sessions: moved 1 session into ~/.claude" "$out"
