@@ -175,8 +175,25 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 	trap := sessions.HoldSignals()
 	defer trap.Stop()
 
+	// Every move of a repository's sessions merges the same memory folder
+	// again and reports the same conflicts, and so does the pass below:
+	// name each once.
 	var mem sessions.MemoryReport
 	conflicts := map[string]bool{}
+	noteMemory := func(srcDir, project string, rep sessions.MemoryReport) {
+		mem.Added = append(mem.Added, rep.Added...)
+		mem.IndexLines += rep.IndexLines
+		for _, c := range rep.Conflicts {
+			key := srcDir + "\x00" + project + "\x00" + c
+			if conflicts[key] {
+				continue
+			}
+			conflicts[key] = true
+			mem.Conflicts = append(mem.Conflicts, c)
+			warnf(env, "kept %s's version of project memory file %s; the one from %s stays at %s",
+				m.target.Name, c, shortenHome(srcDir), shortenHome(filepath.Join(srcDir, "projects", project, "memory", c)))
+		}
+	}
 	warned := map[string]bool{}
 	todo := m.bySource()
 	for i, s := range todo {
@@ -222,20 +239,7 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 			continue
 		}
 		res.moved++
-		mem.Added = append(mem.Added, rep.Memory.Added...)
-		mem.IndexLines += rep.Memory.IndexLines
-		// Every move of a repository's sessions merges the same memory
-		// folder again and reports the same conflicts; name each once.
-		for _, c := range rep.Memory.Conflicts {
-			key := s.ConfigDir + "\x00" + rep.MemoryProject + "\x00" + c
-			if conflicts[key] {
-				continue
-			}
-			conflicts[key] = true
-			mem.Conflicts = append(mem.Conflicts, c)
-			warnf(env, "kept %s's version of project memory file %s; the one from %s stays at %s",
-				m.target.Name, c, shortenHome(s.ConfigDir), shortenHome(filepath.Join(s.ConfigDir, "projects", rep.MemoryProject, "memory", c)))
-		}
+		noteMemory(s.ConfigDir, rep.MemoryProject, rep.Memory)
 		for _, w := range rep.Warnings {
 			if !warned[w] {
 				warned[w] = true
@@ -251,12 +255,34 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 			res.stoppedBy, res.interrupted = err, true
 		}
 	}
-	if res.moved > 0 {
-		line := fmt.Sprintf("Sessions: moved %s into %s", countOf(res.moved, "session", "sessions"), m.target.Name)
-		if sum := mem.Summary(); sum != "" {
-			line += " (memory: " + sum + ")"
+
+	// The memory of projects with no session moved (all open, or their
+	// transcripts already cleaned up by Claude) goes too: the question
+	// promised it, and after a purge nothing records where it was.
+	for _, src := range m.sources {
+		if res.stoppedBy != nil {
+			break
 		}
-		say("%s", line)
+		merged, err := sessions.MergeAllMemory(src.Dir, m.target.Dir)
+		for _, pm := range merged {
+			noteMemory(src.Dir, pm.Project, pm.MemoryReport)
+		}
+		if err != nil {
+			warnf(env, "project memory of %s not fully merged into %s: %v", shortenHome(src.Dir), m.target.Name, err)
+		}
+		if err := trap.Check(); err != nil {
+			res.stoppedBy, res.interrupted = err, true
+		}
+	}
+
+	sum := mem.Summary()
+	switch {
+	case res.moved > 0 && sum != "":
+		say("Sessions: moved %s into %s (memory: %s)", countOf(res.moved, "session", "sessions"), m.target.Name, sum)
+	case res.moved > 0:
+		say("Sessions: moved %s into %s", countOf(res.moved, "session", "sessions"), m.target.Name)
+	case sum != "":
+		say("Sessions: merged project memory into %s (%s)", m.target.Name, sum)
 	}
 	return res
 }

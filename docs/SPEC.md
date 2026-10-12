@@ -461,8 +461,13 @@ session and go on; so does any other error of one session (it changed during
 the copy, its dir's registry is unreadable), which also counts as a problem.
 A session deleted since the listing (`sessions.ErrGone`) is skipped. Only
 ENOSPC, EDQUOT and EROFS, which every later move would hit too, and a target
-that is not a directory stop the moves. A memory conflict is warned once per source dir, memory folder
-and file, naming where the other version stays. Output: `Sessions: moving N
+that is not a directory stop the moves. After the moves, every `projects/*/memory/` of
+each source is merged into the same folder of the target
+(`sessions.MergeAllMemory`, never overwriting), so the memory of projects with
+no session moved (all open, or transcripts already cleaned up by Claude) is
+not left behind; with no session moved the line is `Sessions: merged project
+memory into ~/.claude (…)`. A memory conflict is warned once per source dir,
+memory folder and file, naming where the other version stays. Output: `Sessions: moving N
 sessions from <dir>…` per dir, `Sessions: moved N sessions into ~/.claude
 (memory: …)`, and for what stays `Sessions: N stay where they are; resume one
 with CLAUDE_CONFIG_DIR set to its dir:` followed by up to 10 entries of

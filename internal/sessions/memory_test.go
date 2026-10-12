@@ -126,3 +126,37 @@ func TestMergeIndexFollowsASymlinkedIndex(t *testing.T) {
 		t.Errorf("temporaries: %v", tmp)
 	}
 }
+
+func TestMergeAllMemoryMergesEveryProjectFolder(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "dst")
+	writeFile(t, filepath.Join(src, "projects", "-a", "memory", "MEMORY.md"), "- [N](n.md)\n", 0o644, oldTime)
+	writeFile(t, filepath.Join(src, "projects", "-a", "memory", "n.md"), "notes", 0o644, oldTime)
+	writeFile(t, filepath.Join(src, "projects", "-b", "memory", "x.md"), "source", 0o644, oldTime)
+	writeFile(t, filepath.Join(dst, "projects", "-b", "memory", "x.md"), "target", 0o644, oldTime)
+	writeFile(t, filepath.Join(src, "projects", "-c", "memory", "same.md"), "same", 0o644, oldTime)
+	writeFile(t, filepath.Join(dst, "projects", "-c", "memory", "same.md"), "same", 0o644, oldTime)
+	writeFile(t, filepath.Join(src, "projects", "-d", "s.jsonl"), "{}", 0o600, oldTime) // no memory/
+	writeFile(t, filepath.Join(src, "projects", "-e", "memory"), "not a dir", 0o600, oldTime)
+
+	got, err := MergeAllMemory(src, dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary []string
+	for _, pm := range got {
+		summary = append(summary, pm.Project+": "+pm.Summary())
+	}
+	if want := "-a: 2 files added; -b: 1 conflict kept"; strings.Join(summary, "; ") != want {
+		t.Errorf("got %q, want %q", strings.Join(summary, "; "), want)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dst, "projects", "-b", "memory", "x.md")); string(raw) != "target" {
+		t.Error("target memory overwritten")
+	}
+	if raw, _ := os.ReadFile(filepath.Join(dst, "projects", "-a", "memory", "n.md")); string(raw) != "notes" {
+		t.Error("memory of a project without sessions not merged")
+	}
+	if got, err := MergeAllMemory(filepath.Join(root, "absent"), dst); err != nil || got != nil {
+		t.Errorf("absent source: %v %v", got, err)
+	}
+}

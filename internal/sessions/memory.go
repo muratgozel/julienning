@@ -135,6 +135,53 @@ func mergeMemory(srcDir, dstDir string) (MemoryReport, error) {
 	return rep, errors.Join(problems...)
 }
 
+// ProjectMemory is what MergeAllMemory did for one projects/<Project>/memory.
+type ProjectMemory struct {
+	Project string
+	MemoryReport
+}
+
+// MergeAllMemory merges every projects/<name>/memory/ of srcRoot into the
+// same folder of dstRoot, never overwriting (mergeMemory). Move merges only
+// the memory of the session it moves; this covers the projects that have no
+// session left to move (Claude's cleanup deleted them, or they stay open).
+// Folder names are the same in both dirs on one machine, hashed long ones
+// included. It returns the folders where it added or found a conflict, and
+// keeps going past a failing folder.
+func MergeAllMemory(srcRoot, dstRoot string) ([]ProjectMemory, error) {
+	projects := filepath.Join(srcRoot, "projects")
+	entries, err := os.ReadDir(projects)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmtErr("read", projects, err)
+	}
+	var out []ProjectMemory
+	var problems []error
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || !validProjectDir(name) {
+			continue
+		}
+		src := filepath.Join(projects, name, "memory")
+		if fi, err := os.Stat(src); errors.Is(err, os.ErrNotExist) || (err == nil && !fi.IsDir()) {
+			continue
+		} else if err != nil {
+			problems = append(problems, fmtErr("inspect", src, err))
+			continue
+		}
+		rep, err := mergeMemory(src, filepath.Join(dstRoot, "projects", name, "memory"))
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", src, err))
+		}
+		if len(rep.Added) > 0 || rep.IndexLines > 0 || len(rep.Conflicts) > 0 {
+			out = append(out, ProjectMemory{Project: name, MemoryReport: rep})
+		}
+	}
+	return out, errors.Join(problems...)
+}
+
 // copyNew copies one file to a path that does not exist yet, through a
 // temporary sibling so a crash never leaves a half-written memory file.
 func copyNew(src, dst string) error {
