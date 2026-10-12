@@ -40,7 +40,9 @@ quick start; keep it short and put detail in REFERENCE.md.
 - Edits to files julienning does not own are byte-preserving and reversible:
   `settings.json` through `internal/jsonedit`, rc files through the single line
   marked `# julienning-shell-hook`. `uninstall` and `forget` must undo exactly
-  what `setup` added; the tests compare bytes.
+  what `setup` added; the tests compare bytes. The one exception is the
+  session move the user confirms (the picker, and `uninstall` into
+  `~/.claude`): it goes through `sessions.Move` and is not undone.
 - CI runs in UTC. A test whose expectation is in local time sets
   `t.Setenv("TZ", "Europe/Istanbul")`. `JULIENNING_NOW_EPOCH` freezes the
   clock; `sharedcache.nowFunc` and `tui.confirmClock` are the in-process seams.

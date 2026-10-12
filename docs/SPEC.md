@@ -920,6 +920,11 @@ by the 200-character prefix and confirm with the `cwd` field inside the
 session. Candidates: `*.jsonl` directly in the folder (not `agent-*` files),
 sorted by mtime, newest `limit` (default 100, `--limit` max 500) across all dirs.
 
+Uninstall's listing (`Every`) is the one exception to these rules: it reads
+every registered dir, personal ones included (they move into the user's own
+default dir, never into a team account), every project folder, sessions
+without a title or prompt included, with no limit (see "uninstall / forget").
+
 Per session (head read ≤ 256 KB, tail read ≤ 256 KB — never the whole file):
 
 - `id` (file name), `config` (dir name), `cwd` (from entries), `last_active`

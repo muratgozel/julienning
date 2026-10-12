@@ -135,7 +135,7 @@ there; `julienning use <personal email>` lists that account's own.
   entries, the shell line), releases your claims and clears the selection and
   pins. Afterwards `claude` in a new terminal is Claude's own command.
   `--purge` also deletes julienning's own data and the command. Claude config
-  dirs and logins are never touched, and nothing is unshared for the team. For a single account,
+  dirs and logins are never deleted, and nothing is unshared for the team. For a single account,
   `julienning forget claude3` (a nickname, email or config name) unregisters
   its dir, undoes its settings.json changes and offers to delete the dir
   (default no; `--delete` / `--keep` answer up front). It never deletes
