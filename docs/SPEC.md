@@ -432,18 +432,64 @@ Idempotent. Steps, one status line each:
 
 ### uninstall / forget
 
-`julienning uninstall [--purge] [--yes]`: for every registered dir, remove what
-julienning added to settings.json (restore the prior `statusLine` recorded in
-`patches.json`, remove only julienning hook entries, drop empty containers
-julienning created); remove the rc hook line (new and legacy markers);
-release this machine's claims (best effort); clear `current`. `--purge` also
+`julienning uninstall [--purge] [--yes] [--move-sessions]`: first, the
+sessions. Without the wrapper plain `claude` opens only Claude's default dir
+(`claudecfg.DefaultDir`), so uninstall lists every session of every
+registered dir except that one (`sessions.List` with `Every`: all project
+folders, untitled sessions too, no limit; a dir registered twice through a
+symlink counts once) and, when there are any, prints `Sessions: N sessions in
+M registered config dirs. Without julienning, plain claude opens ~/.claude
+(<account>) and cannot resume them.` (account: `signed in as <email>`, `not
+signed in yet; claude asks you to log in` or `its login cannot be read`),
+`~/.claude does not exist yet; moving creates it.` when missing, and the
+sessions open in a terminal (live registry), which stay unless exited first.
+Then it asks `Move them into ~/.claude? Project memory is merged, never
+overwritten. [Y/n]` (empty, y or yes moves; n or no keeps; end of input
+keeps; anything else asks again). `--move-sessions` moves without asking;
+`--yes` confirms only the purge and never moves sessions. Without a terminal
+and without `--move-sessions` nothing is asked and the sessions stay. Every
+question, the purge one included, comes before any change.
+
+The moves come first, so a Ctrl-C (held for the whole loop, and inside each
+`sessions.Move`) stops the uninstall before anything else changes; running it
+again moves the rest. The default dir is created 0700 when missing. Each
+session goes through `sessions.Move` (copy, verify, delete the source) with
+its live flag cleared, since Move re-reads both registries and a session
+exited while the question waited must move. Refusals (open, changed in the
+last 2 minutes without a registry, id already in the target) keep that
+session and go on; any other error stops the moves (disk, permissions: it
+would repeat). A memory conflict is warned once per source dir, memory folder
+and file, naming where the other version stays. Output: `Sessions: moving N
+sessions from <dir>…` per dir, `Sessions: moved N sessions into ~/.claude
+(memory: …)`, and for what stays `Sessions: N stay where they are; resume one
+with CLAUDE_CONFIG_DIR set to its dir:` followed by up to 10 entries of
+`"<label>" (<why>):` and `CLAUDE_CONFIG_DIR=<dir> claude --resume <id>` (the
+dir `~`-shortened when it needs no quoting, else single-quoted). Declined or
+not asked: `Sessions: kept N sessions in the registered config dirs[ (no
+terminal to ask, and --move-sessions was not passed)]; resume one with
+CLAUDE_CONFIG_DIR=<its dir> claude --resume <id>[, or move them all with
+`julienning uninstall --move-sessions`].` (the last part only without
+`--purge`).
+
+Then, for every registered dir, remove what julienning added to
+settings.json (restore the prior `statusLine` recorded in `patches.json`,
+remove only julienning hook entries, drop empty containers julienning
+created); remove the rc hook line (new and legacy markers); release this
+machine's claims (best effort); clear `current`; delete `pins.json`
+(`Pins:     removed N pins`), because a terminal opened before the uninstall
+keeps the wrapper, which follows pins while the file exists. `--purge` also
 removes julienning's own files (known state files in `~/.julienning`, version
 files named `dev` or semver in the versions dir, and the command symlink only
 when it points into the versions dir), then each directory only if it is
 empty; anything else is kept and listed. It asks unless `--yes`, and deletes
-nothing (exit 1) when any unpatch failed or `config.json` is unreadable, so
-the undo data survives for a retry. Prints what it changed. Safe to run
-twice.
+nothing (exit 1) when any unpatch failed, `config.json` is unreadable or the
+session moves stopped on an error, so the undo data and the command survive
+for a retry. Prints what it changed, then, when something changed and
+nothing failed, `New terminals run claude natively: plain claude opens
+~/.claude (<account>).`, and when it removed an rc hook line `Terminals
+already open keep julienning's shell functions until you close them or run:
+exec $SHELL` (`unset -f` would need the exact names, and zsh fails on any
+not defined). Safe to run twice.
 
 `julienning forget TARGET [--delete|--keep]`: TARGET is a nickname, email or
 config name resolved by `resolve.Target` (current selection preferred), with
@@ -838,9 +884,9 @@ them all.
   `~/x is not pinned; nothing to unpin.`, exit 0.
 
 `pins.json` is written atomically (0600) and deleted when the last pin goes,
-so the wrapper stops asking. `uninstall --purge` removes it with the other
-state files; plain `uninstall` keeps it (the wrapper is gone with the rc
-line).
+so the wrapper stops asking. `uninstall` deletes it too, plain or `--purge`:
+new terminals lose the wrapper with the rc line, but one opened before keeps
+it, and without the file it never asks julienning about pins.
 
 #### Session listing (`sessions.List`)
 
