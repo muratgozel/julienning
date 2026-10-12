@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func choiceItems() []Item {
@@ -76,5 +79,47 @@ func TestConfirmCustomHintAndFallbackPrompt(t *testing.T) {
 	yes, err := ConfirmFallback(ConfirmOptions{Question: "q", In: strings.NewReader("n\n"), Out: &out, FallbackPrompt: "Overwrite? [Y/n] "})
 	if err != nil || yes || !strings.Contains(out.String(), "Overwrite? [Y/n] ") {
 		t.Fatalf("yes %v err %v out %q", yes, err, out.String())
+	}
+}
+
+// sync asks several fallback questions in a row: answers typed ahead must
+// reach the next one.
+func TestFallbackLeavesTypedAheadAnswers(t *testing.T) {
+	in := strings.NewReader("2\n1\ny\n")
+	var out strings.Builder
+	first, err := Fallback(choiceItems(), Options{Choice: true, In: in, Out: &out})
+	if err != nil || first != 1 {
+		t.Fatalf("first = %d, %v", first, err)
+	}
+	second, err := Fallback(choiceItems(), Options{Choice: true, In: in, Out: &out})
+	if err != nil || second != 0 {
+		t.Fatalf("second = %d, %v", second, err)
+	}
+	if yes, err := ConfirmFallback(ConfirmOptions{Question: "q", In: in, Out: &out}); err != nil || !yes {
+		t.Fatalf("confirm = %v, %v", yes, err)
+	}
+}
+
+func TestConfirmInterruptCancels(t *testing.T) {
+	size := func() (int, int) { return 80, 24 }
+	prev := confirmClock
+	confirmClock = func() time.Time { return time.Unix(0, 0) }
+	t.Cleanup(func() { confirmClock = prev })
+	m := NewConfirm("q", "d")
+	m.InterruptCancels = true
+	if _, err := confirmLoop(m, strings.NewReader("\x03"), io.Discard, size); !errors.Is(err, ErrCanceled) {
+		t.Fatalf("Ctrl-C: %v", err)
+	}
+	if _, err := confirmLoop(m, strings.NewReader(""), io.Discard, size); !errors.Is(err, ErrCanceled) {
+		t.Fatalf("EOF: %v", err)
+	}
+	if yes, err := confirmLoop(m, strings.NewReader("\x1b"), io.Discard, size); err != nil || yes {
+		t.Fatalf("Esc must answer no: %v, %v", yes, err)
+	}
+	if yes, err := confirmLoop(NewConfirm("q", "d"), strings.NewReader("\x03"), io.Discard, size); err != nil || yes {
+		t.Fatalf("without InterruptCancels Ctrl-C is a no: %v, %v", yes, err)
+	}
+	if _, err := ConfirmFallback(ConfirmOptions{Question: "q", In: strings.NewReader(""), Out: io.Discard, InterruptCancels: true}); !errors.Is(err, ErrCanceled) {
+		t.Fatalf("fallback EOF: %v", err)
 	}
 }

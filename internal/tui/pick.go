@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -376,21 +375,23 @@ func Fallback(items []Item, opts Options) (int, error) {
 		fmt.Fprintln(out, sanitize(opts.Scope))
 	}
 	list("")
-	sc := bufio.NewScanner(in)
+	// One byte at a time (readLine), so answers typed ahead for the next
+	// prompt (sync asks several in a row) stay in the input.
 	question := "Choose 1-%d (Enter = 1, text = filter, q = cancel): "
 	if opts.Choice {
 		question = "Choose 1-%d (Enter = 1, q = cancel): "
 	}
 	for {
 		fmt.Fprintf(out, question, len(byNumber))
-		if !sc.Scan() {
+		line, err := readLine(in)
+		if err != nil {
 			fmt.Fprintln(out)
-			if err := sc.Err(); err != nil {
+			if !errors.Is(err, io.EOF) {
 				return 0, fmt.Errorf("read choice: %w", err)
 			}
 			return 0, ErrCanceled
 		}
-		ans := strings.TrimSpace(sc.Text())
+		ans := strings.TrimSpace(line)
 		switch {
 		case ans == "":
 			return byNumber[0], nil
