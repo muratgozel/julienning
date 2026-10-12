@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Env overrides (tests, unusual layouts).
@@ -127,4 +128,19 @@ func sameFile(a, b string) bool {
 	fa, err1 := os.Stat(a)
 	fb, err2 := os.Stat(b)
 	return err1 == nil && err2 == nil && os.SameFile(fa, fb)
+}
+
+// ShortenHome replaces the home directory prefix of p with "~", for display.
+func ShortenHome(p string) string {
+	h, err := os.UserHomeDir()
+	if err != nil || h == "" {
+		return p
+	}
+	if p == h {
+		return "~"
+	}
+	if strings.HasPrefix(p, h+string(filepath.Separator)) {
+		return "~" + p[len(h):]
+	}
+	return p
 }

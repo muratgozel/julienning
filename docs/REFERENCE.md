@@ -671,7 +671,8 @@ julienning unpin [DIR]    # remove the pin on the current directory, or on DIR
   dir logged into it (the selected one first), a personal account as in
   [Personal accounts](#personal-accounts). The account must be logged in
   here when you pin it. Pinning again replaces the pin (`…, replacing alpha
-  (claude1@example.com).`). The deepest pin wins.
+  (claude1@example.com).`), also when you reach the directory through a
+  symlink. The deepest pin wins.
 - `julienning use` in a pinned directory first says
   `~/Code/side is pinned to me@personal.com (personal).`; a pinned team
   account becomes the selection, as with `use NICKNAME`.

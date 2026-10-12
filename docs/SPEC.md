@@ -793,7 +793,11 @@ local to the machine and keyed by directory; each names an account by email
 (`Pin{Dir, Email}`), resolved to a dir and checked on every use, so a
 nickname rename or a login moving to another dir never breaks one.
 `pins.Match(list, cwd)`: the deepest pinned dir that is cwd or contains it,
-comparing both paths as written and with symlinks resolved.
+comparing both paths as written and with symlinks resolved; depth is the
+length of the pin's resolved path, so pins written through different links
+compare in one namespace. A directory carries one pin: `pins.Set` replaces
+every pin on the same directory under any spelling, and `unpin` removes
+them all.
 
 - `pin TARGET` pins the working directory (`os.Getwd`). No network: a TARGET
   with `@` that is not on the cached allowlist must resolve through
