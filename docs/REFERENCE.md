@@ -1070,9 +1070,11 @@ ask, and --move-sessions was not passed); ...`). After a plain `uninstall`
 you can still move them later with `julienning uninstall --move-sessions`.
 Every question comes before anything changes, and the sessions move first:
 Ctrl-C stops the uninstall with nothing else changed, and running it again
-moves the rest. Any other error (a full disk, say) stops the moves, the rest
-of the uninstall still runs, and `--purge` deletes nothing so you can run it
-again. When `~/.claude` already has a different version of a project memory
+moves the rest. A session that cannot be moved for another reason (it
+changed during the copy, say) stays too, listed with the error, and the
+others still move; a full disk or a read-only file system stops the moves.
+Either way the rest of the uninstall runs, and `--purge` deletes nothing so
+you can run it again. When `~/.claude` already has a different version of a project memory
 file, its version is kept and a warning names where the other one stays.
 
 Then, for every registered dir, it restores the saved statusLine (or removes
@@ -1115,8 +1117,8 @@ Purged:   ~/.local/bin/julienning
 ```
 
 When a settings.json could not be restored, `config.json` cannot be read, or
-moving the sessions stopped on an error, `--purge` deletes nothing and exits
-1: `patches.json` holds the statusLines still to restore, `config.json` lists
+a session could not be read or moved (other than open ones and ids
+`~/.claude` already has), `--purge` deletes nothing and exits 1: `patches.json` holds the statusLines still to restore, `config.json` lists
 the dirs still wired to julienning and their sessions, and the command stays
 installed so you can fix the problem and run it again
 (`julienning: not purging: 1 settings.json could not be restored (see above); ...`).

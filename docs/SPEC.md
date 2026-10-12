@@ -457,14 +457,19 @@ session goes through `sessions.Move` (copy, verify, delete the source) with
 its live flag cleared, since Move re-reads both registries and a session
 exited while the question waited must move. Refusals (open, changed in the
 last 2 minutes without a registry, id already in the target) keep that
-session and go on; any other error stops the moves (disk, permissions: it
-would repeat). A memory conflict is warned once per source dir, memory folder
+session and go on; so does any other error of one session (it changed during
+the copy, its dir's registry is unreadable), which also counts as a problem.
+A session deleted since the listing (`sessions.ErrGone`) is skipped. Only
+ENOSPC, EDQUOT and EROFS, which every later move would hit too, and a target
+that is not a directory stop the moves. A memory conflict is warned once per source dir, memory folder
 and file, naming where the other version stays. Output: `Sessions: moving N
 sessions from <dir>…` per dir, `Sessions: moved N sessions into ~/.claude
 (memory: …)`, and for what stays `Sessions: N stay where they are; resume one
 with CLAUDE_CONFIG_DIR set to its dir:` followed by up to 10 entries of
 `"<label>" (<why>):` and `CLAUDE_CONFIG_DIR=<dir> claude --resume <id>` (the
-dir `~`-shortened when it needs no quoting, else single-quoted). Declined or
+dir `~`-shortened when it needs no quoting, else single-quoted; why is the
+refusal, the error, or `not tried: the moves stopped`), then `… and N more in
+<dir> (n), …`. Declined or
 not asked: `Sessions: kept N sessions in the registered config dirs[ (no
 terminal to ask, and --move-sessions was not passed)]; resume one with
 CLAUDE_CONFIG_DIR=<its dir> claude --resume <id>[, or move them all with
@@ -482,8 +487,9 @@ removes julienning's own files (known state files in `~/.julienning`, version
 files named `dev` or semver in the versions dir, and the command symlink only
 when it points into the versions dir), then each directory only if it is
 empty; anything else is kept and listed. It asks unless `--yes`, and deletes
-nothing (exit 1) when any unpatch failed, `config.json` is unreadable or the
-session moves stopped on an error, so the undo data and the command survive
+nothing (exit 1) when any unpatch failed, `config.json` is unreadable, or a
+session could not be listed or moved for any reason but a refusal, so the
+undo data, the list of dirs still holding sessions and the command survive
 for a retry. Prints what it changed, then, when something changed and
 nothing failed, `New terminals run claude natively: plain claude opens
 ~/.claude (<account>).`, and when it removed an rc hook line `Terminals

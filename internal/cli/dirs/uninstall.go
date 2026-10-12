@@ -124,12 +124,20 @@ func runUninstall(env cli.Env) error {
 				return fmt.Errorf("uninstall interrupted while moving sessions (%s moved, the rest are where they were); nothing else was changed, run it again to finish",
 					countOf(res.moved, "session", "sessions"))
 			}
+			reportKept(env.Stdout, res)
 			if res.stoppedBy != nil {
 				fmt.Fprintf(env.Stderr, "julienning: stopped moving sessions: %v\n", res.stoppedBy)
 				problems++
-				moveFailed = true
 			}
-			reportKept(env.Stdout, res)
+			if res.failed > 0 {
+				fmt.Fprintf(env.Stderr, "julienning: %s could not be moved (the error is listed with each above); they are untouched in their dirs\n", countOf(res.failed, "session", "sessions"))
+				problems++
+			}
+			if moves.listErr != nil {
+				fmt.Fprintln(env.Stderr, "julienning: some sessions could not be read (see the warning above), so they were not moved")
+				problems++
+			}
+			moveFailed = res.stoppedBy != nil || res.failed > 0 || moves.listErr != nil
 		} else {
 			fmt.Fprintln(env.Stdout, keptSessionsLine(len(moves.list), interactive, *purge))
 		}
@@ -224,7 +232,7 @@ func runUninstall(env cli.Env) error {
 		case moveFailed:
 			// Open sessions and id collisions do not get here: they are
 			// expected, listed with a resume command, and never block.
-			fmt.Fprintf(env.Stderr, "julienning: not purging: moving the sessions stopped on an error (see above); the julienning command stays, so fix it and re-run `julienning uninstall --purge` to move the rest\n")
+			fmt.Fprintf(env.Stderr, "julienning: not purging: some sessions could not be moved (see above); config.json still lists their dirs and the julienning command stays, so fix it and re-run `julienning uninstall --purge` to move the rest\n")
 			problems++
 		case unpatchFailures > 0:
 			fmt.Fprintf(env.Stderr, "julienning: not purging: %d settings.json could not be restored (see above); %s keeps what is needed to restore them and the julienning command stays, so fix them and re-run `julienning uninstall --purge`\n",

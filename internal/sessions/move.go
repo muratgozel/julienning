@@ -20,6 +20,9 @@ var (
 	ErrLive      = errors.New("session is open")
 	ErrMaybeOpen = errors.New("session may be open")
 	ErrCollision = errors.New("session id already in target")
+	// ErrGone: the session file disappeared after it was listed (deleted,
+	// or moved by another julienning).
+	ErrGone = errors.New("session no longer in source")
 )
 
 type refusal struct {
@@ -84,7 +87,7 @@ func Move(s Session, target config.ConfigDir) (Report, error) {
 	jsonlRel := filepath.Join("projects", s.ProjectDir, s.ID+".jsonl")
 	fi, err := os.Lstat(filepath.Join(srcRoot, jsonlRel))
 	if errors.Is(err, os.ErrNotExist) {
-		return rep, fmt.Errorf("session %s is no longer in %s (was it moved or deleted?)", s.ShortID(), s.ConfigName)
+		return rep, &refusal{ErrGone, fmt.Sprintf("session %s is no longer in %s (was it moved or deleted?)", s.ShortID(), s.ConfigName)}
 	}
 	if err != nil {
 		return rep, fmtErr("inspect", filepath.Join(srcRoot, jsonlRel), err)
@@ -252,7 +255,7 @@ func collectItems(s Session, srcRoot, dstRoot, jsonlRel string) ([]item, error) 
 		}
 		if !ok {
 			if i == 0 {
-				return nil, fmt.Errorf("session %s is no longer in %s", s.ShortID(), s.ConfigName)
+				return nil, &refusal{ErrGone, fmt.Sprintf("session %s is no longer in %s", s.ShortID(), s.ConfigName)}
 			}
 			continue
 		}

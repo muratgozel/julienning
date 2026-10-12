@@ -309,6 +309,11 @@ func TestMoveRefusals(t *testing.T) {
 		{"leftover side item in target", func(t *testing.T, _, dst config.ConfigDir, _ *Session) {
 			writeFile(t, filepath.Join(dst.Dir, "file-history", sid1, "x@v1"), "x", 0o600, oldTime)
 		}, ErrCollision, "already has a session"},
+		{"deleted after the listing", func(t *testing.T, src, _ config.ConfigDir, _ *Session) {
+			if err := os.Remove(filepath.Join(src.Dir, "projects", projEnc, sid1+".jsonl")); err != nil {
+				t.Fatal(err)
+			}
+		}, ErrGone, "is no longer in sixtynine"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
