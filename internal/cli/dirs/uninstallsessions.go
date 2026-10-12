@@ -226,6 +226,14 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 			}
 		}
 	}
+	// A signal during the last move's source deletion or memory merge
+	// (outside Move's own trap) reached only this trap. Nothing after the
+	// moves may run then.
+	if res.stoppedBy == nil {
+		if err := trap.Check(); err != nil {
+			res.stoppedBy, res.interrupted = err, true
+		}
+	}
 	if res.moved > 0 {
 		line := fmt.Sprintf("Sessions: moved %s into %s", countOf(res.moved, "session", "sessions"), m.target.Name)
 		if sum := mem.Summary(); sum != "" {
