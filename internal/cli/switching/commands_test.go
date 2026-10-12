@@ -601,6 +601,55 @@ func TestLaunchPlainForUnsharedTargets(t *testing.T) {
 	}
 }
 
+// The team picker lists sessions of shared accounts only: a registered dir
+// logged into a personal account, or into nothing, keeps its sessions out of
+// the list (and so out of every move), with and without --all, online and
+// from the cached allowlist.
+func TestLaunchListsOnlySharedAccounts(t *testing.T) {
+	titles := func(items []tui.Item) []string {
+		var out []string
+		for _, it := range items[1:] {
+			out = append(out, it.Title)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		offline bool
+	}{
+		{"online", []string{"use", "julienning3"}, false},
+		{"all", []string{"use", "julienning3", "--all"}, false},
+		{"offline", []string{"use", "julienning3"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, target, other := launchFixture(t)
+			mine := f.addConfig("mine", personal)
+			fresh := f.addConfig("fresh", "")
+			f.save()
+			f.writeSession(target, sidA, "Team here", "a", time.Hour)
+			f.writeSession(other, sidB, "Team there", "b", 2*time.Hour)
+			f.writeSession(mine, sidC, "Personal secret", "c", 3*time.Hour)
+			f.writeSession(fresh, "3e0c9f41-5d70-4b1e-8c43-4f5a6b7c8d9e", "Logged out", "d", 4*time.Hour)
+			if tc.offline {
+				if _, err := sharedcache.Save([]string{email1, email2}, nowT); err != nil {
+					t.Fatal(err)
+				}
+				f.fake.ListErr = errors.New("offline")
+			}
+			f.pick = func([]tui.Item) (int, error) { return 0, tui.ErrCanceled }
+			got := f.run(tc.args...)
+			assertCode(t, got, 0)
+			if want := []string{"Team here", "Team there"}; strings.Join(titles(f.pickRows), "|") != strings.Join(want, "|") {
+				t.Errorf("rows = %q, want %q", titles(f.pickRows), want)
+			}
+			if !strings.HasPrefix(f.pickScope, "2 sessions") {
+				t.Errorf("scope = %q", f.pickScope)
+			}
+		})
+	}
+}
+
 func TestNoLaunchFlag(t *testing.T) {
 	f, _, other := launchFixture(t)
 	f.writeSession(other, sidA, "Checkout fix", "fix", time.Hour)

@@ -517,7 +517,9 @@ not list, just `config`, `email` and `nickname` (`null` when unknown).
 ### Session picker
 
 In a terminal, `next` and `use` then list recent sessions for the current
-directory's project from **every** registered dir (any account), newest first:
+directory's project from every registered dir logged into a **shared**
+account, newest first (a dir logged into a personal account or not logged in
+is left out, so its sessions are never offered or moved):
 `--limit N` of them (default 100, max 500), or across all projects with `--all`.
 With no sessions, a new `claude` starts directly.
 

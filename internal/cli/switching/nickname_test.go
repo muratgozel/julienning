@@ -281,11 +281,12 @@ func TestLaunchPickerUsesNicknames(t *testing.T) {
 	f.tty = true
 	target := f.addConfig("julienning3", email1)
 	other := f.addConfig("sixtynine", email2)
-	mine := f.addConfig("personal", personal)
+	// A shared legacy account (no nickname) is labelled by its config name.
+	legacy := f.addConfig("legacy", "claude9@x.io")
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 50, 60))
+	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 50, 60), nacct("claude9@x.io", "", 1, 1))
 	f.writeSession(other, sidA, "Checkout fix", "fix checkout", 2*time.Hour)
-	f.writeSession(mine, sidB, "Side project", "p", 3*time.Hour)
+	f.writeSession(legacy, sidB, "Side project", "p", 3*time.Hour)
 
 	f.pick = func([]tui.Item) (int, error) { return 0, tui.ErrCanceled }
 	got := f.run("use", "alpha")
@@ -306,7 +307,7 @@ func TestLaunchPickerUsesNicknames(t *testing.T) {
 	if rows[1].Meta != "beta · 2h ago · 0b7f6c1e" {
 		t.Errorf("nicknamed dir row = %+v", rows[1])
 	}
-	if rows[2].Meta != "personal · 3h ago · 1c8a7d2f" {
+	if rows[2].Meta != "legacy · 3h ago · 1c8a7d2f" {
 		t.Errorf("dir without a nickname row = %+v", rows[2])
 	}
 
