@@ -32,6 +32,7 @@ const SchemaVersion = 1
 const (
 	ConfigFile  = "config.json"
 	CurrentFile = "current"    // absolute path of the selected config dir, or empty
+	PinsFile    = "pins.json"  // directory pins (internal/pins); the claude wrapper tests for it by this name
 	ErrorLog    = "errors.log" // statusline/send-usage diagnostics, never contains emails
 	SentDir     = "sent"       // send-usage debounce cache, one file per email
 )
@@ -122,8 +123,8 @@ type Config struct {
 	// DeclinedEmails are accounts this machine's user said are personal, so
 	// setup does not offer to share them again. Lowercased.
 	DeclinedEmails []string `json:"declined_emails,omitempty"`
-	// PersonalDirs remembers where `use EMAIL` last found an account that
-	// is not shared with the team. It is only a shortcut past
+	// PersonalDirs remembers where `use EMAIL` (or a pin) last found an
+	// account that is not shared with the team. It is only a shortcut past
 	// discovery: the dir's login is checked on every use, and a mismatch
 	// searches again (resolve.Personal). These dirs are never registered.
 	PersonalDirs []PersonalDir `json:"personal_dirs,omitempty"`
@@ -342,8 +343,8 @@ func (c *Config) PersonalDirOf(email string) (string, bool) {
 
 // RememberPersonalDir re-reads config.json, records dir as where the
 // personal account email is logged in (replacing an older entry) and saves.
-// It re-reads for the same reason as UpdateDir: another command may have
-// saved its own changes since this process loaded config.json.
+// It re-reads for the same reason as UpdateDir: it runs from the claude
+// wrapper too, next to commands that save their own changes.
 func RememberPersonalDir(email, dir string) error {
 	c, err := Load()
 	if err != nil {

@@ -372,7 +372,7 @@ func removeEmptyDir(dir string) error {
 // stateFiles are the files julienning writes in its state dir (SPEC "Local
 // state"). Atomic writers leave ".<name>.<random>" temp files after a crash.
 var stateFiles = map[string]bool{
-	config.ConfigFile: true, config.CurrentFile: true, sharedcache.File: true,
+	config.ConfigFile: true, config.CurrentFile: true, config.PinsFile: true, sharedcache.File: true,
 	claims.File: true, claudecfg.PatchesFile: true, selfupdate.CheckFile: true,
 	config.ErrorLog: true, config.ErrorLog + ".trim": true, claims.LockFile: true,
 	".claims-reconciled": true,

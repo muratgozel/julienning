@@ -46,6 +46,12 @@ func ValidNickname(s string) bool { return nicknameRe.MatchString(s) }
 // set explicitly makes Claude read a different account file and credential.
 // defaultDir is compared as an absolute path baked in at generation time; an
 // empty defaultDir omits the comparison.
+//
+// Pins come before the selection, and only cost a julienning process while
+// pins.json (config.PinsFile) exists. `resolve-dir --pin` prints nothing
+// when no pin covers the working directory; when a pin does but its account
+// cannot be opened it fails, and the wrapper returns 1 instead of falling
+// back to the selection, so a pinned project never opens on another account.
 func wrapper(defaultDir string) string {
 	notDefault := ""
 	if defaultDir != "" {
@@ -54,8 +60,15 @@ func wrapper(defaultDir string) string {
 	return `# julienning shell integration (generated; do not edit)
 function claude {
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then command claude "$@"; return; fi
-  local _jl_dir
-  _jl_dir=$(command cat "${JULIENNING_HOME:-$HOME/.julienning}/current" 2>/dev/null)
+  local _jl_dir _jl_home
+  _jl_home="${JULIENNING_HOME:-$HOME/.julienning}"
+  _jl_dir=
+  if [ -f "$_jl_home/pins.json" ]; then
+    _jl_dir=$(command julienning resolve-dir --pin) || return 1
+  fi
+  if [ -z "$_jl_dir" ]; then
+    _jl_dir=$(command cat "$_jl_home/current" 2>/dev/null)
+  fi
   if [ -n "$_jl_dir" ]` + notDefault + ` && [ -d "$_jl_dir" ]; then
     CLAUDE_CONFIG_DIR="$_jl_dir" command claude "$@"
   else

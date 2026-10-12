@@ -10,6 +10,7 @@ import (
 
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/pins"
 	"github.com/muratgozel/julienning/internal/tui"
 )
 
@@ -43,6 +44,13 @@ func (f *fixture) noCallsFor(email string) {
 		if strings.EqualFold(c.Email, email) {
 			f.t.Errorf("the Worker was told about %s: %+v", email, c)
 		}
+	}
+}
+
+func (f *fixture) pin(dir, email string) {
+	f.t.Helper()
+	if _, _, _, err := pins.Set(dir, email); err != nil {
+		f.t.Fatal(err)
 	}
 }
 
@@ -194,4 +202,91 @@ func TestUsePersonalErrors(t *testing.T) {
 	if !strings.Contains(got.stderr, "seven (claude7@x.io) is shared but not logged in on this machine") {
 		t.Errorf("stderr = %q", got.stderr)
 	}
+}
+
+// Without a target, `use` opens the account pinned on the working directory
+// or a parent: a personal one without touching the selection, a team one by
+// selecting it. An explicit target ignores the pin.
+func TestUseFollowsPins(t *testing.T) {
+	f, team, def := personalFixture(t)
+	f.tty = false
+	// Pinned through $HOME, which on macOS reaches the temp dir through a
+	// symlink; the working directory (f.proj) is the resolved path.
+	f.pin(filepath.Join(f.home, "Code"), personal) // ~/Code covers ~/Code/shop
+
+	got := f.run("use")
+	assertCode(t, got, 0)
+	if want := "~/Code is pinned to me@personal.io (personal).\n" + personalLine; got.stdout != want {
+		t.Errorf("stdout = %q\nwant %q", got.stdout, want)
+	}
+	if f.current() != team.Dir {
+		t.Errorf("current = %q", f.current())
+	}
+
+	f.tty = true
+	f.pick = func(items []tui.Item) (int, error) { return 1, nil }
+	assertCode(t, f.run("use"), 0)
+	if len(f.execs) != 1 || f.execs[0].dir != def.Dir || len(f.pickRows) != 2 {
+		t.Errorf("pinned picker: execs %+v rows %+v", f.execs, f.pickRows)
+	}
+
+	// A deeper pin on a team account wins and selects it.
+	f.tty = false
+	other, _ := f.cfg.Find("sixtynine")
+	f.pin(filepath.Join(f.home, "Code", "shop"), email2)
+	got = f.run("use")
+	assertCode(t, got, 0)
+	if want := "~/Code/shop is pinned to beta (claude2@x.io).\nNow using beta (claude2@x.io) in ~/.claude-sixtynine — session 50% → 20:00, week 60% → Fri 20:00.\n"; got.stdout != want {
+		t.Errorf("stdout = %q\nwant %q", got.stdout, want)
+	}
+	if f.current() != other.Dir {
+		t.Errorf("current = %q", f.current())
+	}
+
+	// An explicit target wins over the pin, with no pin line.
+	got = f.run("use", "alpha")
+	assertCode(t, got, 0)
+	if strings.Contains(got.stdout, "pinned") || f.current() != team.Dir {
+		t.Errorf("explicit target: stdout %q current %q", got.stdout, f.current())
+	}
+}
+
+// A pin whose account cannot be opened stops `use` with the reason and the
+// way out; nothing is launched and the selection stays.
+func TestUseBrokenPinStops(t *testing.T) {
+	f, team, _ := personalFixture(t)
+	shop := filepath.Join(f.home, "Code", "shop")
+	f.pin(shop, personal)
+	f.personalDir(".claude", "") // logged out
+	got := f.run("use")
+	assertCode(t, got, cli.ExitError)
+	for _, want := range []string{"~/Code/shop is pinned to me@personal.io, which cannot be opened: ", "(or remove the pin: julienning unpin ~/Code/shop)"} {
+		if !strings.Contains(got.stderr, want) {
+			t.Errorf("stderr %q lacks %q", got.stderr, want)
+		}
+	}
+	if len(f.execs) != 0 || f.current() != team.Dir {
+		t.Errorf("execs %+v current %q", f.execs, f.current())
+	}
+
+	f.pin(shop, "claude7@x.io") // a team account not logged in here
+	f.fake.Listing = listing(nacct(email1, "alpha", 1, 1), nacct("claude7@x.io", "seven", 1, 1))
+	got = f.run("use")
+	assertCode(t, got, cli.ExitError)
+	if !strings.Contains(got.stderr, "~/Code/shop is pinned to claude7@x.io, which cannot be opened: seven (claude7@x.io) is shared but not logged in") {
+		t.Errorf("stderr = %q", got.stderr)
+	}
+}
+
+// next is unchanged by pins: it ranks and switches as always.
+func TestNextIgnoresPins(t *testing.T) {
+	f, _, _ := personalFixture(t)
+	f.tty = false
+	f.pin(f.proj, personal)
+	got := f.run("next")
+	assertCode(t, got, 0)
+	if !strings.HasPrefix(got.stdout, "Staying on alpha") || strings.Contains(got.stdout, "pinned") {
+		t.Errorf("stdout = %q", got.stdout)
+	}
+	f.noCallsFor(personal)
 }

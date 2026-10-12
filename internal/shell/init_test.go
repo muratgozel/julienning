@@ -137,8 +137,12 @@ func newShellFixture(t *testing.T, sh string, nicks []string, defaultDir string)
 		}
 	}
 	f.write(filepath.Join(f.binDir, "claude"), "#!/bin/sh\necho \"${CLAUDE_CONFIG_DIR-unset}${*:+ $*}\"\n", 0o755)
+	// Every call is logged to map/calls; map/<arg>.fail makes resolve-dir
+	// fail with that file's text, map/<arg> makes it print the file.
 	f.write(filepath.Join(f.binDir, "julienning"), `#!/bin/sh
+echo "$*" >> "`+f.mapDir+`/calls"
 [ "$1" = resolve-dir ] || { echo "fake julienning: unexpected $*" >&2; exit 2; }
+if [ -f "`+f.mapDir+`/$2.fail" ]; then cat "`+f.mapDir+`/$2.fail" >&2; exit 1; fi
 if [ -f "`+f.mapDir+`/$2" ]; then cat "`+f.mapDir+`/$2"; exit 0; fi
 echo "julienning: unknown target \"$2\"" >&2
 exit 1
@@ -225,6 +229,73 @@ func TestWrapperBehavior(t *testing.T) {
 			f.write(currentFile, filepath.Join(f.root, "gone")+"\n", 0o600)
 			if got := run(); got != "unset" {
 				t.Errorf("stale current: got %q, want unset", got)
+			}
+		})
+	}
+}
+
+// calls returns what the fake julienning was asked since the last call.
+func (f *shellFixture) calls() string {
+	f.t.Helper()
+	p := filepath.Join(f.mapDir, "calls")
+	raw, err := os.ReadFile(p)
+	if err != nil && !os.IsNotExist(err) {
+		f.t.Fatal(err)
+	}
+	_ = os.Remove(p)
+	return string(raw)
+}
+
+// Pins come before the selection; julienning is consulted only while
+// pins.json exists; an exported CLAUDE_CONFIG_DIR still wins; and a pin that
+// cannot be resolved stops claude instead of falling back to the selection.
+func TestWrapperFollowsPins(t *testing.T) {
+	for _, sh := range []string{Zsh, Bash} {
+		t.Run(sh, func(t *testing.T) {
+			f := newShellFixture(t, sh, nil, "")
+			selected := filepath.Join(f.root, ".claude-a")
+			pinned := filepath.Join(f.root, ".claude-p")
+			other := filepath.Join(f.root, ".claude-b")
+			defaultDir := filepath.Join(f.root, ".claude")
+			for _, d := range []string{selected, pinned, other, defaultDir} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.write(filepath.Join(f.jlHome, "current"), selected+"\n", 0o600)
+			run := func(env ...string) string { return strings.TrimSpace(f.run("", "claude x 'two words'", env...)) }
+
+			if got := run(); got != selected+" x two words" || f.calls() != "" {
+				t.Errorf("without pins.json: got %q (julienning must not run)", got)
+			}
+			f.write(filepath.Join(f.jlHome, "pins.json"), "{}", 0o600)
+			f.point("--pin", "") // no pin covers the working directory
+			if got := run(); got != selected+" x two words" || f.calls() != "resolve-dir --pin\n" {
+				t.Errorf("no pin here: got %q", got)
+			}
+			f.point("--pin", pinned)
+			if got := run(); got != pinned+" x two words" {
+				t.Errorf("pinned: got %q", got)
+			}
+			f.point("--pin", defaultDir)
+			if got := run(); got != "unset x two words" {
+				t.Errorf("pinned to the default dir: got %q", got)
+			}
+			f.calls()
+			if got := run("CLAUDE_CONFIG_DIR=" + other); got != other+" x two words" || f.calls() != "" {
+				t.Errorf("exported variable: got %q", got)
+			}
+			if err := os.Remove(filepath.Join(f.jlHome, "current")); err != nil {
+				t.Fatal(err)
+			}
+			f.point("--pin", pinned)
+			if got := run(); got != pinned+" x two words" {
+				t.Errorf("pinned without a selection: got %q", got)
+			}
+			f.write(filepath.Join(f.mapDir, "--pin.fail"), "julienning: ~/Code/side is pinned to me@x.io, which cannot be opened\n", 0o644)
+			out := f.run("", `claude x; echo "rc=$?"`)
+			if want := "julienning: ~/Code/side is pinned to me@x.io, which cannot be opened\nrc=1\n"; out != want {
+				t.Errorf("broken pin:\n got %q\nwant %q", out, want)
 			}
 		})
 	}
