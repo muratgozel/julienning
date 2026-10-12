@@ -143,6 +143,21 @@ func List(opts ListOptions) ([]Session, error) {
 	return out, errors.Join(problems...)
 }
 
+// Count returns how many sessions List with Every would find in dirs,
+// without opening any file: for a caller that only reports the number.
+func Count(dirs []config.ConfigDir) (int, error) {
+	n := 0
+	var problems []error
+	for _, cd := range dirs {
+		cs, err := candidates(cd, ListOptions{All: true})
+		if err != nil {
+			problems = append(problems, err)
+		}
+		n += len(cs)
+	}
+	return n, errors.Join(problems...)
+}
+
 // candidates returns the session files of one config dir for opts.
 func candidates(cd config.ConfigDir, opts ListOptions) ([]candidate, error) {
 	root := filepath.Join(cd.Dir, "projects")

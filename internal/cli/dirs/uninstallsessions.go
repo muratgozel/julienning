@@ -26,7 +26,8 @@ var moveSession = sessions.Move
 type sessionMove struct {
 	target  config.ConfigDir   // Claude's default dir; may not exist yet
 	sources []config.ConfigDir // registered dirs other than target, one per real path
-	list    []sessions.Session
+	list    []sessions.Session // nil when only counted
+	count   int
 	// listErr: some folders or files could not be read, so their sessions
 	// are not in list. Moving the rest must not lead to a purge, which
 	// would delete the record of the dirs they are still in.
@@ -34,8 +35,10 @@ type sessionMove struct {
 }
 
 // newSessionMove lists what uninstall would move. A folder or file that
-// cannot be read is a warning: its sessions stay where they are.
-func newSessionMove(env cli.Env, cfg *config.Config) (*sessionMove, error) {
+// cannot be read is a warning: its sessions stay where they are. Without
+// full (nothing will be asked or moved) the sessions are only counted,
+// which opens no transcript: listing reads the head and tail of each.
+func newSessionMove(env cli.Env, cfg *config.Config, full bool) (*sessionMove, error) {
 	def, err := claudecfg.DefaultDir()
 	if err != nil {
 		return nil, err
@@ -54,11 +57,15 @@ func newSessionMove(env cli.Env, cfg *config.Config) (*sessionMove, error) {
 	if len(m.sources) == 0 {
 		return m, nil
 	}
+	if !full {
+		m.count, m.listErr = sessions.Count(m.sources)
+		return m, nil
+	}
 	list, err := sessions.List(sessions.ListOptions{Dirs: m.sources, Every: true, Now: now()})
 	if err != nil {
 		warnf(env, "some sessions could not be read and stay where they are: %v", err)
 	}
-	m.list, m.listErr = list, err
+	m.list, m.count, m.listErr = list, len(list), err
 	return m, nil
 }
 

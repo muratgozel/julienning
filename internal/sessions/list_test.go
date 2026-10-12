@@ -312,3 +312,30 @@ func TestListDefaultLimit(t *testing.T) {
 		t.Errorf("first %q, last %q", got[0].FirstPrompt, got[len(got)-1].FirstPrompt)
 	}
 }
+
+// Count finds what Every lists, without opening a single file.
+func TestCountMatchesEveryWithoutOpening(t *testing.T) {
+	var opened int
+	prev := readMetaFn
+	readMetaFn = func(p string) (meta, error) {
+		opened++
+		return prev(p)
+	}
+	t.Cleanup(func() { readMetaFn = prev })
+	root := t.TempDir()
+	a := configDir(t, root, "a")
+	b := configDir(t, root, "b")
+	writeSession(t, a.Dir, projEnc, sid1, baseTime, userLine(t, "one", 0, nil))
+	writeSession(t, a.Dir, "-other-project", sid2, baseTime, mustJSON(t, map[string]any{"type": "permission-mode"}))
+	writeSession(t, b.Dir, projEnc, sid3, baseTime, userLine(t, "three", 0, nil))
+	writeSession(t, a.Dir, projEnc, "agent-abc123", baseTime, userLine(t, "subagent", 0, nil))
+
+	n, err := Count([]config.ConfigDir{a, b})
+	if err != nil || n != 3 || opened != 0 {
+		t.Fatalf("Count = %d, %v after opening %d files; want 3, nil, 0", n, err, opened)
+	}
+	list, err := List(ListOptions{Dirs: []config.ConfigDir{a, b}, Every: true, Now: baseTime})
+	if err != nil || len(list) != n {
+		t.Fatalf("Every listed %d (%v), Count said %d", len(list), err, n)
+	}
+}

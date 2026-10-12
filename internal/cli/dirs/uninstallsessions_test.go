@@ -582,3 +582,25 @@ func TestUninstallMoveSessionsSaysWhenItCannotRun(t *testing.T) {
 	out := h.mustRun(runUninstall, "--move-sessions")
 	contains(t, out, "Sessions: nothing to move; no registered config dir holds a session.\n")
 }
+
+// With nothing to ask or move, sessions are counted without opening a
+// transcript (listing reads the head and tail of each, ~0.5 GB for a
+// thousand large ones): an unreadable one is still counted, unwarned.
+func TestUninstallWithoutAMoveCountsWithoutReading(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	h := newHarness(t)
+	custom, _ := installed(t, h)
+	proj := filepath.Join(h.home, "proj")
+	h.transcript(custom, proj, sidA, "fix login")
+	locked := filepath.Join(custom, h.transcript(custom, proj, sidC, "write docs"))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+
+	out := h.mustRun(runUninstall)
+	contains(t, out, "Sessions: kept 2 sessions in the registered config dirs (no terminal to ask")
+	notContains(t, h.stderr.String(), "could not be read")
+}

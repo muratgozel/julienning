@@ -82,11 +82,11 @@ func runUninstall(env cli.Env) error {
 	var moves *sessionMove
 	moveAll := false
 	if cfg != nil {
-		if moves, err = newSessionMove(env, cfg); err != nil {
+		if moves, err = newSessionMove(env, cfg, *moveSessions || interactive); err != nil {
 			return err
 		}
 	}
-	if moves != nil && len(moves.list) > 0 && (*moveSessions || interactive) {
+	if moves != nil && moves.count > 0 && (*moveSessions || interactive) {
 		moves.describe(env.Stdout)
 		if moveAll = *moveSessions; !moveAll {
 			// Read a byte at a time: the purge question reads the same input.
@@ -117,7 +117,7 @@ func runUninstall(env cli.Env) error {
 	// Sessions move first: a Ctrl-C stops the uninstall before anything else
 	// changes, and running it again moves the rest.
 	moveFailed := false
-	if moves != nil && len(moves.list) > 0 {
+	if moves != nil && moves.count > 0 {
 		if moveAll {
 			res := moves.run(env, say)
 			if res.interrupted {
@@ -139,7 +139,7 @@ func runUninstall(env cli.Env) error {
 			}
 			moveFailed = res.stoppedBy != nil || res.failed > 0 || moves.listErr != nil
 		} else {
-			fmt.Fprintln(env.Stdout, keptSessionsLine(len(moves.list), interactive, *purge))
+			fmt.Fprintln(env.Stdout, keptSessionsLine(moves.count, interactive, *purge))
 		}
 	} else if *moveSessions {
 		if cfgUnreadable {
