@@ -40,6 +40,11 @@ type Report struct {
 	From, To string // config names; callers may relabel them for display (switching shows nicknames)
 	Items    []string
 	Memory   MemoryReport
+	// MemoryProject is the projects/ folder whose memory/ was merged (its
+	// memory/ may not exist; "" when it could not be determined). Sessions
+	// of one repository share it, so a caller moving many sessions can
+	// collapse the conflicts each move reports again.
+	MemoryProject string
 	// Warnings are problems after the session was safely in place (source
 	// leftovers, memory files that could not be merged). The move itself
 	// succeeded; callers should print them.
@@ -50,7 +55,7 @@ type Report struct {
 // Moved "<title>" from julienning1 to julienning3 (memory: 2 files added, 1 conflict kept).
 func (r Report) String() string {
 	s := fmt.Sprintf("Moved %q from %s to %s", r.Label, r.From, r.To)
-	if m := r.Memory.summary(); m != "" {
+	if m := r.Memory.Summary(); m != "" {
 		s += " (memory: " + m + ")"
 	}
 	return s + "."
@@ -136,6 +141,7 @@ func Move(s Session, target config.ConfigDir) (Report, error) {
 	if memErr != nil {
 		rep.Warnings = append(rep.Warnings, fmt.Sprintf("project memory not merged: %v", memErr))
 	} else if memProject != "" {
+		rep.MemoryProject = memProject
 		mem, err := mergeMemory(
 			filepath.Join(srcRoot, "projects", memProject, "memory"),
 			filepath.Join(dstRoot, "projects", memProject, "memory"),

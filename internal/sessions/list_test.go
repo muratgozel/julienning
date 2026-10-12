@@ -249,6 +249,46 @@ func TestListOpensAtMostFourTimesLimitPlusTwenty(t *testing.T) {
 	}
 }
 
+// Every is what uninstall moves: every session file in every project
+// folder, untitled ones too, past any limit and the open-files bound.
+func TestListEveryHasNoLimitAndKeepsUntitled(t *testing.T) {
+	root := t.TempDir()
+	a := configDir(t, root, "a")
+	b := configDir(t, root, "b")
+	emptyRegistry(t, a.Dir)
+	emptyRegistry(t, b.Dir)
+	empty := mustJSON(t, map[string]any{"type": "permission-mode", "permissionMode": "default"})
+	n := maxOpen(1) + 5
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("%08x-0000-4000-8000-000000000000", i)
+		writeSession(t, a.Dir, projEnc, id, baseTime.Add(-time.Duration(i)*time.Second), empty)
+	}
+	writeSession(t, b.Dir, "-other-project", sid1, baseTime.Add(-time.Hour), userLine(t, "real", 0, nil))
+	writeSession(t, a.Dir, projEnc, "agent-abc123", baseTime, userLine(t, "subagent", 0, nil))
+
+	got, err := List(ListOptions{Dirs: []config.ConfigDir{a, b}, Every: true, Limit: 1, Cwd: "/elsewhere", Now: baseTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != n+1 {
+		t.Fatalf("listed %d sessions, want %d", len(got), n+1)
+	}
+	var real, untitled int
+	for _, s := range got {
+		switch {
+		case s.FirstPrompt == "real" && s.ConfigName == "b" && s.ProjectDir == "-other-project":
+			real++
+		case s.Title == "" && s.FirstPrompt == "" && s.Label() == "session "+s.ShortID():
+			untitled++
+		case strings.HasPrefix(s.ID, "agent-"):
+			t.Errorf("listed a subagent file: %+v", s)
+		}
+	}
+	if real != 1 || untitled != n {
+		t.Fatalf("real %d (want 1), untitled %d (want %d)", real, untitled, n)
+	}
+}
+
 func TestListDefaultLimit(t *testing.T) {
 	if DefaultLimit != 100 {
 		t.Fatalf("DefaultLimit = %d, want 100", DefaultLimit)

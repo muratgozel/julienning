@@ -35,6 +35,10 @@ type ListOptions struct {
 	All   bool               // every project folder instead of Cwd's
 	Limit int                // newest N across all dirs; <= 0 means DefaultLimit
 	Now   time.Time          // reference for MaybeOpen; zero means time.Now()
+	// Every lists every session of every project folder, untitled ones
+	// too, with no limit (uninstall moves them all). Cwd, All and Limit
+	// are ignored.
+	Every bool
 }
 
 // candidate is a session file picked by mtime before anything is opened.
@@ -59,6 +63,9 @@ func List(opts ListOptions) ([]Session, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = DefaultLimit
+	}
+	if opts.Every {
+		opts.All = true
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -93,7 +100,7 @@ func List(opts ListOptions) ([]Session, error) {
 	opens := maxOpen(limit)
 	var out []Session
 	for i, c := range cands {
-		if len(out) >= limit || i >= opens {
+		if !opts.Every && (len(out) >= limit || i >= opens) {
 			break
 		}
 		m, err := readMetaFn(c.path)
@@ -106,7 +113,7 @@ func List(opts ListOptions) ([]Session, error) {
 		if c.confirm != nil && !contains(c.confirm, filepath.Clean(m.cwd)) {
 			continue
 		}
-		if m.title == "" && m.firstPrompt == "" {
+		if m.title == "" && m.firstPrompt == "" && !opts.Every {
 			continue
 		}
 		s := Session{

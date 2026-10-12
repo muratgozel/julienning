@@ -384,6 +384,9 @@ func TestMoveMergesProjectMemory(t *testing.T) {
 	if strings.Join(rep.Memory.Conflicts, ",") != "d.md" {
 		t.Errorf("conflicts = %v", rep.Memory.Conflicts)
 	}
+	if rep.MemoryProject != projEnc {
+		t.Errorf("MemoryProject = %q, want %q", rep.MemoryProject, projEnc)
+	}
 	read := func(p string) string {
 		raw, err := os.ReadFile(p)
 		if err != nil {
@@ -428,11 +431,11 @@ func TestMergeMemoryIntoEmptyTarget(t *testing.T) {
 	writeFile(t, filepath.Join(sm, "MEMORY.md"), "- [A](a.md)\n", 0o644, oldTime)
 	writeFile(t, filepath.Join(sm, "a.md"), "a", 0o644, oldTime)
 	rep, err := mergeMemory(sm, dm)
-	if err != nil || len(rep.Added) != 2 || rep.summary() != "2 files added" {
-		t.Errorf("rep = %+v (%q) %v", rep, rep.summary(), err)
+	if err != nil || len(rep.Added) != 2 || rep.Summary() != "2 files added" {
+		t.Errorf("rep = %+v (%q) %v", rep, rep.Summary(), err)
 	}
 	rep, err = mergeMemory(filepath.Join(root, "absent"), dm)
-	if err != nil || rep.summary() != "" {
+	if err != nil || rep.Summary() != "" {
 		t.Errorf("absent source: %+v %v", rep, err)
 	}
 }
