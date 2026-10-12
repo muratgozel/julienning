@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/selfupdate"
@@ -58,7 +59,7 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		warnf(env, "cannot determine the current directory (%v); listing every project", err)
 		o.all = true
 	}
-	list, err := sessions.List(sessions.ListOptions{Dirs: cfg.Configs, Cwd: cwd, All: o.all, Limit: o.limit, Now: now})
+	list, err := sessions.List(sessions.ListOptions{Dirs: sharedSources(cfg, cache, target), Cwd: cwd, All: o.all, Limit: o.limit, Now: now})
 	if err != nil {
 		warnf(env, "some sessions could not be read: %v", err)
 	}
@@ -116,6 +117,25 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		}
 		return resume(env, target, s)
 	}
+}
+
+// sharedSources are the dirs the team picker lists sessions from: target
+// plus every registered dir logged into a shared account right now. A dir
+// logged into a personal account, not logged in, or with an unreadable login
+// is left out, so a personal conversation is never offered for a move into
+// a team account. The login is read live: accounts move between dirs.
+func sharedSources(cfg *config.Config, cache *sharedcache.Cache, target config.ConfigDir) []config.ConfigDir {
+	out := []config.ConfigDir{target}
+	for _, cd := range cfg.Configs {
+		if filepath.Clean(cd.Dir) == filepath.Clean(target.Dir) {
+			continue
+		}
+		email, err := claudecfg.ReadEmail(cd.Dir)
+		if err == nil && cache != nil && cache.Contains(email) {
+			out = append(out, cd)
+		}
+	}
+	return out
 }
 
 // resume replaces the process with `claude --resume` on s in target, from

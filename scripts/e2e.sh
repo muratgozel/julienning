@@ -9,11 +9,11 @@
 #
 # What it proves, in order: the installer against a fake GitHub releases host
 # (scripts/e2e/fakereleases.go), non-interactive setup over fake Claude config
-# dirs, shell functions, switching, the status line, usage reports, claims
-# driven by the session hooks and a fake live session, forget, self-update,
-# and that uninstall restores every file setup touched byte for byte.
-# Not covered: the session picker and the move (they need a terminal; see
-# internal/tui and internal/sessions tests).
+# dirs, shell functions, switching, the session picker and a move on a real
+# pseudo-terminal (scripts/e2e/ptydrive.go), the status line, usage reports,
+# claims driven by the session hooks and a fake live session, forget,
+# self-update, and that uninstall restores every file setup touched byte for
+# byte.
 #
 # Needs go, node (worker/node_modules installed, `npm ci` runs if missing),
 # bash, curl, tar, sha256sum or shasum, ps and pgrep. The sandbox is kept
@@ -197,6 +197,8 @@ mkdir_claude() { # DIR EMAIL ACCOUNT_FILE
 mkdir_claude "$HOME/.claude" personal@example.com "$HOME/.claude.json"
 mkdir_claude "$HOME/.claude-work" alpha@example.com "$HOME/.claude-work/.claude.json"
 mkdir_claude "$HOME/.claude-two" beta@example.com "$HOME/.claude-two/.claude.json"
+# A second personal account in its own dir, never registered.
+mkdir_claude "$HOME/.claude-side" side@example.com "$HOME/.claude-side/.claude.json"
 # A dir an older julienning patched: statusLine and session hooks, no StopFailure.
 mkdir -p "$HOME/.claude-old/projects"
 printf '{"oauthAccount":{"emailAddress":"gamma@example.com"}}' >"$HOME/.claude-old/.claude.json"
@@ -212,6 +214,7 @@ export PATH="$HOME/.local/bin:$PATH"
 RC
 cp "$rc" "$T/before/rc"
 cp "$HOME/.claude/settings.json" "$T/before/personal.json"
+cp "$HOME/.claude-side/settings.json" "$T/before/side.json"
 cp "$HOME/.claude-work/settings.json" "$T/before/work.json"
 cp "$HOME/.claude-two/settings.json" "$T/before/two.json"
 
@@ -257,6 +260,7 @@ build_release 9.0.0
 build_release 9.0.1
 printf 'v9.0.0\n' >"$T/releases/LATEST"
 (cd "$repo" && go build -o "$T/fakereleases" scripts/e2e/fakereleases.go)
+(cd "$repo" && go build -o "$T/ptydrive" scripts/e2e/ptydrive.go)
 "$T/fakereleases" -root "$T/releases" >"$T/fakereleases.out" 2>&1 &
 host_pid=$!
 disown
@@ -304,6 +308,56 @@ expect_contains "use --clear returns plain claude to the default dir" "dir=<unse
 run julienning use bravo --no-launch
 run_fail julienning use nobody --no-launch
 expect_contains "use of an unknown target fails with a hint" "nobody" "$out"
+
+# --- the session picker, on a pseudo-terminal -------------------------------------------------
+# A registered dir signed into a personal account, and one session for
+# $T/proj in every dir. The team picker lists shared accounts only.
+run julienning new-config --name mine --no-share --no-login
+printf '{"oauthAccount":{"emailAddress":"mine@example.com"}}' >"$HOME/.claude-mine/.claude.json"
+enc="$(printf '%s' "$T/proj" | sed 's/[^A-Za-z0-9]/-/g')"
+write_session() { # DIR ID TITLE (old mtime: nothing looks open)
+  mkdir -p "$1/projects/$enc"
+  printf '{"type":"user","isSidechain":false,"cwd":"%s","sessionId":"%s","message":{"role":"user","content":"about %s"},"timestamp":"2026-01-01T10:00:00.000Z"}\n{"type":"ai-title","aiTitle":"%s","sessionId":"%s"}\n' \
+    "$T/proj" "$2" "$3" "$3" "$2" >"$1/projects/$enc/$2.jsonl"
+  touch -t 202601011000 "$1/projects/$enc/$2.jsonl"
+}
+sid_alpha=11111111-1111-4111-8111-111111111111
+sid_bravo=22222222-2222-4222-8222-222222222222
+sid_default=44444444-4444-4444-8444-444444444444
+write_session "$HOME/.claude-work" "$sid_alpha" "Team alpha task"
+write_session "$HOME/.claude-two" "$sid_bravo" "Team bravo task"
+write_session "$HOME/.claude-mine" 33333333-3333-4333-8333-333333333333 "Mine private task"
+write_session "$HOME/.claude" "$sid_default" "Personal default task"
+write_session "$HOME/.claude-side" 55555555-5555-4555-8555-555555555555 "Side project task"
+
+# pty CMD...: runs CMD from $T/proj on a pseudo-terminal, typing the steps in
+# the array $steps (see scripts/e2e/ptydrive.go); output in $out.
+pty() {
+  local rc=0
+  out="$(cd "$T/proj" && "$T/ptydrive" "${steps[@]}" -- "$@" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then fail "'$*' on a terminal exited $rc" "$out"; fi
+}
+steps=('expect=Team bravo task' 'sleep=300ms' 'send=\x1b' 'expect=Not starting claude')
+pty env TERM=xterm-256color julienning use alpha
+expect_contains "the team picker lists the selected account's sessions" "Team alpha task" "$out"
+expect_contains "the team picker lists other shared accounts' sessions" "Team bravo task" "$out"
+expect_missing "the team picker hides a registered personal dir's sessions" "Mine private task" "$out"
+expect_missing "the team picker hides the personal default dir's sessions" "Personal default task" "$out"
+expect_missing "the team picker hides unregistered dirs' sessions" "Side project task" "$out"
+expect_contains "Esc in the picker cancels and keeps the selection" "Not starting claude; alpha stays selected." "$out"
+steps=('expect=Choose 1-' 'send=q\r' 'expect=Not starting claude')
+pty env TERM=dumb julienning use alpha --all
+expect_contains "the numbered fallback lists team sessions" "Team bravo task" "$out"
+expect_missing "the numbered fallback with --all hides personal sessions" "Mine private task" "$out"
+steps=('expect=Team bravo task' 'send=Team bravo' 'sleep=300ms' 'send=\r'
+  'expect=Move "Team bravo task" from bravo to alpha?' 'sleep=500ms' 'send=\r' 'expect=FAKE CLAUDE')
+pty env TERM=xterm-256color julienning use alpha
+expect_contains "a confirmed move is reported" 'Moved "Team bravo task" from bravo to alpha' "$out"
+expect_contains "the moved session resumes in alpha's dir" "dir=$HOME/.claude-work args=--resume $sid_bravo" "$out"
+[ -f "$HOME/.claude-work/projects/$enc/$sid_bravo.jsonl" ] && [ ! -e "$HOME/.claude-two/projects/$enc/$sid_bravo.jsonl" ] ||
+  fail "the moved transcript is not in alpha's dir only"
+ok "the transcript moved from bravo's dir to alpha's"
+run julienning use bravo --no-launch
 
 # --- the "run setup" warning for a settings.json an older julienning patched -----------------
 old_layout
@@ -403,6 +457,7 @@ run julienning uninstall --purge --yes
 expect_same "uninstall restores the work settings.json byte for byte" "$T/before/work.json" "$HOME/.claude-work/settings.json"
 expect_same "uninstall restores the rc file byte for byte" "$T/before/rc" "$rc"
 expect_same "the personal settings.json was never touched" "$T/before/personal.json" "$HOME/.claude/settings.json"
+expect_same "the unregistered personal dir's settings.json was never touched" "$T/before/side.json" "$HOME/.claude-side/settings.json"
 [ ! -e "$JULIENNING_HOME" ] || fail "uninstall --purge left $JULIENNING_HOME"
 [ ! -e "$JULIENNING_BIN_DIR/julienning" ] || fail "uninstall --purge left the command"
 [ ! -e "$JULIENNING_VERSIONS_DIR" ] || fail "uninstall --purge left $JULIENNING_VERSIONS_DIR"

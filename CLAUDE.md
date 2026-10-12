@@ -50,16 +50,18 @@ quick start; keep it short and put detail in REFERENCE.md.
 with fake Claude config dirs and a fake `claude`, `wrangler dev` on a local
 KV namespace with its own token, and a fake GitHub releases host
 (`scripts/e2e/fakereleases.go`, `//go:build ignore`, run via `go build`). It
-drives the installer, setup, shell functions, switching, the session hooks
-with a fake live session (a `sleep` registered in `sessions/<pid>.json`),
-the status line and its detached usage report, `forget`, `update` and
-`uninstall`, and asserts byte-for-byte restoration at the end. Run it after
-any change to setup, uninstall, forget, the installer, self-update, claims or
-the Worker API; add a check there when you add a user-visible flow. It is
-not in CI (it needs a Worker process); say in the final message whether it
-ran. On failure the sandbox is kept and its path printed; `E2E_KEEP=1` keeps
-it always. The session picker is not covered; it needs a terminal, see the
-`internal/tui` and `internal/sessions` tests.
+drives the installer, setup, shell functions, switching, the session picker
+and a move on a real pseudo-terminal (`scripts/e2e/ptydrive.go`, same build
+style: `expect=`/`send=`/`sleep=` steps, stdlib ioctls for darwin and linux),
+the session hooks with a fake live session (a `sleep` registered in
+`sessions/<pid>.json`), the status line and its detached usage report,
+`forget`, `update` and `uninstall`, and asserts byte-for-byte restoration at
+the end. Run it after any change to setup, uninstall, forget, the installer,
+self-update, claims, switching or the Worker API; add a check there when you
+add a user-visible flow. It is not in CI (it needs a Worker process); say in
+the final message whether it ran. On failure the sandbox is kept and its path
+printed; `E2E_KEEP=1` keeps it always. Pass `TERM` explicitly to anything run
+under ptydrive (`TERM=dumb` selects the numbered fallback picker).
 
 ## Overrides for tests and sandboxes
 
@@ -86,6 +88,9 @@ Env overrides are read at runtime and never written to `config.json`.
 - Shell: the `claude` wrapper and the `claude-<nick>` functions from
   `internal/shell` resolve dirs at call time through the hidden `resolve-dir`
   command, so a rename needs no re-source. A new nickname does need one.
+- Team picker: its sources are only dirs logged into shared accounts
+  (`switching.sharedSources`), so a personal account's sessions are never
+  offered or moved.
 - Ranking (Worker `rank.ts`, mirrored in REFERENCE.md): not exhausted, then
   not busy, then known usage before unknown, then session used ascending, week
   ascending, reset ascending, email. The Worker leaves the querying dev's own

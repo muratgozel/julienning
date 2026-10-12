@@ -97,8 +97,9 @@ are exhausted.
 ### Session picker
 
 In a terminal, `next` and `use` list recent sessions for the current project
-from all your accounts, newest first, with **New session** on top (`--all`
-lists every project).
+from all your shared accounts, newest first, with **New session** on top
+(`--all` lists every project). Sessions of personal accounts never show up
+there.
 
 - ↑/↓ to move (j/k too, before you type), type to filter, Enter to start or
   resume, Esc to cancel (the selection stays).

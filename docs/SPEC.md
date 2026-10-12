@@ -709,8 +709,12 @@ selection without re-ranking; nothing selected → same as `next`)
 
 #### Session listing (`sessions.List`)
 
-Sources: every registered dir (any email) — the project folder for the
-current working directory, or all project folders with `--all`. Folder name:
+Sources: the target plus every registered dir whose current login is on the
+allowlist (`sharedSources`: the refreshed cache, else `shared.json`); a dir
+logged into a personal account, not logged in, or with an unreadable login
+is left out, so personal sessions are never listed or moved. Within a
+source: the project folder for the current working directory, or all
+project folders with `--all`. Folder name:
 `cwd` with every non-alphanumeric character replaced by `-`; when that
 exceeds 200 characters Claude truncates and appends a hash, so match folders
 by the 200-character prefix and confirm with the `cwd` field inside the
