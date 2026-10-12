@@ -447,7 +447,9 @@ Then it asks `Move them into ~/.claude? Project memory is merged, never
 overwritten. [Y/n]` (empty, y or yes moves; n or no keeps; end of input
 keeps; anything else asks again). `--move-sessions` moves without asking;
 `--yes` confirms only the purge and never moves sessions. Without a terminal
-and without `--move-sessions` nothing is asked and the sessions stay. An
+and without `--move-sessions` nothing is asked and the sessions stay; they are
+then only counted (`sessions.Count`, no file opened), since listing reads
+every transcript's head and tail. An
 explicit `--move-sessions` is always answered: `config.json` unreadable is a
 problem (exit 1, `cannot move sessions: the registered dirs are listed in
 config.json, which could not be read ...`), and with no session in the
