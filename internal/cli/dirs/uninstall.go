@@ -18,6 +18,7 @@ import (
 	"github.com/muratgozel/julienning/internal/pins"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/sharedcache"
+	"github.com/muratgozel/julienning/internal/tui"
 )
 
 func init() {
@@ -87,7 +88,12 @@ func runUninstall(env cli.Env) error {
 	}
 	if moves != nil && len(moves.list) > 0 && (*moveSessions || interactive) {
 		moves.describe(env.Stdout)
-		moveAll = *moveSessions || confirmDefaultYes(env.Stdout, in, moves.question())
+		if moveAll = *moveSessions; !moveAll {
+			// Read a byte at a time: the purge question reads the same input.
+			if moveAll, err = tui.AskYesNo(env.Stdin, env.Stdout, moves.question()); err != nil {
+				return err
+			}
+		}
 	}
 
 	if plan != nil && !*yes {

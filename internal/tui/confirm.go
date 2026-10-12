@@ -264,8 +264,16 @@ func ConfirmFallback(opts ConfirmOptions) (bool, error) {
 	if opts.Detail != "" {
 		fmt.Fprintln(out, confirmIndent+sanitize(opts.Detail))
 	}
+	return AskYesNo(in, out, "Continue? [Y/n] ")
+}
+
+// AskYesNo prints prompt and reads a [Y/n] answer from in: empty, y or yes
+// is a yes; n or no a no; end of input a no; anything else asks again. It
+// reads one byte at a time, so nothing after the answer's newline is
+// consumed and a later question can read the same input.
+func AskYesNo(in io.Reader, out io.Writer, prompt string) (bool, error) {
 	for {
-		fmt.Fprint(out, "Continue? [Y/n] ")
+		fmt.Fprint(out, prompt)
 		ans, err := readLine(in)
 		if err != nil {
 			fmt.Fprintln(out)

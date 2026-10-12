@@ -52,6 +52,22 @@ func (t *sigTrap) check() error {
 	return fmt.Errorf("%w by %s", ErrInterrupted, signalName(t.sig))
 }
 
+// Trap holds SIGINT/SIGTERM/SIGHUP for a caller that runs several moves in
+// a row, so a signal between two moves (when no Move holds them) stops the
+// loop instead of killing the process. Move keeps its own trap meanwhile;
+// both see a signal.
+type Trap struct{ t *sigTrap }
+
+// HoldSignals starts a Trap; callers must Stop it.
+func HoldSignals() Trap { return Trap{trapSignals()} }
+
+// Check returns an ErrInterrupted error ("interrupted by Ctrl-C") once a
+// signal has arrived, and keeps returning it.
+func (t Trap) Check() error { return t.t.check() }
+
+// Stop restores the default handling.
+func (t Trap) Stop() { t.t.stop() }
+
 // stop restores the default handling; a signal caught before it returns is
 // still reported by check.
 func (t *sigTrap) stop() {

@@ -1,16 +1,13 @@
 package dirs
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
@@ -163,25 +160,17 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 	}
 
 	// Held for the whole loop so a Ctrl-C between two moves stops cleanly
-	// instead of killing the process before the summary. sessions.Move holds
-	// the same signals on its own channel while it copies.
-	trap := make(chan os.Signal, 1)
-	for _, s := range []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP} {
-		if !signal.Ignored(s) {
-			signal.Notify(trap, s)
-		}
-	}
-	defer signal.Stop(trap)
+	// instead of killing the process before the summary.
+	trap := sessions.HoldSignals()
+	defer trap.Stop()
 
 	var mem sessions.MemoryReport
 	conflicts := map[string]bool{}
 	warned := map[string]bool{}
 	todo := m.bySource()
 	for i, s := range todo {
-		select {
-		case sig := <-trap:
-			res.stoppedBy, res.interrupted = fmt.Errorf("%w by %v", sessions.ErrInterrupted, sig), true
-		default:
+		if err := trap.Check(); err != nil {
+			res.stoppedBy, res.interrupted = err, true
 		}
 		if res.stoppedBy != nil {
 			res.notTried = len(todo) - i
@@ -329,23 +318,4 @@ func resumeCommand(s sessions.Session) string {
 		dir = "'" + strings.ReplaceAll(s.ConfigDir, "'", `'\''`) + "'"
 	}
 	return "CLAUDE_CONFIG_DIR=" + dir + " claude --resume " + s.ID
-}
-
-// confirmDefaultYes asks a [Y/n] question: empty, y or yes is a yes; n or
-// no a no; end of input a no; anything else asks again.
-func confirmDefaultYes(w io.Writer, r *bufio.Reader, question string) bool {
-	for {
-		answer, ok := ask(w, r, question)
-		if !ok {
-			fmt.Fprintln(w)
-			return false
-		}
-		switch strings.ToLower(answer) {
-		case "", "y", "yes":
-			return true
-		case "n", "no":
-			return false
-		}
-		fmt.Fprintln(w, "Answer y or n.")
-	}
 }
