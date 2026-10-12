@@ -132,3 +132,14 @@ func WriteClaudeMD(dir string, content []byte, prev ClaudeMD) error {
 	}
 	return writeAtomic(now.Path, content, now.Mode)
 }
+
+// ResolvedClaudeMDPath is the real file <dir>/CLAUDE.md stands for, symlinks
+// followed also when it does not exist yet (like ResolvedSettingsPath), so
+// dirs sharing one CLAUDE.md map to one path.
+func ResolvedClaudeMDPath(dir string) (string, error) {
+	target, err := resolveTarget(filepath.Join(dir, ClaudeMDFile))
+	if err != nil {
+		return "", err
+	}
+	return recordKey(target), nil
+}
