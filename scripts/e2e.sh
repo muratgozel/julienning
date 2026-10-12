@@ -11,7 +11,7 @@
 # (scripts/e2e/fakereleases.go), non-interactive setup over fake Claude config
 # dirs, shell functions, switching, the session picker and a move on a real
 # pseudo-terminal (scripts/e2e/ptydrive.go), personal accounts opened by
-# email, directory pins through the claude wrapper, the status line, usage
+# email, directory pins through the claude wrapper, settings sync, the status line, usage
 # reports, claims driven by the session hooks and a fake live session,
 # forget, self-update, and that uninstall moves the registered dirs' sessions
 # into ~/.claude, leaves plain claude native (in new terminals and in one
@@ -467,6 +467,54 @@ run julienning setup --dev e2e --remote-url "$W" --token "$token" --yes --shell 
   --share alpha@example.com --share beta@example.com --share gamma@example.com --nick beta@example.com=bravo
 run julienning accounts
 expect_missing "the warning is gone after setup" "run: julienning setup" "$out"
+
+# --- sync: the same settings and CLAUDE.md in every shared account ------------------------
+# Answers on a real terminal, then `sync --from gamma` (gamma put back as it
+# was) removes every key the first run added, byte for byte, so uninstall's
+# restore checks below still hold.
+run julienning sync --from alpha
+expect_contains "sync --from adds a key the target lacks" "theme                      dark: set in gamma" "$out"
+expect_contains "sync --from with no CLAUDE.md leaves them alone" "alpha has none; every account keeps its own" "$out"
+for d in work two old; do cp "$HOME/.claude-$d/settings.json" "$T/before/sync-$d.json"; done
+cp "$HOME/.claude-mine/settings.json" "$T/before/sync-mine.json"
+printf '# e2e team rules\n' >"$HOME/.claude-work/CLAUDE.md"
+printf '# old rules\n' >"$HOME/.claude-two/CLAUDE.md"
+touch -t 202601011000 "$HOME/.claude-two/CLAUDE.md"
+run_fail julienning sync --check
+expect_contains "sync --check lists a setting that agrees" "theme                      same: dark" "$out"
+expect_contains "sync --check lists differing CLAUDE.md files" "none: gamma" "$out"
+run_fail julienning sync
+expect_contains "sync without a terminal points at --from and --check" "needs a terminal" "$out"
+steps=('expect=model (1 of 7)' 'send=\r' 'expect=effortLevel (2 of 7)' 'send=\r'
+  'expect=promptCacheTtl (3 of 7)' 'send=\x1b[B' 'sleep=100ms' 'send=\r'
+  'expect=subagentPromptCacheTtl (4 of 7)' 'send=\x1b[B\x1b[B\x1b[B' 'sleep=100ms' 'send=\r'
+  'expect=autoContinueAtUsageLimit (5 of 7)' 'send=\r' 'expect=theme (6 of 7)' 'send=\x1b[F' 'sleep=100ms' 'send=\r'
+  'expect=editorMode (7 of 7)' 'send=j' 'sleep=100ms' 'send=\r'
+  'expect=CLAUDE.md: which one' 'send=\r'
+  "expect=Overwrite bravo's CLAUDE.md with alpha's?" 'sleep=500ms' 'send=y' 'expect=CLAUDE.md   ')
+pty env TERM=xterm-256color julienning sync
+expect_contains "sync reports a value it set everywhere" "promptCacheTtl             1h: set in alpha, bravo, gamma" "$out"
+expect_contains "sync reports a value already everywhere" "model                      opus: already in every shared account" "$out"
+expect_contains "sync reports a skipped setting" "subagentPromptCacheTtl     not synced" "$out"
+expect_contains "sync reports the CLAUDE.md copies" "CLAUDE.md                  alpha's: copied to bravo, gamma" "$out"
+for d in work two old; do
+  expect_contains "sync wrote editorMode into ~/.claude-$d" '"editorMode": "vim"' "$(cat "$HOME/.claude-$d/settings.json")"
+  expect_contains "sync kept julienning's hooks in ~/.claude-$d" "hook session-start" "$(cat "$HOME/.claude-$d/settings.json")"
+done
+expect_same "the overwritten CLAUDE.md is alpha's" "$HOME/.claude-work/CLAUDE.md" "$HOME/.claude-two/CLAUDE.md"
+expect_same "an account without a CLAUDE.md got alpha's" "$HOME/.claude-work/CLAUDE.md" "$HOME/.claude-old/CLAUDE.md"
+expect_same "sync left the personal settings.json alone" "$T/before/personal.json" "$HOME/.claude/settings.json"
+expect_same "sync left the registered personal dir alone" "$T/before/sync-mine.json" "$HOME/.claude-mine/settings.json"
+[ ! -e "$HOME/.claude/CLAUDE.md" ] || fail "sync wrote a CLAUDE.md into the personal dir"
+ok "sync wrote no CLAUDE.md into the personal dir"
+run julienning sync --check
+expect_contains "sync --check agrees on what was synced" "editorMode                 same: vim" "$out"
+expect_contains "sync --check agrees on CLAUDE.md" "CLAUDE.md                  same in every shared account" "$out"
+cp "$T/before/sync-old.json" "$HOME/.claude-old/settings.json"
+run julienning sync --from gamma
+expect_contains "sync --from removes keys the source lacks" "editorMode                 not set (Claude Code's default): removed from alpha, bravo" "$out"
+expect_same "sync --from restores alpha's settings.json byte for byte" "$T/before/sync-work.json" "$HOME/.claude-work/settings.json"
+expect_same "sync --from restores bravo's settings.json byte for byte" "$T/before/sync-two.json" "$HOME/.claude-two/settings.json"
 
 # --- accounts ---------------------------------------------------------------------------
 run julienning accounts

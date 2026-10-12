@@ -18,6 +18,7 @@ Every julienning command, flag, output, file and error in one page, with output 
   - [Session picker](#session-picker)
   - [Personal accounts](#personal-accounts)
   - [Pins](#pins)
+  - [Sync settings](#sync-settings)
   - [Other commands](#other-commands)
 - [How claims work](#how-claims-work)
 - [How usage reaches KV](#how-usage-reaches-kv)
@@ -692,6 +693,75 @@ julienning unpin [DIR]    # remove the pin on the current directory, or on DIR
   it. A terminal opened before julienning learned pins still has the old
   function; open a new one or `source` your rc file.
 
+### Sync settings
+
+`julienning sync` gives every shared account logged in on this machine the
+same Claude Code settings and user-level `CLAUDE.md`, asking which to keep:
+
+```
+julienning sync                  # one question per setting, then CLAUDE.md
+julienning sync --from alpha     # every shared account takes alpha's, no questions
+julienning sync --check          # what differs; exit 1 when anything does
+```
+
+It covers seven settings in each account's `settings.json`, each with a
+fixed set of answers plus whatever an account already has:
+
+| Setting | Answers always offered | Cursor starts on |
+|---------|------------------------|------------------|
+| `model` | `opus` (the latest Opus) | `opus` |
+| `effortLevel` | `xhigh` | `xhigh` |
+| `promptCacheTtl` | `5m`, `1h` | `5m` |
+| `subagentPromptCacheTtl` | `5m`, `1h` | `5m` |
+| `autoContinueAtUsageLimit` | `true`, `false` | `true` |
+| `theme` | `dark`, `light`, the daltonized and ANSI variants, `auto` | `dark` |
+| `editorMode` | `normal`, `vim` | `normal` |
+
+```
+promptCacheTtl (3 of 7): Prompt cache TTL of the main conversation
+Every shared account gets the value you pick (alpha, beta, gamma) · Esc cancels the sync, nothing is written
+> 5m  no account yet (default)
+  1h  beta
+  not set (Claude Code's default)  alpha, gamma
+  Don't sync  leave every account as it is
+↑/↓ move · Enter select · Esc cancel
+```
+
+- Each row lists the accounts that have that value now. `not set` removes
+  the key so Claude Code's own default applies; `Don't sync` leaves every
+  account as it is.
+- Then CLAUDE.md, newest first:
+  `alpha CLAUDE.md  updated 2026-09-23 15:24 · 32 lines (same as gamma)`.
+  Accounts without one get the chosen file; for each account whose own
+  CLAUDE.md differs it asks first
+  (`Overwrite beta's CLAUDE.md with alpha's?`, Enter or `y` overwrites, `n`
+  or Esc keeps it). The question is skipped when no account has one or all
+  have the same one.
+- Esc in any list cancels the whole sync: `Sync canceled; nothing was
+  changed.` Nothing is written before the last answer.
+- It ends with one line per setting:
+
+  ```
+  model                      opus: set in beta, gamma
+  effortLevel                xhigh: already in every shared account
+  autoContinueAtUsageLimit   not set (Claude Code's default): removed from beta
+  subagentPromptCacheTtl     not synced
+  CLAUDE.md                  alpha's: copied to gamma; kept beta's
+  ```
+
+Only those keys change; every other byte of `settings.json`, julienning's
+status line and hooks included, stays as it was. Personal accounts are never
+read or changed. A `CLAUDE.md` edited while sync was asking is left alone,
+with a warning. A CLAUDE.md that imports files with a relative `@path` gets a
+warning, since those files are not copied. `uninstall` does not undo a
+sync: the values are your settings now.
+
+`--from TARGET` (nickname, email or config name of a shared account logged in
+here) copies that account's values, removing keys it does not set, and its
+CLAUDE.md, overwriting without asking; it needs no terminal. `--check` only
+reads and prints `same: …` or `differs: …` per line, and exits 1 when anything
+differs. Without a terminal, plain `sync` refuses and points at both.
+
 ### Other commands
 
 **`julienning accounts [--json]`** syncs claims, refreshes the allowlist and
@@ -1201,7 +1271,7 @@ releases host (`scripts/e2e/fakereleases.go`) into a throwaway HOME, starts
 `wrangler dev` on a local KV namespace, builds fake Claude config dirs and a
 fake `claude`, and drives setup, the shell functions, switching, the session
 picker and the uninstall question on a pseudo-terminal (`scripts/e2e/ptydrive.go`),
-pins, the session hooks with a fake live session, the status line and its
+pins, `sync`, the session hooks with a fake live session, the status line and its
 usage report, `forget`, `update` and `uninstall`, checking at the end that the
 sessions moved into `~/.claude`, that plain `claude` is native in a new
 terminal and in one left open, and that every file setup touched is

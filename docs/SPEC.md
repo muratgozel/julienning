@@ -692,6 +692,82 @@ and `unshare` refresh `shared.json` and then apply their own change on top
 (`sharedcache.AddWithNickname` / `Remove`, keeping `fetched_at`), because KV
 listings lag writes; `nick` and setup apply theirs the same way.
 
+### sync (`internal/teamsync`, `internal/claudecfg`)
+
+`julienning sync [--from NICKNAME|EMAIL|CONFIG | --check]` gives every shared
+account on this machine the same Claude Code settings and user-level
+`CLAUDE.md`. Accounts: the registered dirs logged into an email on the
+allowlist (refreshed from the Worker when it answers, else `shared.json` with
+a warning), labelled like picker rows (`resolve.Label`; two dirs on one
+account add their `~`-shortened paths). Personal accounts, dirs not logged in
+and unreadable logins (warned) are never read or written. Fewer than two →
+error. A settings.json that is not a JSON object leaves that account out of
+the settings part, an unreadable CLAUDE.md out of the CLAUDE.md part (each
+warned).
+
+Settings (`teamsync.Settings`, top-level settings.json keys; fixed values in
+order, the default first):
+
+| Key | Fixed values | Default |
+|-----|--------------|---------|
+| `model` | `opus` | `opus` |
+| `effortLevel` | `xhigh` | `xhigh` |
+| `promptCacheTtl` | `5m`, `1h` | `5m` |
+| `subagentPromptCacheTtl` | `5m`, `1h` | `5m` |
+| `autoContinueAtUsageLimit` | `true`, `false` | `true` |
+| `theme` | `dark`, `light`, `dark-daltonized`, `light-daltonized`, `dark-ansi`, `light-ansi`, `auto` | `dark` |
+| `editorMode` | `normal`, `vim` | `normal` |
+
+Nothing else is ever touched (julienning's statusLine and hooks included).
+Values compare as canonical JSON (whitespace and key order ignored).
+
+Interactive (stdin and stdout terminals, else the error `sync asks which value
+every shared account should get and needs a terminal; …`): one question per
+setting, always, in that order, with `tui.Pick` in choice mode (no filter;
+numbered fallback without raw mode). Header `<key> (<n> of 7): <summary>`,
+scope line `Every shared account gets the value you pick (<labels>) · Esc
+cancels the sync, nothing is written`. Rows (`teamsync.Choices`): the default
+(note `(default)`), the other fixed values, values accounts hold that are not
+fixed (most accounts first, then by value), `not set (Claude Code's default)`
+when an account lacks the key (choosing it removes the key), then `Don't
+sync`; each row's metadata lists the accounts holding it (`no account yet`).
+The cursor opens on the default. Then CLAUDE.md (`<dir>/CLAUDE.md`, symlinks
+followed; dirs sharing one file count once): skipped with a note when no
+account has one or every account has the same one; else rows `<label>
+CLAUDE.md` with `updated YYYY-MM-DD HH:MM · N lines` (local time),
+`(same as …)` for identical content and the first non-blank line, newest
+first, then `Don't sync CLAUDE.md`. For each other account whose CLAUDE.md
+exists and differs, `tui.Confirm`: `Overwrite beta's CLAUDE.md with alpha's?`
+(Enter/y overwrites, n/Esc keeps; fallback `Overwrite? [Y/n]`); accounts
+without one get it and identical ones are skipped, without asking. Esc or
+Ctrl-C in any picker prints `Sync canceled; nothing was changed.` (exit 0);
+nothing is written before the last answer.
+
+Writes: settings through `claudecfg.EditSettings` (jsonedit: every other byte
+kept, re-read at write time, atomic, through symlinks, only when changed);
+CLAUDE.md through `claudecfg.WriteClaudeMD`, which writes nothing when the
+file is no longer what was read (`left beta's CLAUDE.md as it is: it changed
+while sync was running`). A relative `@import` in the copied CLAUDE.md is
+warned about (the imported files are not copied). One report line per key,
+`%-26s` wide: `opus: set in beta, gamma`, `xhigh: already in every shared
+account`, `not set (Claude Code's default): removed from beta`, `not
+synced`; then `CLAUDE.md  alpha's: copied to gamma; kept beta's` or the
+note. A file that cannot be written is warned and the rest go on; then exit 1
+(`could not update N file(s) (see above); …`). These writes are the user's
+edits: `uninstall` and `forget` never undo them.
+
+`--from TARGET` (`resolve.Target`; must be one of the accounts above, else
+`… is not a shared account logged in here; --from takes one of: …`): no
+questions, works without a terminal; every account takes TARGET's value of
+each key (removed where TARGET does not set it) and its CLAUDE.md, overwriting
+without asking (TARGET without one: `alpha has none; every account keeps its
+own`). `--check`: read only; one line per key (`same: dark`, `differs: opus
+(alpha) · sonnet (beta)`) and for CLAUDE.md (`same in every shared account`,
+`differs: alpha (updated …) · none: gamma`); any difference exits 1 (`N of 8
+differ between the shared accounts; …`), else `Every shared account here has
+the same settings and CLAUDE.md.`. The two flags exclude each other (usage
+error).
+
 ### accounts
 
 Columns `#  NICK  ACCOUNT  SESSION  WEEK  STATE  LOCAL  UPDATED`. As v1
