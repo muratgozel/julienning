@@ -519,7 +519,16 @@ expect_missing "the Worker never sees a personal account" "personal@example.com"
 # --- exhaustion from a rate-limit refusal ---------------------------------------------------
 # Claude Code runs the StopFailure hook when a turn ends on a 429; the hook
 # reports the refusal through a detached send-exhausted.
-printf '{"session_id":"e2e-session-1","hook_event_name":"StopFailure","error":"rate_limit","error_details":"You have hit your weekly limit · resets Oct 13 at 8pm (Europe/Istanbul) (error type rate_limit)","last_assistant_message":"You have hit your weekly limit · resets Oct 13 at 8pm (Europe/Istanbul)"}' |
+# The refusal names the reset of the week window reported above, as Claude
+# does: a reset more than an hour before it would read as an old window the
+# Worker already saw roll over (and a fixed date breaks the run once passed).
+week_reset=$((now + 86400))
+if date -r 0 >/dev/null 2>&1; then
+  resets="$(TZ=Europe/Istanbul LC_ALL=C date -r "$week_reset" '+%b %-d at %-I:%M%p')"
+else
+  resets="$(TZ=Europe/Istanbul LC_ALL=C date -d "@$week_reset" '+%b %-d at %-I:%M%p')"
+fi
+printf '{"session_id":"e2e-session-1","hook_event_name":"StopFailure","error":"rate_limit","error_details":"You have hit your weekly limit · resets %s (Europe/Istanbul) (error type rate_limit)","last_assistant_message":"You have hit your weekly limit · resets %s (Europe/Istanbul)"}' "$resets" "$resets" |
   CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning hook stop-failure
 wait_for "a rate-limit refusal marks the account exhausted" 15 "exhausted (week" row alpha
 [ "$(row alpha | awk '{ print $1 }')" = "3" ] || fail "the exhausted account should rank last, got:" "$(julienning accounts 2>&1)"
