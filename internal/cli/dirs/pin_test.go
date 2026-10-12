@@ -150,9 +150,15 @@ func TestPinErrors(t *testing.T) {
 		if err := h.run(runPin, args...); !asUsage(err, &ue) {
 			t.Errorf("pin %v: want a usage error, got %v", args, err)
 		}
+		// cli.Main prints the error once; the flag package must not add its own.
+		if h.stderr.Len() != 0 {
+			t.Errorf("pin %v printed to stderr itself: %q", args, h.stderr.String())
+		}
 	}
-	if err := h.run(runUnpin, "a", "b"); !asUsage(err, &ue) {
-		t.Errorf("unpin a b: %v", err)
+	for _, args := range [][]string{{"a", "b"}, {"--bogus"}, {" "}} {
+		if err := h.run(runUnpin, args...); !asUsage(err, &ue) || h.stderr.Len() != 0 {
+			t.Errorf("unpin %v: err %v stderr %q", args, err, h.stderr.String())
+		}
 	}
 }
 
@@ -219,6 +225,20 @@ func TestResolveDirPin(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "~/Code/side is pinned to me@personal.io, which cannot be opened") ||
 		!strings.HasSuffix(err.Error(), "(or remove the pin: julienning unpin ~/Code/side)") || h.stdout.Len() != 0 {
 		t.Errorf("broken pin: err %v stdout %q", err, h.stdout.String())
+	}
+
+	// An unreadable selection only breaks ties: the pin still resolves.
+	h.loggedIn(".claude-me", personal)
+	cur := filepath.Join(h.jl, config.CurrentFile)
+	if err := os.MkdirAll(cur, 0o700); err != nil { // reading a directory fails
+		t.Fatal(err)
+	}
+	if out := h.mustRun(runResolveDir, "--pin"); out != moved+"\n" {
+		t.Errorf("unreadable current: %q", out)
+	}
+	contains(t, h.stderr.String(), "julienning: warning: ignoring the current selection")
+	if err := os.Remove(cur); err != nil {
+		t.Fatal(err)
 	}
 
 	// A corrupt pins.json is an error too.

@@ -1,7 +1,6 @@
 package dirs
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -33,22 +32,11 @@ func init() {
 }
 
 func runPin(env cli.Env) error {
-	fs := cli.NewFlagSet("pin", env)
+	fs := flag.NewFlagSet("pin", flag.ContinueOnError)
 	list := fs.Bool("list", false, "list every pin on this machine")
-	var pos []string
-	args := env.Args
-	for {
-		if err := fs.Parse(args); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return err
-			}
-			return cli.Usagef("%v", err)
-		}
-		if fs.NArg() == 0 {
-			break
-		}
-		pos = append(pos, fs.Arg(0))
-		args = fs.Args()[1:]
+	pos, err := parseFlagsPermute(fs, env.Args)
+	if err != nil {
+		return err
 	}
 	switch {
 	case *list && len(pos) > 0:
@@ -67,7 +55,7 @@ func runPin(env cli.Env) error {
 	cache := loadCache(env)
 	switch {
 	case *list:
-		return listPins(env, cache)
+		return listPins(env, cfg, cache)
 	case len(pos) == 0:
 		return showPin(env, cfg, cache)
 	}
@@ -84,13 +72,13 @@ func runPin(env cli.Env) error {
 	if err != nil {
 		return err
 	}
-	here, account := shortenHome(cwd), pinAccount(cache, email)
+	here, account := shortenHome(cwd), pinAccount(cfg, cache, email)
 	switch {
 	case replaced && prev.Email == email:
 		fmt.Fprintf(env.Stdout, "%s is already pinned to %s.\n", here, account)
 		return nil
 	case replaced:
-		fmt.Fprintf(env.Stdout, "Pinned %s to %s, replacing %s.\n", here, account, pinAccount(cache, prev.Email))
+		fmt.Fprintf(env.Stdout, "Pinned %s to %s, replacing %s.\n", here, account, pinAccount(cfg, cache, prev.Email))
 	default:
 		fmt.Fprintf(env.Stdout, "Pinned %s to %s.\n", here, account)
 	}
@@ -112,7 +100,7 @@ func pinTarget(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, arg st
 		if !claudecfg.ValidEmail(email) {
 			return "", fmt.Errorf("%q is not a valid email address", arg)
 		}
-		if !resolve.Shared(cache, email) {
+		if resolve.IsPersonal(cfg, cache, email) {
 			pm, err := resolve.Personal(cfg, email)
 			if err != nil {
 				return "", err
@@ -141,7 +129,7 @@ func pinTarget(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, arg st
 	if m.Email == "" {
 		return "", fmt.Errorf("%s is not logged in, and a pin names an account; sign in first with: julienning login %s", m.Dir.Name, m.Dir.Name)
 	}
-	if !resolve.Shared(cache, m.Email) {
+	if resolve.IsPersonal(cfg, cache, m.Email) {
 		// A config name whose dir holds a personal login: remember that dir,
 		// so the pin opens the dir that was named even when the account is
 		// also logged in somewhere discovery finds first.
@@ -166,7 +154,7 @@ func showPin(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) error {
 		fmt.Fprintf(env.Stdout, "No pin covers %s; plain claude follows the selection.\n", shortenHome(cwd))
 		return nil
 	}
-	account := pinAccount(cache, p.Email)
+	account := pinAccount(cfg, cache, p.Email)
 	if pins.Within(p.Dir, cwd) {
 		fmt.Fprintf(env.Stdout, "%s is pinned to %s.\n", shortenHome(cwd), account)
 	} else {
@@ -187,7 +175,7 @@ func showPin(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) error {
 	return nil
 }
 
-func listPins(env cli.Env, cache *sharedcache.Cache) error {
+func listPins(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) error {
 	list, err := pins.Load()
 	if err != nil {
 		return err
@@ -199,7 +187,7 @@ func listPins(env cli.Env, cache *sharedcache.Cache) error {
 	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "DIR\tACCOUNT")
 	for _, p := range list {
-		fmt.Fprintf(tw, "%s\t%s\n", shortenHome(p.Dir), pinAccount(cache, p.Email))
+		fmt.Fprintf(tw, "%s\t%s\n", shortenHome(p.Dir), pinAccount(cfg, cache, p.Email))
 	}
 	return tw.Flush()
 }
@@ -209,19 +197,20 @@ func notef(env cli.Env, format string, a ...any) {
 }
 
 func runUnpin(env cli.Env) error {
-	fs := cli.NewFlagSet("unpin", env)
-	if err := fs.Parse(env.Args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
-		}
-		return cli.Usagef("%v", err)
+	fs := flag.NewFlagSet("unpin", flag.ContinueOnError)
+	if err := parseFlags(fs, env.Args); err != nil {
+		return err
 	}
 	if fs.NArg() > 1 {
 		return cli.Usagef("unpin takes at most one directory")
 	}
 	var dir string
 	if fs.NArg() == 1 {
-		d, err := expandDir(fs.Arg(0))
+		if strings.TrimSpace(fs.Arg(0)) == "" {
+			return cli.Usagef("unpin needs a non-empty directory")
+		}
+		// The directory need not exist: a pin can outlive it.
+		d, err := expandPath(strings.TrimSpace(fs.Arg(0)))
 		if err != nil {
 			return err
 		}
@@ -233,13 +222,17 @@ func runUnpin(env cli.Env) error {
 		}
 		dir = d
 	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
 	cache := loadCache(env)
 	p, ok, err := pins.Remove(dir)
 	if err != nil {
 		return err
 	}
 	if ok {
-		fmt.Fprintf(env.Stdout, "Unpinned %s (was %s).\n", shortenHome(p.Dir), pinAccount(cache, p.Email))
+		fmt.Fprintf(env.Stdout, "Unpinned %s (was %s).\n", shortenHome(p.Dir), pinAccount(cfg, cache, p.Email))
 		return nil
 	}
 	list, err := pins.Load()
@@ -248,18 +241,21 @@ func runUnpin(env cli.Env) error {
 	}
 	if parent, covered := pins.Match(list, dir); covered {
 		return fmt.Errorf("%s has no pin of its own; it is inside %s, which is pinned to %s; to remove that pin: julienning unpin %s",
-			shortenHome(dir), shortenHome(parent.Dir), pinAccount(cache, parent.Email), shortenHome(parent.Dir))
+			shortenHome(dir), shortenHome(parent.Dir), pinAccount(cfg, cache, parent.Email), shortenHome(parent.Dir))
 	}
 	fmt.Fprintf(env.Stdout, "%s is not pinned; nothing to unpin.\n", shortenHome(dir))
 	return nil
 }
 
 // pinAccount names a pinned account: "alpha (claude1@x.io)" for a team
-// account, the bare email without a nickname, "(personal)" when it is not
-// on the cached allowlist.
-func pinAccount(cache *sharedcache.Cache, email string) string {
-	if !resolve.Shared(cache, email) {
+// account, the bare email without a nickname, "me@x.io (personal)" for a
+// personal one (resolve.IsPersonal).
+func pinAccount(cfg *config.Config, cache *sharedcache.Cache, email string) string {
+	if resolve.IsPersonal(cfg, cache, email) {
 		return email + " (personal)"
+	}
+	if cache == nil {
+		return email
 	}
 	return accountLabel(cache.Nickname(email), email)
 }
@@ -274,27 +270,6 @@ func workingDir() (string, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", cwd, err)
-	}
-	return filepath.Clean(abs), nil
-}
-
-// expandDir expands a leading "~" and makes p absolute. The directory need
-// not exist: a pin can outlive the directory it was set on.
-func expandDir(p string) (string, error) {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		return "", cli.Usagef("unpin needs a non-empty directory")
-	}
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory (set $HOME): %w", err)
-		}
-		p = filepath.Join(h, strings.TrimPrefix(p, "~"))
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", p, err)
 	}
 	return filepath.Clean(abs), nil
 }

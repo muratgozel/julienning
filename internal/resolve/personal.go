@@ -10,6 +10,7 @@ import (
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/discover"
+	"github.com/muratgozel/julienning/internal/paths"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 )
 
@@ -39,22 +40,31 @@ type PersonalMatch struct {
 type PersonalNotFoundError struct {
 	Email string
 	Moved string // the remembered dir that lost the login, "" when none
+	// Unreadable are searched dirs whose login could not be read, each as
+	// "~/.claude-x: <reason>"; the account may be in one of them.
+	Unreadable []string
 }
 
 const searched = "searched ~/.claude, the top level of your home directory, the CLAUDE_CONFIG_DIR settings in your shell startup files and the registered dirs"
 
 func (e *PersonalNotFoundError) Error() string {
+	var msg string
 	if e.Moved != "" {
-		return fmt.Sprintf("%s is no longer logged in at %s, and no other Claude config dir on this machine is (%s); sign in again with: %s",
+		msg = fmt.Sprintf("%s is no longer logged in at %s, and no other Claude config dir on this machine is (%s); sign in again with: %s",
 			e.Email, shortHome(e.Moved), searched, signInHint(e.Moved))
+	} else {
+		name := config.DefaultNickname(e.Email)
+		if name == "" {
+			name = "personal"
+		}
+		home, _ := os.UserHomeDir()
+		msg = fmt.Sprintf("no Claude config dir on this machine is logged in as %s (%s); sign in first, for example: %s",
+			e.Email, searched, signInHint(filepath.Join(home, ".claude-"+name)))
 	}
-	name := config.DefaultNickname(e.Email)
-	if name == "" {
-		name = "personal"
+	if len(e.Unreadable) > 0 {
+		msg += "; the login could not be read in " + strings.Join(e.Unreadable, ", ")
 	}
-	home, _ := os.UserHomeDir()
-	return fmt.Sprintf("no Claude config dir on this machine is logged in as %s (%s); sign in first, for example: %s",
-		e.Email, searched, signInHint(filepath.Join(home, ".claude-"+name)))
+	return msg
 }
 
 // signInHint starts Claude in dir so the user can sign in, bypassing the
@@ -95,25 +105,36 @@ func Personal(cfg *config.Config, email string) (PersonalMatch, error) {
 	if err != nil {
 		return m, fmt.Errorf("search for Claude config dirs: %w", err)
 	}
-	var dirs []string
+	var dirs, unreadable []string
 	seen := map[string]bool{}
 	for _, c := range found {
 		seen[c.Dir] = true
-		if c.LoggedIn && c.Email == email {
+		switch {
+		case discover.IsUnsafeConfigDir(c.Dir, home):
+		case c.Err != nil:
+			unreadable = append(unreadable, shortHome(c.Dir)+": "+c.Err.Error())
+		case c.LoggedIn && c.Email == email:
 			dirs = append(dirs, c.Dir)
 		}
 	}
 	for _, cd := range cfg.Configs {
 		d := filepath.Clean(cd.Dir)
-		if seen[d] {
+		if seen[d] || discover.IsUnsafeConfigDir(d, home) {
 			continue
 		}
-		if e, err := claudecfg.ReadEmail(d); err == nil && e == email && !discover.IsUnsafeConfigDir(d, home) {
+		e, err := claudecfg.ReadEmail(d)
+		switch {
+		case errors.Is(err, claudecfg.ErrNotLoggedIn):
+		case err != nil:
+			unreadable = append(unreadable, shortHome(d)+": "+err.Error())
+		case e == email:
 			dirs = append(dirs, d)
 		}
 	}
 	if len(dirs) == 0 {
-		return m, &PersonalNotFoundError{Email: email, Moved: m.Moved}
+		// Only now do unreadable logins matter: one of them may hold the
+		// account, and the user must not be told it is nowhere.
+		return m, &PersonalNotFoundError{Email: email, Moved: m.Moved, Unreadable: unreadable}
 	}
 	m.Dir, m.Others, m.Changed = dirs[0], dirs[1:], true
 	m.Name = registeredName(cfg, m.Dir)
@@ -172,22 +193,34 @@ func (m PersonalMatch) Remember() error {
 	return nil
 }
 
-// Shared reports whether email is a team account by the cached allowlist.
-// A nil cache knows no team accounts, so every email counts as personal:
-// the personal path never registers, reports or moves anything, which is the
-// safe side when the allowlist is unknown.
-func Shared(cache *sharedcache.Cache, email string) bool {
-	return cache != nil && cache.Contains(strings.ToLower(email))
+// IsPersonal reports whether email takes the personal path. With a known
+// allowlist (a cache fetched at least once) that is every email not on it.
+// Without one (shared.json missing, unreadable, never fetched) the team
+// accounts are unknown, so an email logged into a registered dir keeps the
+// team path, exactly as before personal accounts existed, and only other
+// emails are personal: a team account must never be opened, labelled or
+// remembered as personal just because the cache is gone.
+func IsPersonal(cfg *config.Config, cache *sharedcache.Cache, email string) bool {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if cache != nil && !cache.FetchedAt.IsZero() {
+		return !cache.Contains(email)
+	}
+	return len(Dirs(cfg, email, nil)) == 0
 }
 
 // Account resolves an account by email to the dir a launch uses: a team
 // account to the registered dir logged into it (Dirs: the current selection
-// first), any other account through Personal. pm is non-nil exactly for a
-// personal account, so callers can print its Notes and Remember it.
+// first), any other account through Personal (see IsPersonal). pm is
+// non-nil exactly for a personal account, so callers can print its Notes
+// and Remember it.
 func Account(cfg *config.Config, cache *sharedcache.Cache, email string, current *config.ConfigDir) (m Match, pm *PersonalMatch, err error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if Shared(cache, email) {
-		m, err = byEmail(cfg, email, cache.Nickname(email), ViaEmail, current)
+	if !IsPersonal(cfg, cache, email) {
+		nick := ""
+		if cache != nil {
+			nick = cache.Nickname(email)
+		}
+		m, err = byEmail(cfg, email, nick, ViaEmail, current)
 		return m, nil, err
 	}
 	p, err := Personal(cfg, email)
@@ -198,16 +231,4 @@ func Account(cfg *config.Config, cache *sharedcache.Cache, email string, current
 }
 
 // shortHome replaces the home prefix with "~" for display.
-func shortHome(p string) string {
-	h, err := os.UserHomeDir()
-	if err != nil || h == "" {
-		return p
-	}
-	if p == h {
-		return "~"
-	}
-	if strings.HasPrefix(p, h+string(filepath.Separator)) {
-		return "~" + p[len(h):]
-	}
-	return p
-}
+func shortHome(p string) string { return paths.ShortenHome(p) }

@@ -641,7 +641,11 @@ Using me@personal.com in ~/.claude (personal; your selection is unchanged).
   `nickname` (`null`), `dir` and `"personal": true`.
 - Not logged in anywhere:
   `` julienning: no Claude config dir on this machine is logged in as me@personal.com (searched …); sign in first, for example: CLAUDE_CONFIG_DIR=~/.claude-me command claude ``.
-  Run that, sign in, and `use` finds it.
+  Run that, sign in, and `use` finds it. A dir whose login could not be read
+  is named at the end of that message, since the account may be in it.
+- Which emails are personal comes from the cached allowlist. Offline with no
+  cache at all, an email logged into a registered dir is treated as a team
+  account, as before personal accounts existed.
 - A registered dir reached by its config name (`julienning use julienning3`)
   keeps the old behaviour even when its account is personal: it becomes the
   selection and `claude` starts plain, with a warning.

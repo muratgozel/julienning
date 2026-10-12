@@ -105,7 +105,7 @@ func runUse(env cli.Env) error {
 	// it is logged in, registered or not, and never becomes the selection.
 	if len(pos) == 1 && strings.Contains(pos[0], "@") {
 		email := strings.ToLower(strings.TrimSpace(pos[0]))
-		if !resolve.Shared(cache, email) {
+		if resolve.IsPersonal(cfg, cache, email) {
 			if !claudecfg.ValidEmail(email) {
 				return fmt.Errorf("%q is not a valid email address", pos[0])
 			}

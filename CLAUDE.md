@@ -95,10 +95,12 @@ Env overrides are read at runtime and never written to `config.json`.
   --pin` only while it exists.
 - Pins and personal accounts: a pin that cannot be resolved must fail (exit
   1), never print nothing, or the wrapper falls back to the selection and
-  opens a pinned project on another account. A personal account (email not
-  on the allowlist) never becomes `current`, is never registered or patched
-  by `use`/`pin`, and never feeds the team picker, whose sources are only
-  dirs logged into shared accounts (`switching.sharedSources`).
+  opens a pinned project on another account. A personal account
+  (`resolve.IsPersonal`: not on the allowlist, or with no allowlist known not
+  logged into any registered dir) never becomes `current`, is never
+  registered or patched by `use`/`pin`, and never feeds the team picker,
+  whose sources are only dirs logged into shared accounts
+  (`switching.sharedSources`).
 - Ranking (Worker `rank.ts`, mirrored in REFERENCE.md): not exhausted, then
   not busy, then known usage before unknown, then session used ascending, week
   ascending, reset ascending, email. The Worker leaves the querying dev's own

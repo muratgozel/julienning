@@ -378,17 +378,13 @@ func loadCache(env cli.Env) *sharedcache.Cache {
 }
 
 // dirLabels maps every registered config name to how users see it: the
-// nickname of the account it is logged into right now, else its name.
-func dirLabels(cfg *config.Config, cache *sharedcache.Cache) map[string]string {
+// nickname of the account it is logged into right now (logins, see
+// loginsByDir), else its name. An unreadable or missing login only changes
+// the label to the config name.
+func dirLabels(cfg *config.Config, cache *sharedcache.Cache, logins map[string]string) map[string]string {
 	out := make(map[string]string, len(cfg.Configs))
 	for _, cd := range cfg.Configs {
-		// An unreadable or missing login only changes the label to the
-		// config name; the commands warn about unreadable logins elsewhere.
-		email, err := claudecfg.ReadEmail(cd.Dir)
-		if err != nil {
-			email = ""
-		}
-		out[cd.Name] = resolve.Label(cache, cd, email)
+		out[cd.Name] = resolve.Label(cache, cd, logins[cd.Dir])
 	}
 	return out
 }

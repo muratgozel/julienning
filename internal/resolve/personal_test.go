@@ -267,9 +267,43 @@ func TestAccountTeamOrPersonal(t *testing.T) {
 	if _, _, err := Account(cfg, cache, "claude2@x.io", nil); !errors.As(err, &nl) {
 		t.Fatalf("a team account without a local login is NotLocalError: %v", err)
 	}
-	// No allowlist known: every email is personal, so a team dir found this
-	// way is opened without any team machinery.
-	if m, pm, err := Account(cfg, nil, "claude1@x.io", nil); err != nil || pm == nil || m.Dir.Dir != team.Dir || m.Dir.Name != "julienning1" {
-		t.Fatalf("nil cache: %+v %+v %v", m, pm, err)
+	// No allowlist known (shared.json missing, unreadable or never fetched):
+	// an email logged into a registered dir keeps the team path, as before
+	// personal accounts existed; any other email is personal.
+	for name, c := range map[string]*sharedcache.Cache{"nil": nil, "never fetched": {}} {
+		if m, pm, err := Account(cfg, c, "claude1@x.io", nil); err != nil || pm != nil || m.Dir.Dir != team.Dir || m.Via != ViaEmail {
+			t.Errorf("%s cache, team dir: %+v %+v %v", name, m, pm, err)
+		}
+		if m, pm, err := Account(cfg, c, "me@personal.io", nil); err != nil || pm == nil || m.Dir.Dir != def {
+			t.Errorf("%s cache, personal: %+v %+v %v", name, m, pm, err)
+		}
+		if IsPersonal(cfg, c, "claude1@x.io") || !IsPersonal(cfg, c, "me@personal.io") {
+			t.Errorf("%s cache: IsPersonal disagrees with Account", name)
+		}
+	}
+	// A known allowlist decides alone: a registered dir with a personal login
+	// is personal, a team account is not.
+	if IsPersonal(cfg, cache, "claude1@x.io") || !IsPersonal(cfg, cache, "me@personal.io") {
+		t.Error("known allowlist")
+	}
+}
+
+// A dir whose login cannot be read may hold the account: when nothing else
+// does, the error says so instead of claiming the account is nowhere.
+func TestPersonalNamesUnreadableLogins(t *testing.T) {
+	h := newPersonalHome(t)
+	broken := h.login(".claude-me", "me@personal.io")
+	if err := os.WriteFile(filepath.Join(broken, ".claude.json"), []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Personal(h.cfg(), "me@personal.io")
+	var nf *PersonalNotFoundError
+	if !errors.As(err, &nf) || len(nf.Unreadable) != 1 || !strings.Contains(err.Error(), "; the login could not be read in ~/.claude-me: ") {
+		t.Fatalf("err = %v", err)
+	}
+	// Found elsewhere: the unreadable dir does not matter.
+	good := h.login(".claude-ok", "me@personal.io")
+	if m, err := Personal(h.cfg(), "me@personal.io"); err != nil || m.Dir != good {
+		t.Fatalf("found elsewhere: %+v %v", m, err)
 	}
 }

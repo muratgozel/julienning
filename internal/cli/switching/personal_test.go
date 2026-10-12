@@ -2,6 +2,7 @@ package switching
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,4 +290,32 @@ func TestNextIgnoresPins(t *testing.T) {
 		t.Errorf("stdout = %q", got.stdout)
 	}
 	f.noCallsFor(personal)
+}
+
+// Offline with no allowlist cache at all, a team email logged into a
+// registered dir keeps the team path (it is selected, as before personal
+// accounts existed); an email no registered dir holds is still personal.
+func TestUseWithoutAnyAllowlistKeepsTeamEmailsOnTheTeamPath(t *testing.T) {
+	f, team, def := personalFixture(t)
+	f.tty = false
+	f.fake.ListErr = errors.New("offline")
+	other, _ := f.cfg.Find("sixtynine")
+	got := f.run("use", email2)
+	assertCode(t, got, 0)
+	if f.current() != other.Dir || strings.Contains(got.stdout, "personal") {
+		t.Errorf("team email: current %q (want %q) stdout %q", f.current(), other.Dir, got.stdout)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.PersonalDirOf(email2); ok {
+		t.Error("a team email must not be remembered as personal")
+	}
+	f.setCurrent(team)
+	got = f.run("use", personal)
+	assertCode(t, got, 0)
+	if !strings.Contains(got.stdout, "Using me@personal.io in ~/.claude (personal") || f.current() != team.Dir {
+		t.Errorf("personal email: stdout %q current %q (dir %s)", got.stdout, f.current(), def.Dir)
+	}
 }
