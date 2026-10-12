@@ -141,6 +141,13 @@ func runUninstall(env cli.Env) error {
 		} else {
 			fmt.Fprintln(env.Stdout, keptSessionsLine(len(moves.list), interactive, *purge))
 		}
+	} else if *moveSessions {
+		if cfgUnreadable {
+			fmt.Fprintf(env.Stderr, "julienning: cannot move sessions: the registered dirs are listed in %s, which could not be read (see above); fix it and run `julienning uninstall --move-sessions` again\n", config.ConfigFile)
+			problems++
+		} else {
+			fmt.Fprintln(env.Stdout, "Sessions: nothing to move; no registered config dir holds a session.")
+		}
 	}
 
 	// settings.json of every registered dir. Dirs sharing one settings.json
