@@ -15,6 +15,7 @@ import (
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/paths"
+	"github.com/muratgozel/julienning/internal/pins"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 )
@@ -22,8 +23,8 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "uninstall",
-		Summary: "undo setup: settings.json entries, shell hook, claims, selection (--purge: also data and binary)",
-		Usage:   "uninstall [--purge] [--yes]",
+		Summary: "undo setup: settings.json entries, shell hook, claims, selection, pins; offers to move sessions into ~/.claude (--purge: also data and binary)",
+		Usage:   "uninstall [--purge] [--yes] [--move-sessions]",
 		Run:     runUninstall,
 	})
 }
@@ -35,7 +36,8 @@ var uninstallRCFiles = []string{".zshrc", ".bashrc", ".bash_profile"}
 func runUninstall(env cli.Env) error {
 	fs := cli.NewFlagSet("uninstall", env)
 	purge := fs.Bool("purge", false, "also delete ~/.julienning, installed versions and the julienning command")
-	yes := fs.Bool("yes", false, "do not ask for confirmation")
+	yes := fs.Bool("yes", false, "do not ask before purging")
+	moveSessions := fs.Bool("move-sessions", false, "move every session of the registered dirs into ~/.claude without asking")
 	if err := parseFlags(fs, env.Args); err != nil {
 		return err
 	}
@@ -46,28 +48,18 @@ func runUninstall(env cli.Env) error {
 	if err != nil {
 		return err
 	}
+	interactive := isInteractive(env)
 
-	// Everything to purge is resolved and confirmed before anything changes,
-	// so answering "no" leaves the machine exactly as it was.
+	// Everything is resolved and asked before anything changes, so answering
+	// "no" to the purge leaves the machine exactly as it was.
 	var plan *purgePlan
 	if *purge {
 		plan, err = newPurgePlan(home)
 		if err != nil {
 			return err
 		}
-		if !*yes {
-			if !isInteractive(env) {
-				return errors.New("refusing to --purge without confirmation: run it in a terminal, or add --yes")
-			}
-			shown := make([]string, 0, 3)
-			for _, p := range []string{plan.stateDir, plan.versionsDir, plan.link} {
-				shown = append(shown, shortenHome(p))
-			}
-			q := fmt.Sprintf("Delete %s? This cannot be undone. [y/N] ", strings.Join(shown, ", "))
-			if !confirm(env.Stdout, bufio.NewReader(env.Stdin), q) {
-				fmt.Fprintln(env.Stdout, "Cancelled; nothing was changed.")
-				return nil
-			}
+		if !*yes && !interactive {
+			return errors.New("refusing to --purge without confirmation: run it in a terminal, or add --yes")
 		}
 	}
 
@@ -82,10 +74,59 @@ func runUninstall(env cli.Env) error {
 		cfgUnreadable = true
 	}
 
+	// Sessions: once the wrapper is gone plain claude opens only Claude's
+	// default dir, so the registered dirs' sessions are offered a move
+	// there. --yes confirms the purge only; it never moves sessions.
+	in := bufio.NewReader(env.Stdin)
+	var moves *sessionMove
+	moveAll := false
+	if cfg != nil {
+		if moves, err = newSessionMove(env, cfg); err != nil {
+			return err
+		}
+	}
+	if moves != nil && len(moves.list) > 0 && (*moveSessions || interactive) {
+		moves.describe(env.Stdout)
+		moveAll = *moveSessions || confirmDefaultYes(env.Stdout, in, moves.question())
+	}
+
+	if plan != nil && !*yes {
+		shown := make([]string, 0, 3)
+		for _, p := range []string{plan.stateDir, plan.versionsDir, plan.link} {
+			shown = append(shown, shortenHome(p))
+		}
+		q := fmt.Sprintf("Delete %s? This cannot be undone. [y/N] ", strings.Join(shown, ", "))
+		if !confirm(env.Stdout, in, q) {
+			fmt.Fprintln(env.Stdout, "Cancelled; nothing was changed.")
+			return nil
+		}
+	}
+
 	changed, problems := 0, 0
 	say := func(format string, a ...any) {
 		changed++
 		fmt.Fprintf(env.Stdout, format+"\n", a...)
+	}
+
+	// Sessions move first: a Ctrl-C stops the uninstall before anything else
+	// changes, and running it again moves the rest.
+	moveFailed := false
+	if moves != nil && len(moves.list) > 0 {
+		if moveAll {
+			res := moves.run(env, say)
+			if res.interrupted {
+				return fmt.Errorf("uninstall interrupted while moving sessions (%s moved, the rest are where they were); nothing else was changed, run it again to finish",
+					countOf(res.moved, "session", "sessions"))
+			}
+			if res.stoppedBy != nil {
+				fmt.Fprintf(env.Stderr, "julienning: stopped moving sessions: %v\n", res.stoppedBy)
+				problems++
+				moveFailed = true
+			}
+			reportKept(env.Stdout, res)
+		} else {
+			fmt.Fprintln(env.Stdout, keptSessionsLine(len(moves.list), interactive, *purge))
+		}
 	}
 
 	// settings.json of every registered dir. Dirs sharing one settings.json
@@ -115,6 +156,7 @@ func runUninstall(env cli.Env) error {
 	}
 
 	// rc hook lines
+	hookRemoved := false
 	for _, name := range uninstallRCFiles {
 		rc := filepath.Join(home, name)
 		n, err := removeHookLines(rc)
@@ -124,6 +166,7 @@ func runUninstall(env cli.Env) error {
 			continue
 		}
 		if n > 0 {
+			hookRemoved = true
 			say("Shell:    removed the julienning hook line from %s", shortenHome(rc))
 		}
 	}
@@ -153,6 +196,15 @@ func runUninstall(env cli.Env) error {
 		}
 	}
 
+	// Pins go with plain uninstall too: a terminal opened before it keeps
+	// the claude function, which follows pins.json for as long as it exists.
+	if n, err := removePins(); err != nil {
+		fmt.Fprintf(env.Stderr, "julienning: %v\n", err)
+		problems++
+	} else if n != "" {
+		say("Pins:     removed %s", n)
+	}
+
 	// CRITICAL: purging deletes patches.json, the only copy of the users'
 	// replaced statusLines, and config.json, the list of dirs still wired to
 	// julienning. While either could still be needed, nothing is purged, and
@@ -162,6 +214,11 @@ func runUninstall(env cli.Env) error {
 		case cfgUnreadable:
 			fmt.Fprintf(env.Stderr, "julienning: not purging: %s could not be read, so registered dirs may still run julienning and %s may hold statusLines to restore; fix or remove it, then re-run `julienning uninstall --purge`\n",
 				shortenHome(filepath.Join(plan.stateDir, config.ConfigFile)), claudecfg.PatchesFile)
+			problems++
+		case moveFailed:
+			// Open sessions and id collisions do not get here: they are
+			// expected, listed with a resume command, and never block.
+			fmt.Fprintf(env.Stderr, "julienning: not purging: moving the sessions stopped on an error (see above); the julienning command stays, so fix it and re-run `julienning uninstall --purge` to move the rest\n")
 			problems++
 		case unpatchFailures > 0:
 			fmt.Fprintf(env.Stderr, "julienning: not purging: %d settings.json could not be restored (see above); %s keeps what is needed to restore them and the julienning command stays, so fix them and re-run `julienning uninstall --purge`\n",
@@ -178,6 +235,14 @@ func runUninstall(env cli.Env) error {
 	if !*purge && cfg != nil {
 		dir, _ := config.Dir()
 		fmt.Fprintf(env.Stdout, "Kept %s (identity, registered dirs): `julienning setup` re-installs, `julienning uninstall --purge` removes it and the julienning command.\n", shortenHome(dir))
+	}
+	if changed > 0 && problems == 0 {
+		if def, err := claudecfg.DefaultDir(); err == nil {
+			fmt.Fprintf(env.Stdout, "New terminals run claude natively: plain claude opens %s (%s).\n", shortenHome(def), defaultAccount(def))
+		}
+	}
+	if hookRemoved {
+		fmt.Fprintln(env.Stdout, "Terminals already open keep julienning's shell functions until you close them or run: exec $SHELL")
 	}
 	if problems > 0 {
 		return fmt.Errorf("uninstall finished with %d problem(s) (see above); fix them and re-run it", problems)
@@ -209,6 +274,41 @@ func releaseClaims(cfg *config.Config) (int, error) {
 		relErr = remoteErr("release claims", relErr)
 	}
 	return len(before) - len(after), relErr
+}
+
+// keptSessionsLine says the sessions stayed in their dirs (declined, or no
+// terminal to ask) and how to reach them without julienning.
+func keptSessionsLine(n int, interactive, purge bool) string {
+	line := fmt.Sprintf("Sessions: kept %s in the registered config dirs", countOf(n, "session", "sessions"))
+	if !interactive {
+		line += " (no terminal to ask, and --move-sessions was not passed)"
+	}
+	line += "; resume one with CLAUDE_CONFIG_DIR=<its dir> claude --resume <id>"
+	if !purge {
+		line += ", or move them all with `julienning uninstall --move-sessions`"
+	}
+	return line + "."
+}
+
+// removePins deletes pins.json, returning what it removed for the report
+// ("2 pins"; "" when there was no file). An unreadable file is julienning's
+// own data and goes too.
+func removePins() (string, error) {
+	path, err := pins.Path()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	what := shortenHome(path)
+	if list, err := pins.Load(); err == nil {
+		what = countOf(len(list), "pin", "pins")
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("delete %s: %w", path, err)
+	}
+	return what, nil
 }
 
 // removeHookLines drops julienning's hook lines (new and legacy markers) from

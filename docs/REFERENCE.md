@@ -979,7 +979,7 @@ when no reset time is known. Failures of the report go to `errors.log` as
 ```sh
 julienning use --clear           # drop the selection only
 julienning forget TARGET         # unregister one dir, undo its settings.json changes, offer to delete it
-julienning uninstall             # undo setup on this machine
+julienning uninstall             # undo setup on this machine; offers to move your sessions into ~/.claude
 julienning uninstall --purge     # ... and delete julienning's own data, installed versions and command
 ```
 
@@ -1031,21 +1031,72 @@ leaves the file alone, since that dir still needs it:
 If the unpatch fails, the dir stays registered and is not deleted, so you can
 fix the file and run `forget` again.
 
-`uninstall [--purge] [--yes]`, for every registered dir: restores the saved
-statusLine (or removes julienning's), removes only julienning's hook entries,
-drops containers it created that are now empty and deletes a settings.json it
-created that is now empty (a settings.json shared by several dirs is handled
-once). It removes the hook line from `~/.zshrc`, `~/.bashrc` and
-`~/.bash_profile`, releases this machine's claims (best effort; the TTL covers
-the rest) and clears the selection. Safe to run twice (`Nothing to uninstall.`).
+`uninstall [--purge] [--yes] [--move-sessions]` starts with your sessions.
+Once julienning is gone, plain `claude` opens Claude's default dir
+`~/.claude` again and cannot resume a session kept in another config dir, so
+uninstall offers to move every session of every registered dir there (one
+question for all of them; `~/.claude` itself is never a source):
+
+```
+Sessions: 1080 sessions in 9 registered config dirs. Without julienning, plain claude opens ~/.claude (signed in as me@personal.com) and cannot resume them.
+  1 is open in a terminal and stays where it is unless you exit it first:
+    "Fix login flow" in ~/.claude-julienning1
+Move them into ~/.claude? Project memory is merged, never overwritten. [Y/n]
+```
+
+Enter, `y` or `yes` moves them; `n` keeps them. Each session moves the way the
+session picker moves one: its transcript, checkpoints, task list and session
+environment, copied, verified, then deleted from the old dir; project memory
+is merged, never overwritten. `~/.claude` is created when it does not exist.
+A session open in a terminal, one changed in the last two minutes in a dir
+without a live-session registry, and one whose id `~/.claude` already has
+stay where they are, listed with the command that resumes each without
+julienning:
+
+```
+Sessions: moving 1022 sessions from ~/.claude-julienning1…
+Sessions: moving 58 sessions from ~/.claude-julienning2…
+Sessions: moved 1079 sessions into ~/.claude (memory: 4 files added, 2 index lines merged)
+Sessions: 1 stays where it is; resume one with CLAUDE_CONFIG_DIR set to its dir:
+  "Fix login flow" (open in a terminal):
+    CLAUDE_CONFIG_DIR=~/.claude-julienning1 claude --resume 0b7f6c1e-2a4d-4e8b-9f10-1c2d3e4f5a6b
+```
+
+`--move-sessions` moves them without asking (also without a terminal);
+`--yes` only confirms `--purge` and never moves sessions. Without a terminal
+and without `--move-sessions` nothing is asked and the sessions stay
+(`Sessions: kept 1080 sessions in the registered config dirs (no terminal to
+ask, and --move-sessions was not passed); ...`). After a plain `uninstall`
+you can still move them later with `julienning uninstall --move-sessions`.
+Every question comes before anything changes, and the sessions move first:
+Ctrl-C stops the uninstall with nothing else changed, and running it again
+moves the rest. Any other error (a full disk, say) stops the moves, the rest
+of the uninstall still runs, and `--purge` deletes nothing so you can run it
+again. When `~/.claude` already has a different version of a project memory
+file, its version is kept and a warning names where the other one stays.
+
+Then, for every registered dir, it restores the saved statusLine (or removes
+julienning's), removes only julienning's hook entries, drops containers it
+created that are now empty and deletes a settings.json it created that is now
+empty (a settings.json shared by several dirs is handled once). It removes
+the hook line from `~/.zshrc`, `~/.bashrc` and `~/.bash_profile`, releases
+this machine's claims (best effort; the TTL covers the rest), clears the
+selection and deletes your pins. Safe to run twice (`Nothing to uninstall.`).
 
 ```
 Settings: ~/.claude-julienning1/settings.json: restored previous statusLine, removed SessionStart hook, removed SessionEnd hook, removed empty hooks
 Settings: ~/.claude-work/settings.json: removed statusLine, removed SessionStart hook, removed SessionEnd hook, removed empty hooks, deleted the settings.json julienning created
 Shell:    removed the julienning hook line from ~/.zshrc
 Current:  cleared the selected config dir
+Pins:     removed 2 pins
 Kept ~/.julienning (identity, registered dirs): `julienning setup` re-installs, `julienning uninstall --purge` removes it and the julienning command.
+New terminals run claude natively: plain claude opens ~/.claude (signed in as me@personal.com).
+Terminals already open keep julienning's shell functions until you close them or run: exec $SHELL
 ```
+
+In a terminal that was open during the uninstall, plain `claude` already
+opens `~/.claude` (no selection, no pins), but the `claude-<nickname>`
+functions stay until you close it or run `exec $SHELL`.
 
 `--purge` asks first
 (`Delete ~/.julienning, ~/.local/share/julienning/versions, ~/.local/bin/julienning? This cannot be undone. [y/N]`)
@@ -1063,15 +1114,15 @@ Purged:   ~/.local/share/julienning/versions
 Purged:   ~/.local/bin/julienning
 ```
 
-When a settings.json could not be restored, or `config.json` cannot be read,
-`--purge` deletes nothing and exits 1: `patches.json` holds the statusLines
-still to restore, `config.json` lists the dirs still wired to julienning, and
-the command stays installed so you can fix the problem and run it again
+When a settings.json could not be restored, `config.json` cannot be read, or
+moving the sessions stopped on an error, `--purge` deletes nothing and exits
+1: `patches.json` holds the statusLines still to restore, `config.json` lists
+the dirs still wired to julienning and their sessions, and the command stays
+installed so you can fix the problem and run it again
 (`julienning: not purging: 1 settings.json could not be restored (see above); ...`).
-The rest of the uninstall still runs. Claude config dirs and sessions are
-never deleted, and nothing is unshared on the Worker. Pins (`pins.json`) are
-julienning's own data: plain `uninstall` keeps them (the `claude` function is
-gone with the rc line), `--purge` deletes them.
+The rest of the uninstall still runs. Claude config dirs are never deleted,
+sessions are only ever moved into `~/.claude`, and nothing is unshared on
+the Worker.
 
 ## Web view
 

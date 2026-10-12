@@ -129,11 +129,13 @@ there; `julienning use <personal email>` lists that account's own.
   `"auto_update": false` in `~/.julienning/config.json` (or export
   `JULIENNING_AUTO_UPDATE=0`); commands then print a one-line hint when a
   newer release is out.
-- **Undo** with `julienning uninstall`: it reverts what setup changed in your
-  Claude settings and shell (settings.json entries, the shell line), releases
-  your claims and clears the selection. `--purge` also deletes julienning's
-  own data and the command. Claude config dirs, logins and sessions are never
-  touched, and nothing is unshared for the team. For a single account,
+- **Undo** with `julienning uninstall`: it offers to move every session of
+  your registered dirs into `~/.claude`, where plain `claude` finds them again,
+  reverts what setup changed in your Claude settings and shell (settings.json
+  entries, the shell line), releases your claims and clears the selection and
+  pins. Afterwards `claude` in a new terminal is Claude's own command.
+  `--purge` also deletes julienning's own data and the command. Claude config
+  dirs and logins are never touched, and nothing is unshared for the team. For a single account,
   `julienning forget claude3` (a nickname, email or config name) unregisters
   its dir, undoes its settings.json changes and offers to delete the dir
   (default no; `--delete` / `--keep` answer up front). It never deletes
