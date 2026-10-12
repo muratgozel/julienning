@@ -39,6 +39,10 @@ type Model struct {
 	Filter  string
 	Cursor  int // position in Visible()
 	NoColor bool
+	// Choice is a short list of answers rather than a list to search:
+	// typed text never filters (j/k still move, other keys are ignored)
+	// and the second line shows Scope without the filter hint.
+	Choice bool
 
 	Done     bool // Enter on a selectable row
 	Canceled bool // Esc / Ctrl-C
@@ -148,6 +152,24 @@ func (m Model) Update(k Key) Model {
 		}
 	case KeyEsc, KeyInterrupt:
 		m.Canceled = true
+	case KeyBackspace, KeyClearFilter, KeyRune:
+		if m.Choice {
+			if k.Kind == KeyRune && k.Rune == 'j' {
+				m.Cursor = m.step(1, 1)
+			} else if k.Kind == KeyRune && k.Rune == 'k' {
+				m.Cursor = m.step(-1, 1)
+			}
+			break
+		}
+		m = m.edit(k)
+	}
+	return m
+}
+
+// edit applies a key that changes the filter (or, before one is typed,
+// moves with j/k).
+func (m Model) edit(k Key) Model {
+	switch k.Kind {
 	case KeyBackspace:
 		if m.Filter == "" {
 			m.typing = false
@@ -397,6 +419,8 @@ func (m Model) render(width, height int) ([]string, int) {
 	// The label, placeholder and counts are chrome; typed filter text stays
 	// normal so what is being edited is easy to read.
 	switch {
+	case m.Choice:
+		lines = append(lines, m.paint(Truncate(sanitize(m.Scope), w), toneDim))
 	case m.Filter != "":
 		const label = "Filter: "
 		filter := sanitize(m.Filter)
@@ -440,7 +464,10 @@ func (m Model) render(width, height int) ([]string, int) {
 		move = "↑/↓ PgUp/PgDn move" // more rows than fit: say how to page
 	}
 	help := move + " · type to filter · Enter select · Esc cancel"
-	if m.typing || m.Filter != "" {
+	switch {
+	case m.Choice:
+		help = move + " · Enter select · Esc cancel"
+	case m.typing || m.Filter != "":
 		help = move + " · Backspace edit filter · Enter select · Esc cancel"
 	}
 	lines = append(lines, m.paint(Truncate(help, w), toneDim))

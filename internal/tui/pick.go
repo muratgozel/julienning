@@ -39,6 +39,10 @@ type Options struct {
 	// declined); otherwise it opens on the first selectable row. The
 	// numbered fallback always defaults to choice 1.
 	Initial int
+	// Choice turns the filter off for a short list of answers (sync's
+	// questions): typed text never filters, j/k still move, and the
+	// fallback takes numbers only. See Model.Choice.
+	Choice bool
 }
 
 // Pick shows items and returns the chosen index. It uses a full-screen
@@ -61,6 +65,7 @@ func Pick(items []Item, opts Options) (int, error) {
 	defer t.close()
 	m := newModel(items, opts.Header, getenv).SelectItem(opts.Initial)
 	m.Scope = opts.Scope
+	m.Choice = opts.Choice
 	return run(m, t.tty, t.tty, t.size)
 }
 
@@ -372,8 +377,12 @@ func Fallback(items []Item, opts Options) (int, error) {
 	}
 	list("")
 	sc := bufio.NewScanner(in)
+	question := "Choose 1-%d (Enter = 1, text = filter, q = cancel): "
+	if opts.Choice {
+		question = "Choose 1-%d (Enter = 1, q = cancel): "
+	}
 	for {
-		fmt.Fprintf(out, "Choose 1-%d (Enter = 1, text = filter, q = cancel): ", len(byNumber))
+		fmt.Fprintf(out, question, len(byNumber))
 		if !sc.Scan() {
 			fmt.Fprintln(out)
 			if err := sc.Err(); err != nil {
@@ -392,6 +401,10 @@ func Fallback(items []Item, opts Options) (int, error) {
 			if n >= 1 && n <= len(byNumber) {
 				return byNumber[n-1], nil
 			}
+			fmt.Fprintf(out, "Enter a number from 1 to %d.\n", len(byNumber))
+			continue
+		}
+		if opts.Choice {
 			fmt.Fprintf(out, "Enter a number from 1 to %d.\n", len(byNumber))
 			continue
 		}

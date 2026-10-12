@@ -24,6 +24,11 @@ type ConfirmOptions struct {
 	TTY string
 	// Getenv reads TERM and NO_COLOR; nil means os.Getenv.
 	Getenv func(string) string
+	// Hint replaces the raw-mode key line (default confirmHint), and
+	// FallbackPrompt the line prompt (default "Continue? [Y/n] "); the
+	// keys stay the same.
+	Hint           string
+	FallbackPrompt string
 }
 
 // confirmHint is the raw-mode prompt's key line.
@@ -52,6 +57,7 @@ func Confirm(opts ConfirmOptions) (bool, error) {
 // non-empty value turns every SGR sequence off (see newModel).
 func newConfirmModel(opts ConfirmOptions, getenv func(string) string) ConfirmModel {
 	m := NewConfirm(opts.Question, opts.Detail)
+	m.Hint = opts.Hint
 	m.NoColor = getenv("NO_COLOR") != ""
 	return m
 }
@@ -61,6 +67,7 @@ func newConfirmModel(opts ConfirmOptions, getenv func(string) string) ConfirmMod
 type ConfirmModel struct {
 	Question string
 	Detail   string
+	Hint     string // the key line; "" means confirmHint
 	NoColor  bool
 
 	Done bool // an answer key was pressed
@@ -120,7 +127,11 @@ func (m ConfirmModel) lines(width, height int) []string {
 	}
 	// The key line is chrome, dim like the picker's help line; the question
 	// and its explanation stay normal. paint drops the SGR under NoColor.
-	hint := indented(confirmHint)
+	keys := m.Hint
+	if keys == "" {
+		keys = confirmHint
+	}
+	hint := indented(keys)
 	for i, l := range hint {
 		hint[i] = paint(l, toneDim, m.NoColor)
 	}
@@ -264,7 +275,11 @@ func ConfirmFallback(opts ConfirmOptions) (bool, error) {
 	if opts.Detail != "" {
 		fmt.Fprintln(out, confirmIndent+sanitize(opts.Detail))
 	}
-	return AskYesNo(in, out, "Continue? [Y/n] ")
+	prompt := opts.FallbackPrompt
+	if prompt == "" {
+		prompt = "Continue? [Y/n] "
+	}
+	return AskYesNo(in, out, prompt)
 }
 
 // AskYesNo prints prompt and reads a [Y/n] answer from in: empty, y or yes
