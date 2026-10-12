@@ -45,13 +45,20 @@ func finish(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel selec
 
 // handOff lists sessions, lets the user pick one, moves it into the target
 // when it lives elsewhere (after a confirmation; declining reopens the
-// picker), and replaces this process with claude.
+// picker), and replaces this process with claude. A personal account lists
+// its own dir's sessions only, so nothing ever moves in or out of it.
 func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel selection, o options, now time.Time, loc *time.Location, header string) error {
 	target := sel.cd
-	if sel.email == "" || !sel.shared {
+	var sources []config.ConfigDir
+	switch {
+	case sel.personal:
+		sources = []config.ConfigDir{target}
+	case sel.email == "" || !sel.shared:
 		// Never move team sessions into a dir that is not a shared account;
 		// the warning was printed when the target was resolved.
 		return execClaude(target.Dir, nil, "")
+	default:
+		sources = sharedSources(cfg, cache, target)
 	}
 
 	cwd, err := getwd()
@@ -59,7 +66,7 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		warnf(env, "cannot determine the current directory (%v); listing every project", err)
 		o.all = true
 	}
-	list, err := sessions.List(sessions.ListOptions{Dirs: sharedSources(cfg, cache, target), Cwd: cwd, All: o.all, Limit: o.limit, Now: now})
+	list, err := sessions.List(sessions.ListOptions{Dirs: sources, Cwd: cwd, All: o.all, Limit: o.limit, Now: now})
 	if err != nil {
 		warnf(env, "some sessions could not be read: %v", err)
 	}
@@ -76,7 +83,11 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 	for at := 0; ; {
 		idx, err := pickSession(env, items, header, scope, at)
 		if errors.Is(err, tui.ErrCanceled) {
-			fmt.Fprintf(env.Stdout, "Not starting claude; %s stays selected.\n", sel.label())
+			if sel.personal {
+				fmt.Fprintln(env.Stdout, "Not starting claude; your selection is unchanged.")
+			} else {
+				fmt.Fprintf(env.Stdout, "Not starting claude; %s stays selected.\n", sel.label())
+			}
 			selfupdate.Hint(env.Stderr)
 			return nil
 		}
@@ -93,6 +104,10 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		}
 		if filepath.Clean(s.ConfigDir) == filepath.Clean(target.Dir) {
 			return resume(env, target, s)
+		}
+		if sel.personal {
+			// Unreachable: a personal picker lists only the target's sessions.
+			return fmt.Errorf("session %q is not in %s; refusing to move it into a personal account", s.Label(), shortenHome(target.Dir))
 		}
 		from, to := moveLabels(labels, s, target)
 		ok, err := confirmMove(env, moveQuestion(s.Label(), from, to), moveDetail(from, to))

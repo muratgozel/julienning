@@ -10,10 +10,10 @@
 # What it proves, in order: the installer against a fake GitHub releases host
 # (scripts/e2e/fakereleases.go), non-interactive setup over fake Claude config
 # dirs, shell functions, switching, the session picker and a move on a real
-# pseudo-terminal (scripts/e2e/ptydrive.go), the status line, usage reports,
-# claims driven by the session hooks and a fake live session, forget,
-# self-update, and that uninstall restores every file setup touched byte for
-# byte.
+# pseudo-terminal (scripts/e2e/ptydrive.go), personal accounts opened by
+# email, the status line, usage reports, claims driven by the session hooks
+# and a fake live session, forget, self-update, and that uninstall restores
+# every file setup touched byte for byte.
 #
 # Needs go, node (worker/node_modules installed, `npm ci` runs if missing),
 # bash, curl, tar, sha256sum or shasum, ps and pgrep. The sandbox is kept
@@ -358,6 +358,36 @@ expect_contains "the moved session resumes in alpha's dir" "dir=$HOME/.claude-wo
   fail "the moved transcript is not in alpha's dir only"
 ok "the transcript moved from bravo's dir to alpha's"
 run julienning use bravo --no-launch
+
+# --- personal accounts by email -------------------------------------------------------------
+run julienning use personal@example.com --no-launch
+expect_contains "use EMAIL opens a personal account in the default dir" "Using personal@example.com in ~/.claude (personal; your selection is unchanged)." "$out"
+run julienning current
+expect_contains "a personal account leaves the selection alone" ".claude-two" "$out"
+expect_contains "the personal account's dir is remembered" '"email": "personal@example.com"' "$(cat "$JULIENNING_HOME/config.json")"
+expect_missing "the personal default dir is not registered" "\"dir\": \"$HOME/.claude\"" "$(julienning configs --json)"
+steps=('expect=Personal default task' 'send=Personal default' 'sleep=300ms' 'send=\r' 'expect=FAKE CLAUDE')
+pty env TERM=xterm-256color julienning use personal@example.com
+expect_missing "the personal picker hides team sessions" "Team alpha task" "$out"
+expect_missing "the personal picker hides other personal dirs" "Side project task" "$out"
+expect_missing "the personal picker hides a registered personal dir" "Mine private task" "$out"
+expect_contains "a personal session resumes in its dir, CLAUDE_CONFIG_DIR unset" "dir=<unset> args=--resume $sid_default" "$out"
+expect_missing "nothing moves into a personal account" "Moved " "$out"
+run julienning current
+expect_contains "the personal picker leaves the selection alone" ".claude-two" "$out"
+run julienning use side@example.com --json
+expect_contains "use EMAIL finds an unregistered dir" "\"dir\": \"$HOME/.claude-side\"" "$out"
+run julienning use mine@example.com --json
+expect_contains "use EMAIL finds a registered dir with a personal login" '"config": "mine"' "$out"
+mkdir_claude "$HOME/.claude-side2" side@example.com "$HOME/.claude-side2/.claude.json"
+printf '{"oauthAccount":{"emailAddress":"other@example.com"}}' >"$HOME/.claude-side/.claude.json"
+run julienning use side@example.com --no-launch
+expect_contains "a moved personal login is found again" "no longer logged in at ~/.claude-side; found it at ~/.claude-side2" "$out"
+expect_contains "the moved account opens in its new dir" "Using side@example.com in ~/.claude-side2" "$out"
+run_fail julienning use nobody@example.com --no-launch
+expect_contains "an account logged in nowhere says how to sign in" "CLAUDE_CONFIG_DIR=~/.claude-nobody command claude" "$out"
+expect_missing "the Worker never sees the personal accounts" "side@example.com" "$(julienning accounts --json 2>/dev/null)"
+expect_missing "the Worker never sees a registered personal dir's account" "mine@example.com" "$(julienning accounts --json 2>/dev/null)"
 
 # --- the "run setup" warning for a settings.json an older julienning patched -----------------
 old_layout

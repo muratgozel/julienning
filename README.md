@@ -71,6 +71,7 @@ julienning use               # stay on the current account, straight to its sess
 julienning use <nickname>    # switch to that account, then pick a session
 claude-<nickname>            # plain claude on that account; your selection stays as it is
 julienning accounts          # every shared account: usage, who is on it, which dir here has it
+julienning use <email>       # a personal (not shared) account, wherever it is logged in; selection untouched
 ```
 
 The selection is machine-wide: after `next` or `use`, plain `claude` in any
@@ -99,7 +100,7 @@ are exhausted.
 In a terminal, `next` and `use` list recent sessions for the current project
 from all your shared accounts, newest first, with **New session** on top
 (`--all` lists every project). Sessions of personal accounts never show up
-there.
+there; `julienning use <personal email>` lists that account's own.
 
 - ↑/↓ to move (j/k too, before you type), type to filter, Enter to start or
   resume, Esc to cancel (the selection stays).
