@@ -1,5 +1,3 @@
-| `EXHAUSTED_FAILED` | the exhausted report after a rate-limit refusal failed; the rest says why (a plain `404` means the Worker predates 0.7.0 and needs a redeploy). At most every 10 minutes per account || `EXHAUSTED_FAILED` | the exhausted report after a rate-limit refusal failed; the rest says why. At most every 10 minutes |
-| `USAGE_PENDING` | the status line input lacked a rate-limit window (normal before the first reply of a session); the rest of the line is the shape it got, such as `five_hour=absent seven_day={used_percentage:number,resets_at:number}`. Hourly, diagnostic only |
 # julienning reference
 
 Every julienning command, flag, output, file and error in one page, with output from real runs; for the quick start, see the [README](../README.md).
@@ -1107,9 +1105,11 @@ newest 500 lines once it passes 1 MB.
 | `EMAIL_INVALID` | the account file has no valid `oauthAccount.emailAddress`; sign in again |
 | `INVALID_STDIN` | the status line input was not a JSON object (the status line shows `julienning: status line input is not valid JSON`) |
 | `USAGE_INVALID` | `rate_limits` had an unexpected shape; the line ends with a type signature such as `five_hour=string seven_day=absent`. Claude Code changed its format: report it |
+| `USAGE_PENDING` | the status line input lacked a rate-limit window (normal before the first reply of a session); the rest of the line is the shape it got, such as `five_hour=absent seven_day={used_percentage:number,resets_at:number}`. Hourly, diagnostic only |
 | `CLOCK_INVALID` | `JULIENNING_NOW_EPOCH` is not integer epoch seconds; unset it |
 | `SPAWN_FAILED` | the detached `send-usage` or `claim-sync` could not be started |
 | `SEND_FAILED` | the usage PUT failed; the rest of the line says why (`401 unauthorized`, `request timed out after 5s`, `request failed: …`, `500 internal error`). At most every 10 minutes per account |
+| `EXHAUSTED_FAILED` | the exhausted report after a rate-limit refusal failed; the rest says why (a plain `404` means the Worker predates 0.7.0 and needs a redeploy). At most every 10 minutes per account |
 | `HOOK_INPUT_INVALID` | a hook got an argument other than `session-start` / `session-end` (it then does nothing) or unusable stdin (the sync still runs) |
 | `CLAIM_SYNC_FAILED` | claim reconciliation failed (Worker unreachable, lock, unreadable dir) |
 | `SHARE_FAILED` | the account of a dir `new-config` created could not be shared yet; the share stays pending and is retried. `nickname taken: "delta" belongs to another team account` → pick another with `julienning setup`; otherwise the Worker or the account file says why. Also written once when the account signed in there is marked personal on this machine (then it is never shared) |

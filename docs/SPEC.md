@@ -1,5 +1,3 @@
-| PUT | `/accounts/:email/exhausted` | `{window: "session"|"week", resets_at?: ISO|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first || PUT | `/accounts/:email/exhausted` | `{window: "session"|"week", resets_at?: ISO|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter. `resets_at` is resolved at write time: the body's value if in the future, else the usage record's matching window reset if in the future, else null |
-| `exhausted:<email>:<dev>:<machine_id>` | PUT exhausted of that reporter | `{window, resets_at, at}` (`window` `session`/`week`, `resets_at` ISO or null, `at` server-stamped); `expirationTtl` = until `resets_at` when known (min 60 s), else 5 h for `session`, 7 d for `week` |
 # julienning — design spec (v2)
 
 Shared Claude Code account switching, session hand-off and usage tracking for
@@ -957,6 +955,7 @@ listing needs no per-key reads):
 | `share:<email>` | share / nickname rename / unshare only | `{added_by, added_at, nickname}` (nickname absent on records from before nicknames; read as null) |
 | `usage:<email>` | PUT usage (only if `share:` exists) | `{session, week, collected_at, reporter}`; `expirationTtl` 8 days |
 | `claim:<email>:<dev>:<machine_id>` | PUT/DELETE claim of that holder; usage refresh by the same reporter when the claim is older than 1 h (KV write budget) | `{at}`; `expirationTtl` = CLAIM_TTL_MIN (min 60 s) |
+| `exhausted:<email>:<dev>:<machine_id>` | PUT exhausted of that reporter | `{window, resets_at, at}` (`window` `session`/`week`, `resets_at` ISO or null, `at` server-stamped); `expirationTtl` = until `resets_at` when known (min 60 s), else 5 h for `session`, 7 d for `week` |
 
 An email is shared iff `share:<email>` exists. The listing shows only shared
 emails; orphaned `usage:`/`claim:` keys (written by a request that raced an
@@ -996,6 +995,7 @@ Routes:
 | PUT | `/accounts/:email/usage` | as v1 | 204; 404 `account is not shared`; stale `collected_at` ignored; refreshes `at` of the claim held by the same reporter dev+machine |
 | PUT | `/accounts/:email/claim` | `{dev, machine_id}` | 204 upsert own holder; 404 when not shared |
 | DELETE | `/accounts/:email/claim` | `?dev=&machine_id=` (both required) | 204 remove own holder (idempotent) |
+| PUT | `/accounts/:email/exhausted` | `{window: "session"\|"week", resets_at?: ISO\|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first |
 
 Ranking and state: holders with `at` older than `CLAIM_TTL_MIN` are ignored.
 `busy_by` = sorted unique devs ≠ querying `dev` that hold a fresh claim or
