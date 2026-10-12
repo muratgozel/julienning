@@ -17,7 +17,10 @@ quick start; keep it short and put detail in REFERENCE.md.
   ships with the installed wrangler; move the two together.
 - `make test` is the gate (Go with `-race`, Worker vitest). `make lint` runs
   gofmt, go vet and the Worker typecheck. CI runs both plus shellcheck on
-  `scripts/install.sh` and `goreleaser check`.
+  `scripts/install.sh` and `scripts/e2e.sh`, and `goreleaser check`. The
+  runner's preinstalled shellcheck is older than a current local one and
+  flags things 0.11 does not (SC2015, `a && b || c`): write such checks as
+  `if`.
 
 ## Hard rules
 

@@ -356,8 +356,9 @@ steps=('expect=Team bravo task' 'send=Team bravo' 'sleep=300ms' 'send=\r'
 pty env TERM=xterm-256color julienning use alpha
 expect_contains "a confirmed move is reported" 'Moved "Team bravo task" from bravo to alpha' "$out"
 expect_contains "the moved session resumes in alpha's dir" "dir=$HOME/.claude-work args=--resume $sid_bravo" "$out"
-[ -f "$HOME/.claude-work/projects/$enc/$sid_bravo.jsonl" ] && [ ! -e "$HOME/.claude-two/projects/$enc/$sid_bravo.jsonl" ] ||
+if [ ! -f "$HOME/.claude-work/projects/$enc/$sid_bravo.jsonl" ] || [ -e "$HOME/.claude-two/projects/$enc/$sid_bravo.jsonl" ]; then
   fail "the moved transcript is not in alpha's dir only"
+fi
 ok "the transcript moved from bravo's dir to alpha's"
 run julienning use bravo --no-launch
 
