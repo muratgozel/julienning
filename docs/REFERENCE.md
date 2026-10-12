@@ -737,8 +737,9 @@ Every shared account gets the value you pick (alpha, beta, gamma) · Esc cancels
   (`Overwrite beta's CLAUDE.md with alpha's?`, Enter or `y` overwrites, `n`
   or Esc keeps it). The question is skipped when no account has one or all
   have the same one.
-- Esc in any list cancels the whole sync: `Sync canceled; nothing was
-  changed.` Nothing is written before the last answer.
+- Esc in any list, or Ctrl-C at any question, cancels the whole sync:
+  `Sync canceled; nothing was changed.` Nothing is written before the last
+  answer.
 - It ends with one line per setting:
 
   ```
@@ -751,8 +752,9 @@ Every shared account gets the value you pick (alpha, beta, gamma) · Esc cancels
 
 Only those keys change; every other byte of `settings.json`, julienning's
 status line and hooks included, stays as it was. Personal accounts are never
-read or changed. A `CLAUDE.md` edited while sync was asking is left alone,
-with a warning. A CLAUDE.md that imports files with a relative `@path` gets a
+read or changed, also through a symlink from a shared dir into theirs. A
+`CLAUDE.md` or a setting changed while sync was asking (say `/model` in a
+running session) is left as it is now, with a warning. A CLAUDE.md that imports files with a relative `@path` gets a
 warning, since those files are not copied. `uninstall` does not undo a
 sync: the values are your settings now.
 
@@ -760,7 +762,7 @@ sync: the values are your settings now.
 here) copies that account's values, removing keys it does not set, and its
 CLAUDE.md, overwriting without asking; it needs no terminal. `--check` only
 reads and prints `same: …` or `differs: …` per line, and exits 1 when anything
-differs. Without a terminal, plain `sync` refuses and points at both.
+differs or a file could not be read. Without a terminal, plain `sync` refuses and points at both.
 
 ### Other commands
 

@@ -35,12 +35,13 @@ var (
 	pickChoice = func(env cli.Env, items []tui.Item, header, scope string) (int, error) {
 		return tui.Pick(items, tui.Options{Header: header, Scope: scope, In: env.Stdin, Out: env.Stdout, Choice: true})
 	}
-	// confirmOverwrite asks before an existing CLAUDE.md is replaced.
+	// confirmOverwrite asks before an existing CLAUDE.md is replaced; n or
+	// Esc keeps it, Ctrl-C (tui.ErrCanceled) cancels the whole sync.
 	confirmOverwrite = func(env cli.Env, question, detail, keep string) (bool, error) {
 		return tui.Confirm(tui.ConfirmOptions{
 			Question: question, Detail: detail, In: env.Stdin, Out: env.Stdout,
 			Hint:           "Enter or y to overwrite · n or Esc to keep " + keep + "'s",
-			FallbackPrompt: "Overwrite? [Y/n] ",
+			FallbackPrompt: "Overwrite? [Y/n] ", InterruptCancels: true,
 		})
 	}
 )
@@ -126,16 +127,36 @@ func syncCache(env cli.Env, cfg *config.Config) *sharedcache.Cache {
 // label. Personal accounts, dirs not logged in and unreadable logins are
 // left out (the last with a warning); sync never touches them.
 func syncTargets(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) ([]*syncTarget, error) {
+	if len(cache.Emails) == 0 {
+		return nil, errors.New("no shared accounts are known on this machine: the team allowlist is empty or could not be fetched (`julienning accounts` refreshes it; check the Worker with `julienning setup`)")
+	}
 	var targets []*syncTarget
+	// Files of every dir sync must not write: registered dirs that are not
+	// shared and Claude's default dir when it is not one of the targets. A
+	// target whose settings.json or CLAUDE.md resolves to one of them
+	// (symlinks) is left out of that part.
+	others := map[string]string{}
+	addOther := func(dir string) {
+		if p, err := claudecfg.ResolvedSettingsPath(dir); err == nil {
+			others[p] = dir
+		}
+		if p, err := claudecfg.ResolvedClaudeMDPath(dir); err == nil {
+			others[p] = dir
+		}
+	}
+	isTarget := map[string]bool{}
 	for _, cd := range cfg.Configs {
 		email, ok, err := dirEmail(cd.Dir)
 		if err != nil {
 			warnf(env, "left out %s: its login could not be read (%v)", shortenHome(cd.Dir), err)
+			addOther(cd.Dir)
 			continue
 		}
 		if !ok || !cache.Contains(email) {
+			addOther(cd.Dir)
 			continue
 		}
+		isTarget[filepath.Clean(cd.Dir)] = true
 		t := &syncTarget{cd: cd, label: resolve.Label(cache, cd, email)}
 		if raw, err := claudecfg.SettingsValues(cd.Dir, teamsync.Keys()); err != nil {
 			t.settingsErr = err
@@ -146,11 +167,21 @@ func syncTargets(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) ([]*
 			}
 		}
 		t.md, t.mdErr = claudecfg.ReadClaudeMD(cd.Dir)
-		t.mdKey = t.md.Path
-		if r, err := filepath.EvalSymlinks(t.md.Path); err == nil {
-			t.mdKey = r
+		if t.mdErr == nil {
+			t.mdKey, t.mdErr = claudecfg.ResolvedClaudeMDPath(cd.Dir)
 		}
 		targets = append(targets, t)
+	}
+	if def, err := claudecfg.DefaultDir(); err == nil && !isTarget[def] {
+		addOther(def)
+	}
+	for _, t := range targets {
+		if p, err := claudecfg.ResolvedSettingsPath(t.cd.Dir); err == nil && others[p] != "" && t.settingsErr == nil {
+			t.settingsErr = fmt.Errorf("its settings.json is the same file as the one in %s, which is not a shared account", shortenHome(others[p]))
+		}
+		if t.mdErr == nil && others[t.mdKey] != "" {
+			t.mdErr = fmt.Errorf("its CLAUDE.md is the same file as the one in %s, which is not a shared account", shortenHome(others[t.mdKey]))
+		}
 	}
 	// Two dirs logged into one account share its nickname; their paths
 	// tell them apart.
@@ -247,7 +278,10 @@ type mdPlan struct {
 func syncAsk(env cli.Env, targets []*syncTarget) error {
 	sts, accs := settingsTargets(targets)
 	var decisions []decision
-	if len(accs) > 0 {
+	if len(accs) == 1 {
+		syncLine(env, "settings", "only "+accs[0].Label+"'s settings.json could be read; nothing to sync")
+	}
+	if len(accs) > 1 {
 		names := make([]string, len(accs))
 		for i, a := range accs {
 			names[i] = a.Label
@@ -369,19 +403,23 @@ func askClaudeMD(env cli.Env, ts []*syncTarget) (mdPlan, error) {
 
 // syncFrom gives every target src's values and CLAUDE.md, without asking.
 func syncFrom(env cli.Env, targets []*syncTarget, src *syncTarget) error {
-	if src.settingsErr != nil {
-		return fmt.Errorf("cannot read %s's settings: %w", src.label, src.settingsErr)
-	}
-	if src.mdErr != nil {
-		return fmt.Errorf("cannot read %s's CLAUDE.md: %w", src.label, src.mdErr)
+	if src.settingsErr != nil && src.mdErr != nil {
+		return fmt.Errorf("cannot read %s's settings (%v) or its CLAUDE.md (%v)", src.label, src.settingsErr, src.mdErr)
 	}
 	sts, _ := settingsTargets(targets)
 	var decisions []decision
-	for _, s := range teamsync.Settings {
-		decisions = append(decisions, decision{setting: s, value: src.values[s.Key], sync: true})
+	if src.settingsErr == nil {
+		for _, s := range teamsync.Settings {
+			decisions = append(decisions, decision{setting: s, value: src.values[s.Key], sync: true})
+		}
+	} else {
+		syncLine(env, "settings", "not synced: "+src.label+"'s settings.json could not be read")
 	}
 	plan := mdPlan{note: src.label + " has none; every account keeps its own"}
-	if src.md.Exists {
+	switch {
+	case src.mdErr != nil:
+		plan.note = "not synced: " + src.label + "'s could not be read"
+	case src.md.Exists:
 		plan = mdPlan{src: src}
 		for _, t := range mdTargets(targets) {
 			switch {
@@ -401,19 +439,39 @@ func syncFrom(env cli.Env, targets []*syncTarget, src *syncTarget) error {
 // warned about and the rest still go; the command then fails.
 func applySync(env cli.Env, ts []*syncTarget, decisions []decision, plan mdPlan) error {
 	failed := 0
-	ok := map[*syncTarget]bool{}
+	// changed[key] lists the accounts whose value of key this run changed.
+	changed := map[string][]string{}
 	for _, t := range ts {
+		if len(decisions) == 0 {
+			break
+		}
+		// The answers were given against what was read before the
+		// questions; a key a running Claude Code changed since then (say
+		// /model) is left as it is now rather than overwritten unseen.
+		raw, err := claudecfg.SettingsValues(t.cd.Dir, teamsync.Keys())
+		if err != nil {
+			warnf(env, "could not update %s's settings: %v", t.label, err)
+			failed++
+			continue
+		}
 		var edits []claudecfg.SettingEdit
+		var keys []string
 		for _, d := range decisions {
 			if !d.sync {
 				continue
 			}
-			if e := teamsync.Edit(d.setting.Key, d.value, t.account()); e != nil {
-				edits = append(edits, *e)
+			e := teamsync.Edit(d.setting.Key, d.value, t.account())
+			if e == nil {
+				continue
 			}
+			if teamsync.Canonical(raw[d.setting.Key]) != t.values[d.setting.Key] {
+				warnf(env, "left %s's %s as it is: it changed while sync was running", t.label, d.setting.Key)
+				continue
+			}
+			edits = append(edits, *e)
+			keys = append(keys, d.setting.Key)
 		}
 		if len(edits) == 0 {
-			ok[t] = true
 			continue
 		}
 		if _, err := claudecfg.EditSettings(t.cd.Dir, edits); err != nil {
@@ -421,19 +479,16 @@ func applySync(env cli.Env, ts []*syncTarget, decisions []decision, plan mdPlan)
 			failed++
 			continue
 		}
-		ok[t] = true
+		for _, k := range keys {
+			changed[k] = append(changed[k], t.label)
+		}
 	}
 	for _, d := range decisions {
 		if !d.sync {
 			syncLine(env, d.setting.Key, "not synced")
 			continue
 		}
-		var changed []string
-		for _, t := range ts {
-			if ok[t] && teamsync.Edit(d.setting.Key, d.value, t.account()) != nil {
-				changed = append(changed, t.label)
-			}
-		}
+		changed := changed[d.setting.Key]
 		v := teamsync.Display(d.value)
 		switch {
 		case len(changed) == 0:
@@ -489,7 +544,15 @@ func applySync(env cli.Env, ts []*syncTarget, decisions []decision, plan mdPlan)
 // fails when anything differs.
 func syncCheck(env cli.Env, targets []*syncTarget) error {
 	_, accs := settingsTargets(targets)
-	differ := 0
+	differ, unreadable := 0, 0
+	for _, t := range targets {
+		if t.settingsErr != nil {
+			unreadable++
+		}
+		if t.mdErr != nil {
+			unreadable++
+		}
+	}
 	for _, s := range teamsync.Settings {
 		if v, same := teamsync.Same(s.Key, accs); same {
 			syncLine(env, s.Key, "same: "+teamsync.Display(v))
@@ -543,6 +606,9 @@ func syncCheck(env cli.Env, targets []*syncTarget) error {
 		}
 		syncLine(env, "CLAUDE.md", "differs: "+strings.Join(parts, " · "))
 	}
+	if unreadable > 0 {
+		return fmt.Errorf("%d file(s) could not be compared (see the warnings above), so the shared accounts may differ; fix them and run `julienning sync --check` again", unreadable)
+	}
 	if differ > 0 {
 		return fmt.Errorf("%d of %d differ between the shared accounts; `julienning sync` asks which to keep, `julienning sync --from NICKNAME` copies one account's", differ, len(teamsync.Settings)+1)
 	}
@@ -586,25 +652,34 @@ func firstLine(b []byte) string {
 	return "(empty)"
 }
 
-// importRe finds Claude Code's @path imports outside code spans.
-var importRe = regexp.MustCompile("(?:^|\\s)@([^\\s`]+)")
+// importRe finds Claude Code's @path imports.
+var importRe = regexp.MustCompile(`(?:^|\s)@([^\s]+)`)
+
+// codeSpanRe matches inline code, where @ is never an import.
+var codeSpanRe = regexp.MustCompile("`+[^`]*`+")
 
 // relativeImports lists the @imports of a CLAUDE.md that resolve relative
 // to its own directory (not ~/… or /…), which a copy into another config
-// dir would break.
+// dir would break. Code fences (``` or ~~~) and inline code are skipped;
+// a mention without a path separator or extension (@team) is not an import.
 func relativeImports(content []byte) []string {
 	var out []string
-	inFence := false
+	fence := ""
 	for _, line := range strings.Split(string(content), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
+		trimmed := strings.TrimSpace(line)
+		if fence == "" && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
+			fence = trimmed[:3]
 			continue
 		}
-		if inFence {
+		if fence != "" {
+			if strings.HasPrefix(trimmed, fence) {
+				fence = ""
+			}
 			continue
 		}
+		line = codeSpanRe.ReplaceAllString(line, " ")
 		for _, m := range importRe.FindAllStringSubmatch(line, -1) {
-			p := m[1]
+			p := strings.TrimRight(m[1], ".,;:!?)]}'\"")
 			if strings.HasPrefix(p, "~") || strings.HasPrefix(p, "/") || !strings.ContainsAny(p, "/.") || strings.Contains(p, "@") {
 				continue
 			}

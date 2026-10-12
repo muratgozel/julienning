@@ -700,10 +700,16 @@ account on this machine the same Claude Code settings and user-level
 allowlist (refreshed from the Worker when it answers, else `shared.json` with
 a warning), labelled like picker rows (`resolve.Label`; two dirs on one
 account add their `~`-shortened paths). Personal accounts, dirs not logged in
-and unreadable logins (warned) are never read or written. Fewer than two →
+and unreadable logins (warned) are never read or written; a target whose
+settings.json or CLAUDE.md resolves (symlinks) to the file of such a dir or of
+Claude's default dir when that is not a target is left out of that part
+(warned), so nothing is written through it. No allowlist known → error (`no
+shared accounts are known on this machine: …`); fewer than two targets →
 error. A settings.json that is not a JSON object leaves that account out of
 the settings part, an unreadable CLAUDE.md out of the CLAUDE.md part (each
-warned).
+warned); with fewer than two readable settings.json files the settings
+questions are skipped (`settings  only alpha's settings.json could be read;
+nothing to sync`).
 
 Settings (`teamsync.Settings`, top-level settings.json keys; fixed values in
 order, the default first):
@@ -738,13 +744,17 @@ CLAUDE.md` with `updated YYYY-MM-DD HH:MM · N lines` (local time),
 `(same as …)` for identical content and the first non-blank line, newest
 first, then `Don't sync CLAUDE.md`. For each other account whose CLAUDE.md
 exists and differs, `tui.Confirm`: `Overwrite beta's CLAUDE.md with alpha's?`
-(Enter/y overwrites, n/Esc keeps; fallback `Overwrite? [Y/n]`); accounts
+(Enter/y overwrites, n/Esc keeps, Ctrl-C/Ctrl-D or the end of input cancel
+the sync; fallback `Overwrite? [Y/n]`); accounts
 without one get it and identical ones are skipped, without asking. Esc or
 Ctrl-C in any picker prints `Sync canceled; nothing was changed.` (exit 0);
 nothing is written before the last answer.
 
 Writes: settings through `claudecfg.EditSettings` (jsonedit: every other byte
-kept, re-read at write time, atomic, through symlinks, only when changed);
+kept, re-read at write time, atomic, through symlinks, only when changed); a
+key whose value changed since it was read (a running Claude Code's `/model`)
+is left as it is now (`left beta's model as it is: it changed while sync was
+running`);
 CLAUDE.md through `claudecfg.WriteClaudeMD`, which writes nothing when the
 file is no longer what was read (`left beta's CLAUDE.md as it is: it changed
 while sync was running`). A relative `@import` in the copied CLAUDE.md is
@@ -761,11 +771,13 @@ edits: `uninstall` and `forget` never undo them.
 questions, works without a terminal; every account takes TARGET's value of
 each key (removed where TARGET does not set it) and its CLAUDE.md, overwriting
 without asking (TARGET without one: `alpha has none; every account keeps its
-own`). `--check`: read only; one line per key (`same: dark`, `differs: opus
+own`). When one of TARGET's two files cannot be read, that part is `not
+synced: …` and the other still goes; both unreadable → error. `--check`: read only; one line per key (`same: dark`, `differs: opus
 (alpha) · sonnet (beta)`) and for CLAUDE.md (`same in every shared account`,
 `differs: alpha (updated …) · none: gamma`); any difference exits 1 (`N of 8
 differ between the shared accounts; …`), else `Every shared account here has
-the same settings and CLAUDE.md.`. The two flags exclude each other (usage
+the same settings and CLAUDE.md.`. A file that could not be read also exits 1
+(`N file(s) could not be compared …`). The two flags exclude each other (usage
 error).
 
 ### accounts

@@ -20,6 +20,7 @@ import (
 type syncScript struct {
 	answers   map[string]string
 	overwrite map[string]bool
+	cancelAt  string // label whose overwrite question is answered with Ctrl-C
 	headers   []string
 	items     map[string][]tui.Item
 	asked     []string // overwrite questions
@@ -53,6 +54,9 @@ func (h *harness) scriptSync(s *syncScript) {
 		s.asked = append(s.asked, question)
 		if s.onAsk != nil {
 			s.onAsk()
+		}
+		if keep == s.cancelAt {
+			return false, tui.ErrCanceled
 		}
 		return s.overwrite[keep], nil
 	}
@@ -315,8 +319,136 @@ func TestSyncFallsBackToTheCachedAllowlist(t *testing.T) {
 }
 
 func TestRelativeImports(t *testing.T) {
-	got := relativeImports([]byte("See @docs/a.md and @~/b.md, @/abs.md.\nmail me@x.io\n```\n@code/x.md\n```\n@rules.md\n"))
-	if strings.Join(got, ",") != "@docs/a.md,@rules.md" {
+	got := relativeImports([]byte("See @docs/a.md and @~/b.md, @/abs.md.\nmail me@x.io\n```\n@code/x.md\n```\n@rules.md.\n" +
+		"Ask @team. Run `npm run @scope/build` now\n~~~\n@src/x.ts\n~~~\n(see @notes/n.md)\n"))
+	if strings.Join(got, ",") != "@docs/a.md,@rules.md,@notes/n.md" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// Ctrl-C at an overwrite question stops everything: no setting and no other
+// CLAUDE.md is written.
+func TestSyncCtrlCAtOverwriteWritesNothing(t *testing.T) {
+	h, dirs := syncFixture(t)
+	before := h.read(filepath.Join(dirs["alpha"], "settings.json"))
+	h.scriptSync(&syncScript{answers: map[string]string{"CLAUDE.md": "beta CLAUDE.md"}, cancelAt: "alpha"})
+	out := h.mustRun(runSync)
+	contains(t, out, "Sync canceled; nothing was changed.")
+	if got := h.read(filepath.Join(dirs["alpha"], "settings.json")); got != before {
+		t.Fatalf("alpha settings changed:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dirs["gamma"], "CLAUDE.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("gamma got a CLAUDE.md after a cancel: %v", err)
+	}
+}
+
+// A key a running Claude Code changed while the questions were open is left
+// as it is now; the other keys still sync.
+func TestSyncKeepsASettingChangedMeanwhile(t *testing.T) {
+	h, dirs := syncFixture(t)
+	s := &syncScript{answers: map[string]string{"model": "opus[1m]", "CLAUDE.md": "Don't sync CLAUDE.md"}}
+	h.scriptSync(s)
+	prev := pickChoice
+	pickChoice = func(env cli.Env, items []tui.Item, header, scope string) (int, error) {
+		if strings.HasPrefix(header, "CLAUDE.md") {
+			h.writeFile(filepath.Join(dirs["beta"], "settings.json"), "{\n    \"model\": \"haiku\"\n}\n")
+		}
+		return prev(env, items, header, scope)
+	}
+	out := h.mustRun(runSync)
+	raw := h.read(filepath.Join(dirs["beta"], "settings.json"))
+	contains(t, raw, `"model": "haiku"`)
+	contains(t, raw, `"theme": "dark"`)
+	contains(t, h.stderr.String(), "left beta's model as it is: it changed while sync was running")
+	contains(t, out, "model                      opus[1m]: set in gamma\n")
+}
+
+func TestSyncCheckFailsWhenAFileCannotBeRead(t *testing.T) {
+	h, dirs := syncFixture(t)
+	h.interactive = false
+	h.mustRun(runSync, "--from", "alpha")
+	h.writeFile(filepath.Join(dirs["gamma"], "settings.json"), `{"model": `)
+	err := h.run(runSync, "--check")
+	if err == nil || !strings.Contains(err.Error(), "1 file(s) could not be compared") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A shared dir whose files are symlinks into a personal account's dir must
+// never write through them.
+func TestSyncNeverWritesThroughALinkIntoAPersonalDir(t *testing.T) {
+	h, dirs := syncFixture(t)
+	for _, f := range []string{"settings.json", "CLAUDE.md"} {
+		p := filepath.Join(dirs["gamma"], f)
+		_ = os.Remove(p)
+		if err := os.Symlink(filepath.Join(dirs["personal"], f), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.interactive = false
+	h.mustRun(runSync, "--from", "beta")
+	contains(t, h.stderr.String(), "left gamma out of the settings: its settings.json is the same file as the one in ~/.claude")
+	contains(t, h.stderr.String(), "left gamma out of CLAUDE.md: its CLAUDE.md is the same file as the one in ~/.claude")
+	if got := h.read(filepath.Join(dirs["personal"], "settings.json")); got != "{\"model\": \"haiku\"}\n" {
+		t.Fatalf("personal settings changed: %q", got)
+	}
+	if got := h.read(filepath.Join(dirs["personal"], "CLAUDE.md")); got != "personal\n" {
+		t.Fatalf("personal CLAUDE.md changed: %q", got)
+	}
+}
+
+// Two dirs whose CLAUDE.md links point at one file that does not exist yet
+// count as one file.
+func TestSyncDanglingSharedCLAUDEmdLinkCountsOnce(t *testing.T) {
+	h, dirs := syncFixture(t)
+	shared := filepath.Join(h.home, "team", "CLAUDE.md")
+	h.mkdir("team")
+	for _, d := range []string{"beta", "gamma"} {
+		p := filepath.Join(dirs[d], "CLAUDE.md")
+		_ = os.Remove(p)
+		if err := os.Symlink(shared, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.interactive = false
+	out := h.mustRun(runSync, "--from", "alpha")
+	notContains(t, h.stderr.String(), "changed while sync was running")
+	contains(t, out, "CLAUDE.md                  alpha's: copied to beta\n")
+	if got := h.read(shared); got != "# Team rules\nBe brief.\n" {
+		t.Fatalf("shared file = %q", got)
+	}
+}
+
+func TestSyncFromSyncsSettingsWhenItsCLAUDEmdIsUnreadable(t *testing.T) {
+	h, dirs := syncFixture(t)
+	p := filepath.Join(dirs["beta"], "CLAUDE.md")
+	_ = os.Remove(p)
+	h.mkdir(filepath.Join(".claude-b", "CLAUDE.md"))
+	h.interactive = false
+	out := h.mustRun(runSync, "--from", "beta")
+	contains(t, out, "model                      sonnet: set in alpha, gamma\n")
+	contains(t, out, "CLAUDE.md                  not synced: beta's could not be read\n")
+}
+
+func TestSyncWithoutAnAllowlistSaysSo(t *testing.T) {
+	h, _ := syncFixture(t)
+	h.interactive = false
+	h.fake.ListErr = errors.New("offline")
+	err := h.run(runSync, "--check")
+	if err == nil || !strings.Contains(err.Error(), "no shared accounts are known on this machine") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSyncSkipsSettingsWithOneReadableAccount(t *testing.T) {
+	h, dirs := syncFixture(t)
+	h.writeFile(filepath.Join(dirs["beta"], "settings.json"), `[`)
+	h.writeFile(filepath.Join(dirs["gamma"], "settings.json"), `[`)
+	s := &syncScript{answers: map[string]string{"CLAUDE.md": "Don't sync CLAUDE.md"}}
+	h.scriptSync(s)
+	out := h.mustRun(runSync)
+	if len(s.headers) != 1 {
+		t.Fatalf("asked %q", s.headers)
+	}
+	contains(t, out, "settings                   only alpha's settings.json could be read; nothing to sync\n")
 }
