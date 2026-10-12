@@ -147,6 +147,71 @@ func TestMatchThroughSymlinks(t *testing.T) {
 	}
 }
 
+// One directory carries one pin: pinning it again through another spelling
+// replaces the pin instead of adding a second one that would keep winning,
+// and unpin removes every spelling.
+func TestOnePinPerDirectoryAcrossSpellings(t *testing.T) {
+	home, jl := setup(t)
+	real := mkdir(t, filepath.Join(home, "work", "side"))
+	link := filepath.Join(home, "side")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := Set(real, "a@x.io"); err != nil {
+		t.Fatal(err)
+	}
+	prev, replaced, _, err := Set(link, "b@x.io")
+	if err != nil || !replaced || prev.Email != "a@x.io" {
+		t.Fatalf("re-pin through the link: prev %+v replaced %v err %v", prev, replaced, err)
+	}
+	list, err := Load()
+	if err != nil || len(list) != 1 || list[0] != (Pin{Dir: link, Email: "b@x.io"}) {
+		t.Fatalf("pins = %+v %v, want only the new pin", list, err)
+	}
+	if p, ok := Match(list, real); !ok || p.Email != "b@x.io" {
+		t.Errorf("Match = %+v %v", p, ok)
+	}
+
+	// A file that already holds both spellings (written by hand, or by an
+	// earlier build): unpin removes both.
+	body := `{"version":1,"pins":[{"dir":"` + link + `","email":"b@x.io"},{"dir":"` + real + `","email":"a@x.io"}]}`
+	if err := os.WriteFile(filepath.Join(jl, config.PinsFile), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := Remove(real); err != nil || !ok {
+		t.Fatalf("Remove: %v %v", ok, err)
+	}
+	if list, err := Load(); err != nil || len(list) != 0 {
+		t.Errorf("pins left: %+v %v", list, err)
+	}
+}
+
+// Depth is compared on resolved paths: a child pin written through a short
+// symlink beats a parent pin written with its long real path.
+func TestMatchDepthAcrossSpellings(t *testing.T) {
+	home, _ := setup(t)
+	parent := mkdir(t, filepath.Join(home, "Volumes", "Data", "work", "project"))
+	child := mkdir(t, filepath.Join(parent, "sub"))
+	short := filepath.Join(home, "w")
+	if err := os.Symlink(filepath.Join(home, "Volumes", "Data", "work"), short); err != nil {
+		t.Fatal(err)
+	}
+	childViaLink := filepath.Join(short, "project", "sub")
+	if len(childViaLink) >= len(parent) {
+		t.Fatalf("fixture: the child spelling must be the shorter string (%q vs %q)", childViaLink, parent)
+	}
+	list := []Pin{{Dir: parent, Email: "parent@x.io"}, {Dir: childViaLink, Email: "child@x.io"}}
+	for _, cwd := range []string{child, childViaLink, filepath.Join(child, "deeper")} {
+		mkdir(t, filepath.Join(child, "deeper"))
+		if p, ok := Match(list, cwd); !ok || p.Email != "child@x.io" {
+			t.Errorf("Match(%s) = %+v %v, want the child pin", cwd, p, ok)
+		}
+	}
+	if p, _ := Match(list, parent); p.Email != "parent@x.io" {
+		t.Errorf("Match(parent) = %+v", p)
+	}
+}
+
 func TestLoadRejectsBadFiles(t *testing.T) {
 	_, jl := setup(t)
 	file := filepath.Join(jl, config.PinsFile)

@@ -17,7 +17,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/paths"
 )
 
 // Pin is one pinned directory.
@@ -93,8 +95,10 @@ func Save(list []Pin) error {
 	return config.WriteFileAtomic(p, append(raw, '\n'), 0o600)
 }
 
-// Set pins dir to email, replacing a pin on the same dir. prev is that
-// replaced pin; created reports whether pins.json did not exist before.
+// Set pins dir to email. A directory carries one pin, whatever spelling it
+// was pinned through: every pin on the same directory (sameDir, symlinks
+// resolved) is replaced, and prev is the first of them. created reports
+// whether pins.json did not exist before.
 func Set(dir, email string) (prev Pin, replaced, created bool, err error) {
 	list, err := Load()
 	if err != nil {
@@ -102,49 +106,72 @@ func Set(dir, email string) (prev Pin, replaced, created bool, err error) {
 	}
 	created = len(list) == 0
 	pin := Pin{Dir: filepath.Clean(dir), Email: strings.ToLower(email)}
-	for i, p := range list {
-		if p.Dir == pin.Dir {
-			list[i] = pin
-			return p, true, false, Save(list)
+	kept := make([]Pin, 0, len(list)+1)
+	for _, p := range list {
+		if sameDir(p.Dir, pin.Dir) {
+			if !replaced {
+				prev, replaced = p, true
+			}
+			continue
 		}
+		kept = append(kept, p)
 	}
-	return Pin{}, false, created, Save(append(list, pin))
+	return prev, replaced, created, Save(append(kept, pin))
 }
 
-// Remove deletes the pin on dir itself (not one on a parent). The dir may
-// be spelled through a symlink; it need not exist any more.
-func Remove(dir string) (Pin, bool, error) {
+// Remove deletes the pin on dir itself (not one on a parent), under every
+// spelling it was stored through; removed is the first. The dir may be
+// spelled through a symlink; it need not exist any more.
+func Remove(dir string) (removed Pin, ok bool, err error) {
 	list, err := Load()
 	if err != nil {
 		return Pin{}, false, err
 	}
-	for i, p := range list {
+	kept := make([]Pin, 0, len(list))
+	for _, p := range list {
 		if sameDir(p.Dir, dir) {
-			return p, true, Save(append(list[:i], list[i+1:]...))
+			if !ok {
+				removed, ok = p, true
+			}
+			continue
 		}
+		kept = append(kept, p)
 	}
-	return Pin{}, false, nil
+	if !ok {
+		return Pin{}, false, nil
+	}
+	return removed, true, Save(kept)
 }
 
 // Match returns the pin that applies in cwd: the deepest pinned directory
 // that is cwd or contains it. Both paths are compared as written and with
 // symlinks resolved, because the shell's $PWD and the pinned spelling may
-// reach the same directory through different links.
+// reach the same directory through different links. Depth is measured on
+// the resolved spelling, so pins written through different links compare
+// in one namespace. This runs on every plain `claude` while pins exist, so
+// cwd is resolved once.
 func Match(list []Pin, cwd string) (Pin, bool) {
+	at := spellings(cwd)
 	var best Pin
-	found := false
+	bestDepth := -1
 	for _, p := range list {
-		if Within(cwd, p.Dir) && (!found || len(p.Dir) > len(best.Dir)) {
-			best, found = p, true
+		ps := spellings(p.Dir)
+		if !within(at, ps) {
+			continue
+		}
+		if d := len(ps[len(ps)-1]); d > bestDepth {
+			best, bestDepth = p, d
 		}
 	}
-	return best, found
+	return best, bestDepth >= 0
 }
 
 // Within reports whether path is dir or below it.
-func Within(path, dir string) bool {
-	for _, a := range spellings(path) {
-		for _, b := range spellings(dir) {
+func Within(path, dir string) bool { return within(spellings(path), spellings(dir)) }
+
+func within(path, dir []string) bool {
+	for _, a := range path {
+		for _, b := range dir {
 			if a == b || strings.HasPrefix(a, strings.TrimSuffix(b, string(filepath.Separator))+string(filepath.Separator)) {
 				return true
 			}
@@ -164,7 +191,8 @@ func sameDir(a, b string) bool {
 	return false
 }
 
-// spellings are p cleaned and, when it exists, with symlinks resolved.
+// spellings are p cleaned and, when it exists, with symlinks resolved; the
+// resolved one is last.
 func spellings(p string) []string {
 	p = filepath.Clean(p)
 	if r, err := filepath.EvalSymlinks(p); err == nil && r != p {
@@ -179,8 +207,7 @@ func validate(list []Pin) error {
 		if !filepath.IsAbs(p.Dir) || filepath.Clean(p.Dir) != p.Dir {
 			return fmt.Errorf("pin dir must be an absolute, clean path, got %q", p.Dir)
 		}
-		at := strings.Index(p.Email, "@")
-		if p.Email != strings.ToLower(p.Email) || at < 1 || at == len(p.Email)-1 || strings.ContainsAny(p.Email, " \t\r\n") {
+		if p.Email != strings.ToLower(p.Email) || !claudecfg.ValidEmail(p.Email) {
 			return fmt.Errorf("pin on %s: invalid email %q", p.Dir, p.Email)
 		}
 		if seen[p.Dir] {
@@ -199,21 +226,6 @@ func sortPins(list []Pin) {
 // stop rather than fall back to the selection: a pinned project must never
 // open silently on another account.
 func UseError(p Pin, err error) error {
-	d := ShortHome(p.Dir)
+	d := paths.ShortenHome(p.Dir)
 	return fmt.Errorf("%s is pinned to %s, which cannot be opened: %w (or remove the pin: julienning unpin %s)", d, p.Email, err, d)
-}
-
-// ShortHome replaces the home prefix with "~" for display.
-func ShortHome(p string) string {
-	h, err := os.UserHomeDir()
-	if err != nil || h == "" {
-		return p
-	}
-	if p == h {
-		return "~"
-	}
-	if strings.HasPrefix(p, h+string(filepath.Separator)) {
-		return "~" + p[len(h):]
-	}
-	return p
 }
