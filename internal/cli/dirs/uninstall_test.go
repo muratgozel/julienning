@@ -142,6 +142,8 @@ func TestUninstallPurge(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.writeFile(filepath.Join(binDir, "other-tool"), "keep")
+	// Pins are julienning's own state: the state dir must still go.
+	h.writeFile(filepath.Join(h.jl, config.PinsFile), `{"version":1,"pins":[{"dir":"/x","email":"me@x.io"}]}`)
 
 	out := h.mustRun(runUninstall, "--purge", "--yes")
 	contains(t, out, "Purged:   ~/.julienning")

@@ -34,6 +34,9 @@ func finish(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel selec
 		selfupdate.Hint(env.Stderr)
 		return nil
 	}
+	if sel.pinDir != "" {
+		fmt.Fprintln(env.Stdout, sel.pinLine())
+	}
 	line := summaryLine(sel, now, loc)
 	fmt.Fprintln(env.Stdout, line)
 	if !launchMode(env, o) {

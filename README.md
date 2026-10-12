@@ -72,10 +72,12 @@ julienning use <nickname>    # switch to that account, then pick a session
 claude-<nickname>            # plain claude on that account; your selection stays as it is
 julienning accounts          # every shared account: usage, who is on it, which dir here has it
 julienning use <email>       # a personal (not shared) account, wherever it is logged in; selection untouched
+julienning pin <target>      # plain claude and `use` in this directory and below open that account
 ```
 
 The selection is machine-wide: after `next` or `use`, plain `claude` in any
-terminal runs on that account.
+terminal runs on that account, except in a directory you pinned
+(`julienning pin`, `julienning unpin`). Pins stay on your machine.
 
 ```
 $ julienning accounts

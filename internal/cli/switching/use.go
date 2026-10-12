@@ -9,6 +9,7 @@ import (
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/pins"
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/resolve"
 	"github.com/muratgozel/julienning/internal/selfupdate"
@@ -18,7 +19,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "use",
-		Summary: "start or resume a session on an account (TARGET: nickname, email or config name; none: the selection, else like next; --clear: back to your default)",
+		Summary: "start or resume a session on an account (TARGET: nickname, email or config name; none: this directory's pin, else the selection, else like next; --clear: back to your default)",
 		Usage:   "use [TARGET] [--all] [--limit N] [--no-launch] [--json] | use --clear",
 		Run:     runUse,
 	})
@@ -49,6 +50,18 @@ func runUse(env cli.Env) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	// Without a target, a pin on the working directory (or a parent) names
+	// the account, exactly as if its email had been typed.
+	var pin *pins.Pin
+	if len(pos) == 0 {
+		p, ok, err := pinHere()
+		if err != nil {
+			return err
+		}
+		if ok {
+			pin, pos = &p, []string{p.Email}
+		}
 	}
 	cur, curOK, err := cfg.Current()
 	if len(pos) == 0 {
@@ -96,7 +109,7 @@ func runUse(env cli.Env) error {
 			if !claudecfg.ValidEmail(email) {
 				return fmt.Errorf("%q is not a valid email address", pos[0])
 			}
-			return usePersonal(env, cfg, cache, email, o, now)
+			return usePersonal(env, cfg, cache, email, pin, o, now)
 		}
 	}
 
@@ -109,12 +122,18 @@ func runUse(env cli.Env) error {
 		m, err := resolve.Target(cfg, cache, pos[0], curPtr)
 		if err != nil {
 			// *resolve.NotLocalError's message already says how to sign in.
+			if pin != nil {
+				return pins.UseError(*pin, err)
+			}
 			return err
 		}
 		cd = m.Dir
 	}
 
 	sel := selection{cd: cd}
+	if pin != nil {
+		sel.pinDir = pin.Dir
+	}
 	email, err := claudecfg.ReadEmail(cd.Dir)
 	switch {
 	case err == nil:
@@ -152,9 +171,12 @@ func runUse(env cli.Env) error {
 // usePersonal opens a personal account: the dir it is logged in (remembered
 // in config.json, searched again when the login moved), its own sessions
 // only, and never a move, a claim, a report or a change of the selection.
-func usePersonal(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, email string, o options, now time.Time) error {
+func usePersonal(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, email string, pin *pins.Pin, o options, now time.Time) error {
 	pm, err := resolve.Personal(cfg, email)
 	if err != nil {
+		if pin != nil {
+			return pins.UseError(*pin, err)
+		}
 		return err
 	}
 	for _, n := range pm.Notes() {
@@ -165,5 +187,22 @@ func usePersonal(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, emai
 		warnf(env, "%v", err)
 	}
 	sel := selection{cd: config.ConfigDir{Name: pm.Name, Dir: pm.Dir}, email: email, personal: true}
+	if pin != nil {
+		sel.pinDir = pin.Dir
+	}
 	return finish(env, cfg, cache, sel, o, now)
+}
+
+// pinHere returns the pin that applies in the working directory.
+func pinHere() (pins.Pin, bool, error) {
+	list, err := pins.Load()
+	if err != nil || len(list) == 0 {
+		return pins.Pin{}, false, err
+	}
+	cwd, err := getwd()
+	if err != nil {
+		return pins.Pin{}, false, fmt.Errorf("cannot determine the current directory to look up its pin: %w", err)
+	}
+	p, ok := pins.Match(list, cwd)
+	return p, ok, nil
 }

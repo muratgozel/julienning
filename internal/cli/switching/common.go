@@ -183,9 +183,10 @@ type selection struct {
 	shared   bool            // email on the team allowlist
 	stay     bool            // next: already the current dir
 	// personal: an account not shared with the team, opened by `use EMAIL`
-	// without becoming the selection. cd.Name is "" unless the dir happens
-	// to be registered.
+	// or a pin without becoming the selection. cd.Name is "" unless the dir
+	// happens to be registered.
 	personal bool
+	pinDir   string // the pinned directory that chose this account; "" when none
 }
 
 // label is how users see the target (SPEC "Nicknames"): the account
@@ -198,6 +199,18 @@ func (s selection) label() string {
 		return s.email
 	}
 	return s.cd.Name
+}
+
+// pinLine says which pin chose the account, printed above the summary.
+func (s selection) pinLine() string {
+	account := accountName(s.nickname, s.email)
+	switch {
+	case s.personal:
+		account = s.email + " (personal)"
+	case s.email == "":
+		account = s.cd.Name
+	}
+	return shortenHome(s.pinDir) + " is pinned to " + account + "."
 }
 
 // summaryLine is the one-liner printed (and used as the picker header):

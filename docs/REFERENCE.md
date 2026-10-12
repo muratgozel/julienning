@@ -17,6 +17,7 @@ Every julienning command, flag, output, file and error in one page, with output 
 - [Daily use](#daily-use)
   - [Session picker](#session-picker)
   - [Personal accounts](#personal-accounts)
+  - [Pins](#pins)
   - [Other commands](#other-commands)
 - [How claims work](#how-claims-work)
 - [How usage reaches KV](#how-usage-reaches-kv)
@@ -66,9 +67,10 @@ entered at `julienning setup` and shared out of band.
   `julienning share`).
 - **Personal accounts never report.** A dir logged into an email that is not on
   the allowlist sends no usage and no claims, and `julienning current` does not
-  ask the Worker about it. `julienning use <personal email>` sends nothing
-  about it either; where it is logged in is remembered in
-  `~/.julienning/config.json`, on this machine only.
+  ask the Worker about it. `julienning use <personal email>` and pins on a
+  personal account send nothing about it either; where it is logged in is
+  remembered in `~/.julienning/config.json` and pins stay in
+  `~/.julienning/pins.json`, both on this machine only.
 - `~/.julienning/errors.log` never contains email addresses, and no file name
   under `~/.julienning` does either (per-account files are named by a short
   hash of the email).
@@ -406,8 +408,9 @@ reporting until that email is shared.
   ```
 
   It defines a `claude` function that reads `~/.julienning/current` on every
-  call (an exported `CLAUDE_CONFIG_DIR` always wins; with no selection you get
-  plain `claude`), plus one `claude-<nickname>` function per team nickname in
+  call (an exported `CLAUDE_CONFIG_DIR` always wins, then a [pin](#pins) on the
+  directory you are in; with no selection you get plain `claude`), plus one
+  `claude-<nickname>` function per team nickname in
   the cached allowlist, logged in here or not. `claude-alpha` asks
   `julienning resolve-dir alpha` for the dir logged into alpha at the moment
   you run it and starts `claude` there, passing its arguments through
@@ -450,7 +453,7 @@ Setting `CLAUDE_CONFIG_DIR=~/.claude` is not the same as leaving it unset
 (Claude Code then reads another account file and credential). When the target
 is `~/.claude` (registered as `default`), every launcher unsets the variable
 instead: `next`, `use` (also `use <personal email>` for an account logged in
-there), `login`, the `claude` function, and a
+there), `login`, the `claude` function (also when a pin points there), and a
 `claude-<nickname>` function whose account is logged in there, which runs
 `env -u CLAUDE_CONFIG_DIR claude`.
 
@@ -464,6 +467,7 @@ claude-delta                     # plain claude on delta; the selection stays as
 julienning next --no-launch      # switch only
 julienning use --clear           # no selection: plain claude uses your default config
 julienning use me@personal.com   # a personal account, wherever it is logged in; the selection stays
+julienning pin me@personal.com   # plain claude (and use) in this directory and below open that account
 ```
 
 ```
@@ -471,9 +475,10 @@ julienning next [--all] [--limit N] [--no-launch] [--json]
 julienning use [TARGET] [--all] [--limit N] [--no-launch] [--json] | use --clear
 ```
 
-`use` without a target keeps the current selection and opens its session
-picker without re-ranking; with nothing selected it behaves exactly like
-`next`.
+`use` without a target opens the account [pinned](#pins) on the directory
+you are in; without a pin it keeps the current selection and opens its
+session picker without re-ranking; with nothing selected it behaves exactly
+like `next`.
 
 The selection is written to `~/.julienning/current` and is machine-wide: the
 next `claude` in any terminal uses it.
@@ -640,6 +645,47 @@ Using me@personal.com in ~/.claude (personal; your selection is unchanged).
 - A registered dir reached by its config name (`julienning use julienning3`)
   keeps the old behaviour even when its account is personal: it becomes the
   selection and `claude` starts plain, with a warning.
+
+### Pins
+
+A pin ties a directory, and everything below it, to an account on this
+machine. Plain `claude` and `julienning use` without a target then open that
+account there; `julienning next`, `use TARGET` and `claude-<nickname>` are
+unaffected.
+
+```
+$ cd ~/Code/side && julienning pin me@personal.com
+Pinned ~/Code/side to me@personal.com (personal).
+Plain claude and julienning use open it in ~/Code/side and every directory below it; julienning next is unaffected. Remove the pin with: julienning unpin
+A terminal opened before this julienning version ignores pins until you run: source ~/.zshrc
+```
+
+```
+julienning pin TARGET     # pin the current directory (TARGET: nickname, email or config name)
+julienning pin            # which pin covers the current directory
+julienning pin --list     # every pin
+julienning unpin [DIR]    # remove the pin on the current directory, or on DIR
+```
+
+- A pin names the account, not a dir: a team account opens in the registered
+  dir logged into it (the selected one first), a personal account as in
+  [Personal accounts](#personal-accounts). The account must be logged in
+  here when you pin it. Pinning again replaces the pin (`…, replacing alpha
+  (claude1@example.com).`). The deepest pin wins.
+- `julienning use` in a pinned directory first says
+  `~/Code/side is pinned to me@personal.com (personal).`; a pinned team
+  account becomes the selection, as with `use NICKNAME`.
+- When the pinned account cannot be opened (signed out, moved off this
+  machine), plain `claude` there stops instead of using the selection:
+  `` julienning: ~/Code/side is pinned to me@personal.com, which cannot be opened: … (or remove the pin: julienning unpin ~/Code/side) ``.
+  `command claude` bypasses julienning entirely.
+- `unpin` removes only a pin on that directory itself; inside a pinned
+  directory it names the one to remove:
+  `` julienning: ~/Code/side/web has no pin of its own; it is inside ~/Code/side, which is pinned to me@personal.com (personal); to remove that pin: julienning unpin ~/Code/side ``.
+- Pins live in `~/.julienning/pins.json`. The `claude` function only asks
+  julienning about pins while that file exists, and the last `unpin` deletes
+  it. A terminal opened before julienning learned pins still has the old
+  function; open a new one or `source` your rc file.
 
 ### Other commands
 
@@ -1018,7 +1064,9 @@ still to restore, `config.json` lists the dirs still wired to julienning, and
 the command stays installed so you can fix the problem and run it again
 (`julienning: not purging: 1 settings.json could not be restored (see above); ...`).
 The rest of the uninstall still runs. Claude config dirs and sessions are
-never deleted, and nothing is unshared on the Worker.
+never deleted, and nothing is unshared on the Worker. Pins (`pins.json`) are
+julienning's own data: plain `uninstall` keeps them (the `claude` function is
+gone with the rc line), `--purge` deletes them.
 
 ## Web view
 
@@ -1181,11 +1229,16 @@ Common messages:
   account right now. Sign one in (`julienning new-config`, or
   `julienning login <config>` for an existing dir); a dir julienning does not
   know yet also needs `julienning setup` or `julienning adopt DIR`.
-- **`no Claude config dir on this machine is logged in as …`** (`use EMAIL`): that personal account is not signed in in any dir julienning looks
+- **`no Claude config dir on this machine is logged in as …`** (`use EMAIL`,
+  `pin`): that personal account is not signed in in any dir julienning looks
   at. Run the `command claude` line the message shows, sign in, and try again;
   a dir outside your home directory's top level is found once its
   `CLAUDE_CONFIG_DIR=` line is in your shell rc file, or after
   `julienning adopt DIR`.
+- **`… is pinned to …, which cannot be opened: …`** (plain `claude`, `use`):
+  the pinned account is signed out or no longer on this machine. Sign it in
+  again, re-pin (`julienning pin TARGET`), or `julienning unpin DIR`;
+  `command claude` starts Claude without julienning in the meantime.
 - **`unknown target "…": not a team nickname, an email, or a config name ...`**:
   `julienning accounts` lists the nicknames (and refreshes the cached
   allowlist, in case a teammate just shared or renamed the account),
@@ -1217,6 +1270,7 @@ Common messages:
 |------|---------|
 | `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
 | `current` | path of the selected config dir (read by the `claude` function) |
+| `pins.json` | [pins](#pins): directory → account email (the `claude` function asks julienning about pins only while it exists) |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |
 | `claims.json` | emails this machine holds a claim on |
 | `patches.json` | statusLine values replaced in settings.json, for restore |

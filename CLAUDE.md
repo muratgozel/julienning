@@ -53,15 +53,17 @@ KV namespace with its own token, and a fake GitHub releases host
 drives the installer, setup, shell functions, switching, the session picker
 and a move on a real pseudo-terminal (`scripts/e2e/ptydrive.go`, same build
 style: `expect=`/`send=`/`sleep=` steps, stdlib ioctls for darwin and linux),
-personal accounts opened by email, the session hooks with a fake live session (a `sleep` registered in
+personal accounts and pins through the generated `claude` function, the
+session hooks with a fake live session (a `sleep` registered in
 `sessions/<pid>.json`), the status line and its detached usage report,
 `forget`, `update` and `uninstall`, and asserts byte-for-byte restoration at
 the end. Run it after any change to setup, uninstall, forget, the installer,
-self-update, claims, switching or the Worker API; add a check there when you
-add a user-visible flow. It is not in CI (it needs a Worker process); say in
-the final message whether it ran. On failure the sandbox is kept and its path
-printed; `E2E_KEEP=1` keeps it always. Pass `TERM` explicitly to anything run
-under ptydrive (`TERM=dumb` selects the numbered fallback picker).
+self-update, claims, switching, pins or the Worker API; add a check there
+when you add a user-visible flow. It is not in CI (it needs a Worker
+process); say in the final message whether it ran. On failure the sandbox is
+kept and its path printed; `E2E_KEEP=1` keeps it always. Pass `TERM`
+explicitly to anything run under ptydrive (`TERM=dumb` selects the numbered
+fallback picker).
 
 ## Overrides for tests and sandboxes
 
@@ -88,10 +90,15 @@ Env overrides are read at runtime and never written to `config.json`.
 - Shell: the `claude` wrapper and the `claude-<nick>` functions from
   `internal/shell` resolve dirs at call time through the hidden `resolve-dir`
   command, so a rename needs no re-source. A new nickname does need one.
-- Personal accounts: a personal account (email not on the allowlist) never
-  becomes `current`, is never registered or patched by `use`, and never
-  feeds the team picker, whose sources are only dirs logged into shared
-  accounts (`switching.sharedSources`).
+  The wrapper tests for `pins.json` by name (`internal/shell` cannot import
+  `config`; a test pins it to `config.PinsFile`) and calls `resolve-dir
+  --pin` only while it exists.
+- Pins and personal accounts: a pin that cannot be resolved must fail (exit
+  1), never print nothing, or the wrapper falls back to the selection and
+  opens a pinned project on another account. A personal account (email not
+  on the allowlist) never becomes `current`, is never registered or patched
+  by `use`/`pin`, and never feeds the team picker, whose sources are only
+  dirs logged into shared accounts (`switching.sharedSources`).
 - Ranking (Worker `rank.ts`, mirrored in REFERENCE.md): not exhausted, then
   not busy, then known usage before unknown, then session used ascending, week
   ascending, reset ascending, email. The Worker leaves the querying dev's own

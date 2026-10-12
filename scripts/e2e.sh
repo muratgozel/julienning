@@ -11,9 +11,10 @@
 # (scripts/e2e/fakereleases.go), non-interactive setup over fake Claude config
 # dirs, shell functions, switching, the session picker and a move on a real
 # pseudo-terminal (scripts/e2e/ptydrive.go), personal accounts opened by
-# email, the status line, usage reports, claims driven by the session hooks
-# and a fake live session, forget, self-update, and that uninstall restores
-# every file setup touched byte for byte.
+# email, directory pins through the claude wrapper, the status line, usage
+# reports, claims driven by the session hooks and a fake live session,
+# forget, self-update, and that uninstall restores every file setup touched
+# byte for byte.
 #
 # Needs go, node (worker/node_modules installed, `npm ci` runs if missing),
 # bash, curl, tar, sha256sum or shasum, ps and pgrep. The sandbox is kept
@@ -215,6 +216,7 @@ RC
 cp "$rc" "$T/before/rc"
 cp "$HOME/.claude/settings.json" "$T/before/personal.json"
 cp "$HOME/.claude-side/settings.json" "$T/before/side.json"
+cp "$HOME/.claude.json" "$T/before/claude.json"
 cp "$HOME/.claude-work/settings.json" "$T/before/work.json"
 cp "$HOME/.claude-two/settings.json" "$T/before/two.json"
 
@@ -388,6 +390,72 @@ run_fail julienning use nobody@example.com --no-launch
 expect_contains "an account logged in nowhere says how to sign in" "CLAUDE_CONFIG_DIR=~/.claude-nobody command claude" "$out"
 expect_missing "the Worker never sees the personal accounts" "side@example.com" "$(julienning accounts --json 2>/dev/null)"
 expect_missing "the Worker never sees a registered personal dir's account" "mine@example.com" "$(julienning accounts --json 2>/dev/null)"
+
+# --- directory pins through the claude wrapper ------------------------------------------------
+in_dir() { # DIR CMD...
+  local d="$1"
+  shift
+  (cd "$d" && "$@")
+}
+claude_in() { # DIR SHELL: plain claude in DIR in a fresh shell with the integration loaded
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  in_dir "$1" "$2" -c 'eval "$(julienning shell-init '"$2"')"; claude -p hi'
+}
+mkdir -p "$T/proj/side/web" "$T/proj/teamx" "$T/proj/side2"
+[ ! -e "$JULIENNING_HOME/pins.json" ] || fail "pins.json exists before any pin"
+run in_dir "$T/proj/side" julienning pin personal@example.com
+expect_contains "pin names the directory and the account" "Pinned $T/proj/side to personal@example.com (personal)." "$out"
+expect_contains "the first pin says how to update old terminals" "ignores pins until you run: source ~/$(basename "$rc")" "$out"
+run in_dir "$T/proj/teamx" julienning pin alpha
+expect_contains "a team account can be pinned" "Pinned $T/proj/teamx to alpha (alpha@example.com)." "$out"
+run in_dir "$T/proj/side2" julienning pin side@example.com
+run claude_in "$T/proj/side/web" bash
+expect_contains "plain claude below a pinned dir opens the pinned personal account" "dir=<unset> args=-p hi" "$out"
+run claude_in "$T/proj/teamx" bash
+expect_contains "plain claude in a dir pinned to a team account opens it" "dir=$HOME/.claude-work args=-p hi" "$out"
+run claude_in "$T/proj/side2" bash
+expect_contains "a pin follows its account to the dir it moved to" "dir=$HOME/.claude-side2 args=-p hi" "$out"
+run claude_in "$T/proj" bash
+expect_contains "outside every pin plain claude follows the selection" "dir=$HOME/.claude-two args=-p hi" "$out"
+# shellcheck disable=SC2016 # expanded by the inner shell
+run in_dir "$T/proj/side/web" env CLAUDE_CONFIG_DIR="$HOME/.claude-work" bash -c 'eval "$(julienning shell-init bash)"; claude -p hi'
+expect_contains "an exported CLAUDE_CONFIG_DIR still wins over a pin" "dir=$HOME/.claude-work args=-p hi" "$out"
+if command -v zsh >/dev/null 2>&1; then
+  run claude_in "$T/proj/side/web" zsh
+  expect_contains "zsh: plain claude follows the pin" "dir=<unset> args=-p hi" "$out"
+fi
+run in_dir "$T/proj/side/web" julienning use --no-launch
+expect_contains "use without a target names the pin" "$T/proj/side is pinned to personal@example.com (personal)." "$out"
+expect_contains "use without a target opens the pinned personal account" "Using personal@example.com in ~/.claude (personal" "$out"
+run julienning current
+expect_contains "a personal pin leaves the selection alone" ".claude-two" "$out"
+run in_dir "$T/proj/teamx" julienning use --no-launch
+expect_contains "use in a dir pinned to a team account selects it" "Now using alpha (alpha@example.com)" "$out"
+run in_dir "$T/proj/side/web" julienning use bravo --no-launch
+expect_missing "an explicit target ignores the pin" "pinned" "$out"
+run in_dir "$T/proj/side/web" julienning next --no-launch
+expect_missing "next is unaffected by pins" "pinned" "$out"
+run julienning use bravo --no-launch
+run in_dir "$T/proj/side/web" julienning pin
+expect_contains "pin shows the pin that covers a subdirectory" "$T/proj/side/web is inside $T/proj/side, which is pinned to personal@example.com (personal)." "$out"
+run julienning pin --list
+expect_contains "pin --list lists every pin" "$T/proj/teamx" "$out"
+# Logged out: plain claude refuses instead of opening the selection.
+printf '{"oauthAccount":{}}' >"$HOME/.claude.json"
+run_fail claude_in "$T/proj/side/web" bash
+expect_contains "a broken pin stops plain claude with the reason" "is pinned to personal@example.com, which cannot be opened" "$out"
+expect_contains "a broken pin names the way out" "julienning unpin $T/proj/side" "$out"
+expect_missing "a broken pin never falls back to the selection" "FAKE CLAUDE" "$out"
+cp "$T/before/claude.json" "$HOME/.claude.json"
+run_fail in_dir "$T/proj/side/web" julienning unpin
+expect_contains "unpin below a pin points at the pinned dir" "to remove that pin: julienning unpin $T/proj/side" "$out"
+run in_dir "$T/proj/side" julienning unpin
+expect_contains "unpin removes the pin" "Unpinned $T/proj/side (was personal@example.com (personal))." "$out"
+run julienning unpin "$T/proj/side2"
+run claude_in "$T/proj/side/web" bash
+expect_contains "after unpin plain claude follows the selection again" "dir=$HOME/.claude-two args=-p hi" "$out"
+[ -f "$JULIENNING_HOME/pins.json" ] || fail "pins.json is gone while teamx is still pinned"
+ok "the teamx pin stays for uninstall --purge to remove"
 
 # --- the "run setup" warning for a settings.json an older julienning patched -----------------
 old_layout

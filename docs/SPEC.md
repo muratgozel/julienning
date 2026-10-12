@@ -36,9 +36,13 @@ Cloudflare Workers + KV) and the repo plumbing. Keep it current.
   account can have several. Claims are driven by live Claude sessions.
 - **session**: a Claude Code conversation, `projects/<enc-cwd>/<id>.jsonl`.
 - **personal account**: any email not on the allowlist. Its dir is found by
-  `use EMAIL` wherever it is logged in, registered or not, and is never
-  registered by that, never reports, never claims and never feeds the team
-  picker (see "Personal accounts").
+  `use EMAIL` (or a pin) wherever it is logged in, registered or not, and is
+  never registered by that, never reports, never claims and never feeds the
+  team picker (see "Personal accounts").
+- **pin**: a directory tied to an account on this machine
+  (`~/.julienning/pins.json`): plain `claude` and `julienning use` without a
+  target open that account in the directory and below it (see "pin /
+  unpin").
 
 ## Nicknames
 
@@ -156,6 +160,7 @@ integration"); dir-name aliases no longer exist.
 |------|-------|---------|
 | `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, remembered personal dirs, name prefix |
 | `current` | config | absolute path of the selected config dir |
+| `pins.json` | pins | `{version: 1, pins: [{dir, email}]}` sorted by dir; removed when the last pin goes (see "pin / unpin") |
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
 | `claims.json` | claims | emails this machine currently holds a claim on |
 | `patches.json` | claudecfg | per settings.json path: prior `statusLine` value for restore |
@@ -193,11 +198,12 @@ dir's first login (see new-config); `nickname` absent = the email's local
 part, decided at share time. It must pass the nickname rule (checked on load
 and save). It is removed once the share lands, the email turns out to be
 shared already, or the email is declined; `forget` drops it with the dir.
-`personal_dirs` is optional: where `use EMAIL` last found each personal
-account (lowercased email, absolute clean dir, one entry per email; checked
-on load and save). It is a shortcut past discovery, never trusted blindly
-(see "Personal accounts"). `config.RememberPersonalDir` re-reads config.json
-before saving, like `UpdateDir`.
+`personal_dirs` is optional: where `use EMAIL` or a pin last found each
+personal account (lowercased email, absolute clean dir, one entry per email;
+checked on load and save). It is a shortcut past discovery, never trusted
+blindly (see "Personal accounts"). `config.RememberPersonalDir` re-reads
+config.json before saving, like `UpdateDir`, because it also runs from the
+claude wrapper.
 `name_prefix` is optional (absent = `julienning`, `config.Prefix()`).
 `auto_update` is optional (absent = on; `cfg.AutoUpdateEnabled()`, which also
 honours `JULIENNING_AUTO_UPDATE`).
@@ -512,11 +518,16 @@ julienning adds, using `C = paths.StableCommand()`:
 
 `julienning shell-init zsh|bash` prints, without touching the network:
 
-- the `claude` wrapper: an exported `CLAUDE_CONFIG_DIR` wins; otherwise it
-  reads `current` on every call and runs `CLAUDE_CONFIG_DIR=<dir> command
-  claude`, or plain `command claude` with no selection, a missing dir, or the
-  default dir (default-dir rule; the default dir's path is baked in at
-  generation time);
+- the `claude` wrapper: an exported `CLAUDE_CONFIG_DIR` wins; then, only
+  while `$JULIENNING_HOME/pins.json` exists, `command julienning resolve-dir
+  --pin` (a pin covering the working directory → its dir; no pin → empty);
+  when that fails the wrapper returns 1 and never falls back to the selection
+  (a pinned project must not open on another account); otherwise it reads
+  `current` on every call. It runs `CLAUDE_CONFIG_DIR=<dir> command claude`,
+  or plain `command claude` with no selection, a missing dir, or the default
+  dir (default-dir rule; the default dir's path is baked in at generation
+  time). A machine without pins never starts a julienning process from
+  `claude`;
 - one `claude-<nick>` function per nickname in the cached allowlist (sorted,
   deduplicated, logged in here or not): `_jl_dir=$(command julienning
   resolve-dir '<nick>') || return 1`, then `env -u CLAUDE_CONFIG_DIR claude
@@ -535,6 +546,17 @@ lines (see setup step 6).
 with the cached allowlist, no network; prints only the cleaned dir path on
 stdout (compared byte for byte with the baked-in default dir), or the error
 on stderr and exit 1, which makes the function return 1.
+
+`julienning resolve-dir --pin` (hidden, the wrapper's pin lookup, no
+network): `pins.Match` on the working directory (`os.Getwd`, which follows
+`$PWD`); no pins file or no covering pin → no output, exit 0. Otherwise
+`resolve.Account(cfg, cache, email, current)`: an email on the cached
+allowlist → the registered dir logged into it (`resolve.Dirs`, the current
+selection first); any other email → `resolve.Personal`, whose notes go to
+stderr as `julienning: note: …` and whose find is remembered. Prints the
+cleaned dir; a failure is `pins.UseError`:
+``~/Code/side is pinned to me@x.io, which cannot be opened: <reason> (or remove the pin: julienning unpin ~/Code/side)``,
+exit 1. A corrupt or newer `pins.json` is an error too.
 
 ### new-config / adopt / rename / login / configs
 
@@ -651,7 +673,9 @@ is exhausted (only then).
 `julienning use [TARGET] [--all] [--limit N] [--no-launch] [--json]` (TARGET:
 a nickname, email or config name, see Nicknames; an email not on the
 allowlist takes the personal path, see "Personal accounts"; no TARGET: the
-current selection without re-ranking; nothing selected → same as `next`)
+pin covering the working directory, as if its email had been typed, else
+the current selection without re-ranking; nothing selected → same as
+`next`. An explicit TARGET ignores pins; `next` never looks at them)
 `julienning use --clear`
 
 1. Target: `next` ranks via the Worker and picks the first shared account
@@ -669,11 +693,11 @@ current selection without re-ranking; nothing selected → same as `next`)
    past it);
    `use` refreshes the allowlist from the Worker when it can (falling back to
    `shared.json` with a warning), then resolves TARGET (`resolve.Target`; a
-   `NotLocalError` or unknown target is the error). A TARGET with `@` that is
-   not on the (refreshed) allowlist is validated (`"x" is not a valid email
-   address`) and leaves this flow for "Personal accounts" before
-   `resolve.Target`. A dir reached by config
-   name may be not logged in or not shared — then warn
+   `NotLocalError` or unknown target is the error; when the target came from
+   a pin, wrapped in `pins.UseError`). A TARGET with `@` that is not on the
+   (refreshed) allowlist is validated (`"x" is not a valid email address`)
+   and leaves this flow for "Personal accounts" before `resolve.Target`.
+   A dir reached by config name may be not logged in or not shared — then warn
    (`julienning3 is not logged in yet; run: julienning login julienning3`),
    skip the session list's move/merge and launch plain.
 2. Set `current` to the target.
@@ -696,7 +720,9 @@ current selection without re-ranking; nothing selected → same as `next`)
      printed. New session and sessions already in the target never ask.
    - Esc / Ctrl-C in the picker → exit 0 without launching (selection
      already switched).
-4. Otherwise print the summary line and, with `--json` instead, the
+4. Otherwise print the summary line (preceded, when a pin chose the target,
+   by `~/Code/shop is pinned to alpha (claude1@x.io).`) and, with `--json`
+   instead, the
    Worker's account object plus `config` (config name) and `nickname` (null
    when none); for an account the Worker did not list, `{config, email,
    nickname}`. Summary line (`summaryLine`), with a nickname:
@@ -759,6 +785,50 @@ of that dir only (rows labelled by the email, `New session` `in me@x.io`),
 resumes in place and never moves; cancel prints `Not starting claude; your
 selection is unchanged.`. Reaching a registered dir by its config name keeps
 the team behaviour above (selected, warned, plain launch).
+
+### pin / unpin (`internal/pins`)
+
+`julienning pin [TARGET] | pin --list`, `julienning unpin [DIR]`. Pins are
+local to the machine and keyed by directory; each names an account by email
+(`Pin{Dir, Email}`), resolved to a dir and checked on every use, so a
+nickname rename or a login moving to another dir never breaks one.
+`pins.Match(list, cwd)`: the deepest pinned dir that is cwd or contains it,
+comparing both paths as written and with symlinks resolved.
+
+- `pin TARGET` pins the working directory (`os.Getwd`). No network: a TARGET
+  with `@` that is not on the cached allowlist must resolve through
+  `resolve.Personal` (remembered); anything else goes through
+  `resolve.Target` with the cache and must be logged in (`julienning3 is not
+  logged in, and a pin names an account; sign in first with: julienning login
+  julienning3`); a config name whose dir holds a personal login remembers
+  that dir for the email, so the pin opens the dir that was named. Output:
+  `Pinned ~/Code/side to me@x.io (personal).` / `… to alpha (claude1@x.io).`
+  / `…, replacing <old>.` / `~/Code/side is already pinned to <account>.`,
+  then `Plain claude and julienning use open it in ~/Code/side and every
+  directory below it; julienning next is unaffected. Remove the pin with:
+  julienning unpin`, and when `pins.json` was just created `A terminal opened
+  before this julienning version ignores pins until you run: source
+  ~/.zshrc` (the rc file setup edits, as in Nicknames). Accounts are named
+  `alpha (claude1@x.io)`, the bare email without a nickname, or `me@x.io
+  (personal)` when not on the cached allowlist.
+- `pin` shows `~/Code/side is pinned to <account>.`, `~/Code/side/web is
+  inside ~/Code/side, which is pinned to <account>.` or `No pin covers ~/x;
+  plain claude follows the selection.`, and warns `plain claude refuses to
+  start here until this is fixed: <reason>` when the account cannot be
+  opened (read only: nothing is remembered).
+- `pin --list`: `DIR  ACCOUNT` table sorted by dir, or `No pins. Pin a
+  directory with: julienning pin NICKNAME|EMAIL|CONFIG`.
+- `unpin [DIR]` (DIR: `~` expanded, need not exist) removes the pin on that
+  directory itself: `Unpinned ~/Code/side (was <account>).`; a directory only
+  covered by a parent's pin is an error naming it (`~/Code/side/web has no
+  pin of its own; it is inside ~/Code/side, which is pinned to <account>; to
+  remove that pin: julienning unpin ~/Code/side`); no pin at all:
+  `~/x is not pinned; nothing to unpin.`, exit 0.
+
+`pins.json` is written atomically (0600) and deleted when the last pin goes,
+so the wrapper stops asking. `uninstall --purge` removes it with the other
+state files; plain `uninstall` keeps it (the wrapper is gone with the rc
+line).
 
 #### Session listing (`sessions.List`)
 
