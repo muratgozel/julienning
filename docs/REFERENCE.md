@@ -1046,8 +1046,9 @@ Move them into ~/.claude? Project memory is merged, never overwritten. [Y/n]
 
 Enter, `y` or `yes` moves them; `n` keeps them. Each session moves the way the
 session picker moves one: its transcript, checkpoints, task list and session
-environment, copied, verified, then deleted from the old dir; project memory
-is merged, never overwritten. `~/.claude` is created when it does not exist.
+environment, copied, verified, then deleted from the old dir. Project memory
+is merged, never overwritten, for every project of those dirs, including ones
+with no session left to move. `~/.claude` is created when it does not exist.
 A session open in a terminal, one changed in the last two minutes in a dir
 without a live-session registry, and one whose id `~/.claude` already has
 stay where they are, listed with the command that resumes each without

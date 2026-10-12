@@ -560,6 +560,9 @@ expect_contains "update is a no-op when current" "9.0.1" "$out"
 # and the default dir even in the old one, inside a dir that was pinned.
 mkdir -p "$HOME/.claude-work/projects/$enc/memory" "$HOME/.claude-work/sessions"
 printf 'remember the build flags\n' >"$HOME/.claude-work/projects/$enc/memory/notes.md"
+# Memory of a project whose transcripts Claude already cleaned up.
+mkdir -p "$HOME/.claude-work/projects/-gone-project/memory"
+printf 'old decisions\n' >"$HOME/.claude-work/projects/-gone-project/memory/decisions.md"
 sleep 600 &
 session_pid=$!
 disown
@@ -573,7 +576,7 @@ out="$(cd "$T/proj/teamx" && bash -c 'eval "$(julienning shell-init bash)"; "$@"
 expect_contains "uninstall counts the sessions and names the account plain claude will use" \
   "Sessions: 3 sessions in 2 registered config dirs. Without julienning, plain claude opens ~/.claude (signed in as personal@example.com) and cannot resume them." "$out"
 expect_contains "uninstall names an open session before asking" "\"Team alpha task\" in ~/.claude-work" "$out"
-expect_contains "uninstall moves the sessions and merges memory" "Sessions: moved 2 sessions into ~/.claude (memory: 1 file added)" "$out"
+expect_contains "uninstall moves the sessions and merges memory" "Sessions: moved 2 sessions into ~/.claude (memory: 2 files added)" "$out"
 expect_contains "the open session stays, with the command that resumes it" "CLAUDE_CONFIG_DIR=~/.claude-work claude --resume $sid_alpha" "$out"
 expect_contains "plain uninstall drops the pins" "Pins:     removed 1 pin" "$out"
 expect_contains "uninstall says new terminals run claude natively" "New terminals run claude natively: plain claude opens ~/.claude (signed in as personal@example.com)." "$out"
@@ -592,6 +595,7 @@ if [ ! -f "$HOME/.claude/projects/$enc/$sid_default.jsonl" ] || [ ! -f "$HOME/.c
 fi
 ok "sessions outside the registered dirs stay put"
 expect_same "project memory is merged into ~/.claude" "$HOME/.claude-work/projects/$enc/memory/notes.md" "$HOME/.claude/projects/$enc/memory/notes.md"
+expect_same "memory of a project without sessions is merged too" "$HOME/.claude-work/projects/-gone-project/memory/decisions.md" "$HOME/.claude/projects/-gone-project/memory/decisions.md"
 # shellcheck disable=SC2016 # expanded by the inner shell
 run bash -c 'source "$1"; type -t claude; claude -p new-terminal' _ "$rc"
 expect_contains "a new terminal runs the real claude command" "file" "$out"

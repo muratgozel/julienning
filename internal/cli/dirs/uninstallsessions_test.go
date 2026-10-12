@@ -525,3 +525,34 @@ func TestUninstallSessionExitedWhileAskingMoves(t *testing.T) {
 	notContains(t, out, "stays where it is;")
 	assertExists(t, filepath.Join(h.home, ".claude", rel))
 }
+
+// Project memory is merged even where no session moves: here the only
+// session is open, and another project has memory but no transcripts left.
+func TestUninstallMergesMemoryOfProjectsWithoutAMovedSession(t *testing.T) {
+	prev := livesess.Alive
+	livesess.Alive = func(livesess.Session) bool { return true }
+	t.Cleanup(func() { livesess.Alive = prev })
+
+	h := newHarness(t)
+	custom, _ := installed(t, h)
+	proj := filepath.Join(h.home, "proj")
+	h.transcript(custom, proj, sidA, "fix login")
+	h.writeFile(filepath.Join(custom, "sessions", "4242.json"), `{"pid":4242,"sessionId":"`+sidA+`","kind":"interactive"}`)
+	open := filepath.Join("projects", sessions.EncodeCwd(proj), "memory", "notes.md")
+	cleaned := filepath.Join("projects", sessions.EncodeCwd(filepath.Join(h.home, "old")), "memory", "old.md")
+	h.writeFile(filepath.Join(custom, open), "open project's memory")
+	h.writeFile(filepath.Join(custom, cleaned), "cleaned-up project's memory")
+
+	out := h.mustRun(runUninstall, "--move-sessions")
+	contains(t, out, "Sessions: merged project memory into ~/.claude (2 files added)\n")
+	notContains(t, out, "Sessions: moved")
+	for _, rel := range []string{open, cleaned} {
+		if got, want := h.read(filepath.Join(h.home, ".claude", rel)), h.read(filepath.Join(custom, rel)); got != want {
+			t.Errorf("%s = %q, want %q", rel, got, want)
+		}
+	}
+
+	// Merged once: a re-run finds nothing new.
+	out = h.mustRun(runUninstall, "--move-sessions")
+	notContains(t, out, "merged project memory")
+}
