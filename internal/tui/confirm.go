@@ -29,6 +29,10 @@ type ConfirmOptions struct {
 	// keys stay the same.
 	Hint           string
 	FallbackPrompt string
+	// InterruptCancels makes Ctrl-C, Ctrl-D and the end of input return
+	// ErrCanceled instead of a no, for callers where they must stop
+	// everything (sync); Esc and n still answer no.
+	InterruptCancels bool
 }
 
 // confirmHint is the raw-mode prompt's key line.
@@ -58,6 +62,7 @@ func Confirm(opts ConfirmOptions) (bool, error) {
 func newConfirmModel(opts ConfirmOptions, getenv func(string) string) ConfirmModel {
 	m := NewConfirm(opts.Question, opts.Detail)
 	m.Hint = opts.Hint
+	m.InterruptCancels = opts.InterruptCancels
 	m.NoColor = getenv("NO_COLOR") != ""
 	return m
 }
@@ -69,6 +74,11 @@ type ConfirmModel struct {
 	Detail   string
 	Hint     string // the key line; "" means confirmHint
 	NoColor  bool
+	// InterruptCancels: Ctrl-C/Ctrl-D and EOF end with Canceled set and
+	// the loop returns ErrCanceled (see ConfirmOptions).
+	InterruptCancels bool
+
+	Canceled bool // Ctrl-C or Ctrl-D was pressed
 
 	Done bool // an answer key was pressed
 	Yes  bool // the answer, valid when Done: true continues
@@ -87,8 +97,10 @@ func (m ConfirmModel) Update(k Key) ConfirmModel {
 	switch k.Kind {
 	case KeyEnter:
 		m.Done, m.Yes = true, true
-	case KeyEsc, KeyInterrupt:
+	case KeyEsc:
 		m.Done, m.Yes = true, false
+	case KeyInterrupt:
+		m.Done, m.Yes, m.Canceled = true, false, true
 	case KeyRune:
 		switch k.Rune {
 		case 'y', 'Y':
@@ -237,12 +249,18 @@ func confirmLoop(m ConfirmModel, in io.Reader, out io.Writer, size func() (int, 
 					continue
 				}
 				if m = next; m.Done {
+					if m.Canceled && m.InterruptCancels {
+						return false, ErrCanceled
+					}
 					return m.Yes, nil
 				}
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				if m.InterruptCancels {
+					return false, ErrCanceled
+				}
 				return false, nil
 			}
 			return false, fmt.Errorf("read from terminal: %w", err)
@@ -279,7 +297,14 @@ func ConfirmFallback(opts ConfirmOptions) (bool, error) {
 	if prompt == "" {
 		prompt = "Continue? [Y/n] "
 	}
-	return AskYesNo(in, out, prompt)
+	yes, err := askYesNo(in, out, prompt)
+	if errors.Is(err, io.EOF) {
+		if opts.InterruptCancels {
+			return false, ErrCanceled
+		}
+		return false, nil
+	}
+	return yes, err
 }
 
 // AskYesNo prints prompt and reads a [Y/n] answer from in: empty, y or yes
@@ -287,13 +312,22 @@ func ConfirmFallback(opts ConfirmOptions) (bool, error) {
 // reads one byte at a time, so nothing after the answer's newline is
 // consumed and a later question can read the same input.
 func AskYesNo(in io.Reader, out io.Writer, prompt string) (bool, error) {
+	yes, err := askYesNo(in, out, prompt)
+	if errors.Is(err, io.EOF) {
+		return false, nil
+	}
+	return yes, err
+}
+
+// askYesNo is AskYesNo that returns io.EOF at the end of input.
+func askYesNo(in io.Reader, out io.Writer, prompt string) (bool, error) {
 	for {
 		fmt.Fprint(out, prompt)
 		ans, err := readLine(in)
 		if err != nil {
 			fmt.Fprintln(out)
 			if errors.Is(err, io.EOF) {
-				return false, nil
+				return false, io.EOF
 			}
 			return false, fmt.Errorf("read answer: %w", err)
 		}
