@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
@@ -26,6 +27,10 @@ type sessionMove struct {
 	target  config.ConfigDir   // Claude's default dir; may not exist yet
 	sources []config.ConfigDir // registered dirs other than target, one per real path
 	list    []sessions.Session
+	// listErr: some folders or files could not be read, so their sessions
+	// are not in list. Moving the rest must not lead to a purge, which
+	// would delete the record of the dirs they are still in.
+	listErr error
 }
 
 // newSessionMove lists what uninstall would move. A folder or file that
@@ -53,7 +58,7 @@ func newSessionMove(env cli.Env, cfg *config.Config) (*sessionMove, error) {
 	if err != nil {
 		warnf(env, "some sessions could not be read and stay where they are: %v", err)
 	}
-	m.list = list
+	m.list, m.listErr = list, err
 	return m, nil
 }
 
@@ -138,24 +143,30 @@ type keptSession struct {
 
 // moveResult is what run did.
 type moveResult struct {
-	moved       int
-	kept        []keptSession
-	notTried    int   // left untouched after run stopped early
-	stoppedBy   error // the error that stopped the moves, if any
+	moved int
+	// kept: refused (open, recently changed, id already in the target) or
+	// failed; failed counts the failures among them.
+	kept   []keptSession
+	failed int
+	// notTried: left untouched because the moves stopped early.
+	notTried    []sessions.Session
+	stoppedBy   error // what stopped the moves, if anything
 	interrupted bool  // stoppedBy is a signal: nothing after the moves may run
 }
 
 // run moves every listed session into the target, creating the target when
-// it is missing. A refusal (open, recently changed, id already there)
-// keeps that one session and goes on; any other error stops the moves,
-// because it is usually the disk or permissions and would repeat for every
-// session. A signal stops them too, between two moves or inside one (which
-// then undoes itself). Sessions never move halfway: each is in exactly one
-// of the two dirs (sessions.Move).
+// it is missing. A refusal (open, recently changed, id already there) or an
+// error of that one session (it changed during the copy, its dir's registry
+// is unreadable) keeps it and goes on; a session deleted since the listing
+// is skipped. Only a problem every later move would hit too (disk full,
+// quota, read-only file system, the target in the way) stops the moves. A
+// signal stops them as well, between two moves or inside one (which then
+// undoes itself). Sessions never move halfway: each is in exactly one of the
+// two dirs (sessions.Move).
 func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 	var res moveResult
 	if err := m.ensureTarget(say); err != nil {
-		res.stoppedBy, res.notTried = err, len(m.list)
+		res.stoppedBy, res.notTried = err, m.bySource()
 		return res
 	}
 
@@ -173,7 +184,7 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 			res.stoppedBy, res.interrupted = err, true
 		}
 		if res.stoppedBy != nil {
-			res.notTried = len(todo) - i
+			res.notTried = todo[i:]
 			break
 		}
 		if i == 0 || s.ConfigDir != todo[i-1].ConfigDir {
@@ -185,6 +196,9 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 		rep, err := moveSession(s, m.target)
 		var why string
 		switch {
+		case err == nil:
+		case errors.Is(err, sessions.ErrGone):
+			continue
 		case errors.Is(err, sessions.ErrInterrupted):
 			res.stoppedBy, res.interrupted = err, true
 		case errors.Is(err, sessions.ErrLive):
@@ -193,11 +207,14 @@ func (m *sessionMove) run(env cli.Env, say func(string, ...any)) moveResult {
 			why = "changed in the last few minutes, so it may be open"
 		case errors.Is(err, sessions.ErrCollision):
 			why = m.target.Name + " already has a session with this id"
-		case err != nil:
+		case errors.Is(err, syscall.ENOSPC), errors.Is(err, syscall.EDQUOT), errors.Is(err, syscall.EROFS):
 			res.stoppedBy = err
+		default:
+			why = err.Error()
+			res.failed++
 		}
 		if res.stoppedBy != nil {
-			res.notTried = len(todo) - i
+			res.notTried = todo[i:]
 			break
 		}
 		if why != "" {
@@ -288,26 +305,39 @@ func (m *sessionMove) ensureTarget(say func(string, ...any)) error {
 }
 
 // reportKept lists the sessions that stay in their dirs and how to resume
-// each without julienning.
+// each without julienning: up to maxListed by name, the rest counted per dir.
 func reportKept(w io.Writer, res moveResult) {
-	n := len(res.kept) + res.notTried
-	if n == 0 {
+	all := append([]keptSession(nil), res.kept...)
+	for _, s := range res.notTried {
+		all = append(all, keptSession{s, "not tried: the moves stopped"})
+	}
+	if len(all) == 0 {
 		return
 	}
 	where := "1 stays where it is"
-	if n != 1 {
-		where = fmt.Sprintf("%d stay where they are", n)
+	if len(all) != 1 {
+		where = fmt.Sprintf("%d stay where they are", len(all))
 	}
 	fmt.Fprintf(w, "Sessions: %s; resume one with CLAUDE_CONFIG_DIR set to its dir:\n", where)
-	for i, k := range res.kept {
-		if i == maxListed {
-			break
-		}
+	for _, k := range all[:min(len(all), maxListed)] {
 		fmt.Fprintf(w, "  %q (%s):\n    %s\n", k.s.Label(), k.why, resumeCommand(k.s))
 	}
-	if more := n - min(len(res.kept), maxListed); more > 0 {
-		fmt.Fprintf(w, "  … and %d more\n", more)
+	if len(all) <= maxListed {
+		return
 	}
+	var dirs []string
+	per := map[string]int{}
+	for _, k := range all[maxListed:] {
+		if per[k.s.ConfigDir] == 0 {
+			dirs = append(dirs, k.s.ConfigDir)
+		}
+		per[k.s.ConfigDir]++
+	}
+	parts := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		parts = append(parts, fmt.Sprintf("%s (%d)", shortenHome(d), per[d]))
+	}
+	fmt.Fprintf(w, "  … and %d more in %s\n", len(all)-maxListed, strings.Join(parts, ", "))
 }
 
 // safeShellWord matches paths that need no quoting after `~/` expansion.

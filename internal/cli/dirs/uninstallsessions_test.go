@@ -1,7 +1,9 @@
 package dirs
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -230,9 +232,58 @@ func TestUninstallSessionSourcesSkipTheDefaultDirAndDuplicates(t *testing.T) {
 	assertGone(t, filepath.Join(custom, rel))
 }
 
-// An error that is not a refusal (disk full, permissions) stops the moves,
-// keeps the rest where they are and blocks the purge, so a re-run can finish.
-func TestUninstallMoveErrorStopsMovingAndBlocksThePurge(t *testing.T) {
+// An error of one session (here: it changed during the copy) keeps that
+// session, listed with the error, and the others still move; a session
+// deleted after the listing is simply gone. Such a failure blocks the purge
+// so a re-run can retry it.
+func TestUninstallSessionErrorKeepsThatSessionAndGoesOn(t *testing.T) {
+	h := newHarness(t)
+	custom, fresh := installed(t, h)
+	proj := filepath.Join(h.home, "proj")
+	relA := h.transcript(custom, proj, sidA, "fix login")
+	relC := h.transcript(custom, proj, sidC, "write docs")
+	relB := h.transcript(fresh, proj, sidB, "add tests")
+	verifyErr := "could not move session 0b7f6c1e to ~/.claude (nothing was changed): verification failed for projects/x (source 1 files, 10 bytes, copy 1 files, 9 bytes); the source may have changed during the move"
+	moveSession = func(s sessions.Session, target config.ConfigDir) (sessions.Report, error) {
+		switch s.ID {
+		case sidA:
+			return sessions.Report{}, errors.New(verifyErr)
+		case sidC: // deleted while the question waited
+			if err := os.Remove(filepath.Join(custom, relC)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return sessions.Move(s, target)
+	}
+	t.Cleanup(func() { moveSession = sessions.Move })
+
+	err := h.run(runUninstall, "--purge", "--yes", "--move-sessions")
+	if err == nil || !strings.Contains(err.Error(), "uninstall finished with 2 problem(s)") {
+		t.Fatalf("got %v", err)
+	}
+	out, stderr := h.stdout.String(), h.stderr.String()
+	contains(t, out, "Sessions: moved 1 session into ~/.claude\n")
+	contains(t, out, "Sessions: 1 stays where it is; resume one with CLAUDE_CONFIG_DIR set to its dir:\n  \"fix login\" ("+verifyErr+"):\n    CLAUDE_CONFIG_DIR=~/.claude-custom claude --resume "+sidA+"\n")
+	notContains(t, out, "write docs")
+	contains(t, stderr, "julienning: 1 session could not be moved (the error is listed with each above); they are untouched in their dirs\n")
+	contains(t, stderr, "julienning: not purging: some sessions could not be moved (see above)")
+	contains(t, out, "Shell:    removed the julienning hook line from ~/.zshrc")
+	notContains(t, out, "Purged:")
+	notContains(t, out, "New terminals run claude natively")
+	assertExists(t, filepath.Join(custom, relA))
+	assertExists(t, filepath.Join(h.home, ".claude", relB))
+	assertExists(t, filepath.Join(h.jl, config.ConfigFile))
+
+	// Fixed: the re-run moves it and purges.
+	moveSession = sessions.Move
+	out = h.mustRun(runUninstall, "--purge", "--yes", "--move-sessions")
+	contains(t, out, "Sessions: moved 1 session into ~/.claude\n")
+	contains(t, out, "Purged:   ~/.julienning")
+}
+
+// A full disk would fail every later move the same way: the moves stop, the
+// sessions not tried are named, and the purge waits for a re-run.
+func TestUninstallFullDiskStopsTheMoves(t *testing.T) {
 	h := newHarness(t)
 	custom, fresh := installed(t, h)
 	proj := filepath.Join(h.home, "proj")
@@ -241,7 +292,8 @@ func TestUninstallMoveErrorStopsMovingAndBlocksThePurge(t *testing.T) {
 	calls := 0
 	moveSession = func(s sessions.Session, target config.ConfigDir) (sessions.Report, error) {
 		calls++
-		return sessions.Report{}, errors.New("could not move session 0b7f6c1e to ~/.claude (nothing was changed): no space left on device")
+		return sessions.Report{}, fmt.Errorf("could not move session %s to ~/.claude (nothing was changed): %w", s.ShortID(),
+			&os.PathError{Op: "write", Path: filepath.Join(target.Dir, "x"), Err: syscall.ENOSPC})
 	}
 	t.Cleanup(func() { moveSession = sessions.Move })
 
@@ -250,24 +302,68 @@ func TestUninstallMoveErrorStopsMovingAndBlocksThePurge(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	if calls != 1 {
-		t.Errorf("tried %d moves after an error, want 1", calls)
+		t.Errorf("tried %d moves after a full disk, want 1", calls)
 	}
 	out, stderr := h.stdout.String(), h.stderr.String()
-	contains(t, stderr, "julienning: stopped moving sessions: could not move session 0b7f6c1e to ~/.claude (nothing was changed): no space left on device\n")
-	contains(t, stderr, "julienning: not purging: moving the sessions stopped on an error (see above)")
-	contains(t, out, "Sessions: 2 stay where they are; resume one with CLAUDE_CONFIG_DIR set to its dir:\n  … and 2 more\n")
-	contains(t, out, "Shell:    removed the julienning hook line from ~/.zshrc")
+	contains(t, stderr, "julienning: stopped moving sessions: could not move session 0b7f6c1e to ~/.claude (nothing was changed): write "+filepath.Join(h.home, ".claude", "x")+": no space left on device\n")
+	contains(t, out, "Sessions: 2 stay where they are; resume one with CLAUDE_CONFIG_DIR set to its dir:\n")
+	contains(t, out, "  \"fix login\" (not tried: the moves stopped):\n    CLAUDE_CONFIG_DIR=~/.claude-custom claude --resume "+sidA+"\n")
+	contains(t, out, "  \"add tests\" (not tried: the moves stopped):\n    CLAUDE_CONFIG_DIR=~/.claude-fresh claude --resume "+sidB+"\n")
+	contains(t, stderr, "julienning: not purging: some sessions could not be moved")
 	notContains(t, out, "Purged:")
-	notContains(t, out, "New terminals run claude natively")
 	assertExists(t, filepath.Join(custom, relA))
 	assertExists(t, filepath.Join(fresh, relB))
-	assertExists(t, filepath.Join(h.jl, config.ConfigFile))
+}
 
-	// Fixed: the re-run moves them and purges.
-	moveSession = sessions.Move
-	out = h.mustRun(runUninstall, "--purge", "--yes", "--move-sessions")
-	contains(t, out, "Sessions: moved 2 sessions into ~/.claude\n")
-	contains(t, out, "Purged:   ~/.julienning")
+// Sessions that could not even be read are not moved; the purge would delete
+// config.json, the record of the dirs they are still in, so it waits.
+func TestUninstallUnreadableSessionsBlockThePurge(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable folders")
+	}
+	h := newHarness(t)
+	custom, fresh := installed(t, h)
+	relB := h.transcript(fresh, filepath.Join(h.home, "proj"), sidB, "add tests")
+	h.transcript(custom, filepath.Join(h.home, "locked"), sidA, "fix login")
+	locked := filepath.Join(custom, "projects", sessions.EncodeCwd(filepath.Join(h.home, "locked")))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	err := h.run(runUninstall, "--purge", "--yes", "--move-sessions")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	contains(t, h.stderr.String(), "julienning: warning: some sessions could not be read and stay where they are:")
+	contains(t, h.stderr.String(), "julienning: some sessions could not be read (see the warning above), so they were not moved\n")
+	contains(t, h.stderr.String(), "julienning: not purging: some sessions could not be moved")
+	contains(t, h.stdout.String(), "Sessions: moved 1 session into ~/.claude\n")
+	assertExists(t, filepath.Join(h.home, ".claude", relB))
+	assertExists(t, filepath.Join(h.jl, config.ConfigFile))
+}
+
+func TestReportKeptNamesTenThenCountsPerDir(t *testing.T) {
+	newHarness(t)
+	home, _ := os.UserHomeDir()
+	a, b := filepath.Join(home, ".claude-a"), filepath.Join(home, ".claude-b")
+	var res moveResult
+	for i := 0; i < 11; i++ {
+		res.kept = append(res.kept, keptSession{sessions.Session{ID: fmt.Sprintf("%08x-0000-4000-8000-000000000000", i), ConfigDir: a}, "open in a terminal"})
+	}
+	res.notTried = []sessions.Session{{ID: sidA, ConfigDir: b}, {ID: sidB, ConfigDir: b}}
+	var out bytes.Buffer
+	reportKept(&out, res)
+	got := out.String()
+	if !strings.HasPrefix(got, "Sessions: 13 stay where they are; resume one with CLAUDE_CONFIG_DIR set to its dir:\n") {
+		t.Errorf("header:\n%s", got)
+	}
+	if n := strings.Count(got, "claude --resume"); n != maxListed {
+		t.Errorf("%d sessions named, want %d:\n%s", n, maxListed, got)
+	}
+	if !strings.HasSuffix(got, "  … and 3 more in ~/.claude-a (1), ~/.claude-b (2)\n") {
+		t.Errorf("tail:\n%s", got)
+	}
 }
 
 // signalAfterMoves makes the session moves real, but sends the process
