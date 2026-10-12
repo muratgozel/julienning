@@ -73,6 +73,7 @@ claude-<nickname>            # plain claude on that account; your selection stay
 julienning accounts          # every shared account: usage, who is on it, which dir here has it
 julienning use <email>       # a personal (not shared) account, wherever it is logged in; selection untouched
 julienning pin <target>      # plain claude and `use` in this directory and below open that account
+julienning sync              # same model, effort, cache TTLs, theme, editor mode and CLAUDE.md on every shared account
 ```
 
 The selection is machine-wide: after `next` or `use`, plain `claude` in any

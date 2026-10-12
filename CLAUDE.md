@@ -40,9 +40,11 @@ quick start; keep it short and put detail in REFERENCE.md.
 - Edits to files julienning does not own are byte-preserving and reversible:
   `settings.json` through `internal/jsonedit`, rc files through the single line
   marked `# julienning-shell-hook`. `uninstall` and `forget` must undo exactly
-  what `setup` added; the tests compare bytes. The one exception is the
-  session move the user confirms (the picker, and `uninstall` into
-  `~/.claude`): it goes through `sessions.Move` and is not undone.
+  what `setup` added; the tests compare bytes. The exceptions are what the
+  user chose: the session move they confirm (the picker, and `uninstall`
+  into `~/.claude`) goes through `sessions.Move`, and `sync` edits
+  settings.json keys (`claudecfg.EditSettings`) and `CLAUDE.md`; neither is
+  undone.
 - CI runs in UTC. A test whose expectation is in local time sets
   `t.Setenv("TZ", "Europe/Istanbul")`. `JULIENNING_NOW_EPOCH` freezes the
   clock; `sharedcache.nowFunc` and `tui.confirmClock` are the in-process seams.
@@ -58,8 +60,9 @@ KV namespace with its own token, and a fake GitHub releases host
 drives the installer, setup, shell functions, switching, the session picker
 and a move on a real pseudo-terminal (`scripts/e2e/ptydrive.go`, same build
 style: `expect=`/`send=`/`sleep=` steps, stdlib ioctls for darwin and linux),
-personal accounts and pins through the generated `claude` function, the
-session hooks with a fake live session (a `sleep` registered in
+personal accounts and pins through the generated `claude` function, `sync`
+(its questions on the pseudo-terminal, `--check`, and `--from` undoing the
+first run byte for byte), the session hooks with a fake live session (a `sleep` registered in
 `sessions/<pid>.json`), the status line and its detached usage report,
 `forget`, `update` and `uninstall` (its session move into `~/.claude`, with
 an open session left behind, and plain `claude` checked native in a new shell
@@ -132,6 +135,14 @@ Each item names the only package that touches it.
   carries all of them and merges auto-memory, which is keyed by git root
   (`internal/sessions`). Titles come from `custom-title`, `ai-title`,
   `last-prompt`, then the legacy `summary` entry.
+- Settings sync (`internal/teamsync` decides, `internal/claudecfg` writes):
+  top-level `settings.json` keys `model`, `effortLevel`, `promptCacheTtl`,
+  `subagentPromptCacheTtl` (`"5m"`/`"1h"`), `autoContinueAtUsageLimit`,
+  `theme`, `editorMode`, and the user-level `<dir>/CLAUDE.md`. The list and
+  each key's fixed answers and default were chosen by the user; change them
+  only on request, in `teamsync.Settings` and both docs together. The
+  installed claude binary embeds its settings schema (`strings` on it and
+  grep `<key>:()=>`) when a key needs checking.
 - Status line stdin JSON: `rate_limits.five_hour` and `seven_day` with
   `used_percentage` and `resets_at`; an unexpected shape is reported as
   `USAGE_INVALID` with a type signature (`internal/usage`).
