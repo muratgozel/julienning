@@ -60,8 +60,12 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		// Never move team sessions into a dir that is not a shared account;
 		// the warning was printed when the target was resolved.
 		return execClaude(target.Dir, nil, "")
-	default:
-		sources = sharedSources(cfg, cache, target)
+	}
+	// One read of every registered dir's login feeds both the sources and
+	// the labels, so the two cannot disagree when a login changes meanwhile.
+	logins := loginsByDir(cfg)
+	if sources == nil {
+		sources = sharedSources(cfg, cache, target, logins)
 	}
 
 	cwd, err := getwd()
@@ -77,7 +81,7 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 		return execClaude(target.Dir, nil, "")
 	}
 
-	labels := dirLabels(cfg, cache)
+	labels := dirLabels(cfg, cache, logins)
 	labels[target.Name] = sel.label()
 	items := rows(list, target, labels, o.all, now, loc)
 	scope := scopeLine(len(list), o.limit, o.all, cwd)
@@ -142,15 +146,27 @@ func handOff(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, sel sele
 // logged into a personal account, not logged in, or with an unreadable login
 // is left out, so a personal conversation is never offered for a move into
 // a team account. The login is read live: accounts move between dirs.
-func sharedSources(cfg *config.Config, cache *sharedcache.Cache, target config.ConfigDir) []config.ConfigDir {
+func sharedSources(cfg *config.Config, cache *sharedcache.Cache, target config.ConfigDir, logins map[string]string) []config.ConfigDir {
 	out := []config.ConfigDir{target}
 	for _, cd := range cfg.Configs {
 		if filepath.Clean(cd.Dir) == filepath.Clean(target.Dir) {
 			continue
 		}
-		email, err := claudecfg.ReadEmail(cd.Dir)
-		if err == nil && cache != nil && cache.Contains(email) {
+		if email := logins[cd.Dir]; email != "" && cache != nil && cache.Contains(email) {
 			out = append(out, cd)
+		}
+	}
+	return out
+}
+
+// loginsByDir reads every registered dir's login once: dir → email, absent
+// for a dir that is not logged in or whose account file cannot be read
+// (the commands warn about unreadable logins elsewhere).
+func loginsByDir(cfg *config.Config) map[string]string {
+	out := make(map[string]string, len(cfg.Configs))
+	for _, cd := range cfg.Configs {
+		if email, err := claudecfg.ReadEmail(cd.Dir); err == nil {
+			out[cd.Dir] = email
 		}
 	}
 	return out

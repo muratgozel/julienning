@@ -70,12 +70,13 @@ func resolvePin(env cli.Env) error {
 	if err != nil {
 		return err
 	}
-	current, hasCurrent, err := cfg.Current()
-	if err != nil {
-		return err
-	}
+	// The selection only breaks ties between dirs of one team account; the
+	// pin alone names the account, so an unreadable `current` must not stop
+	// claude here (`use` treats it the same way).
 	var cur *config.ConfigDir
-	if hasCurrent {
+	if current, hasCurrent, err := cfg.Current(); err != nil {
+		warnf(env, "ignoring the current selection (%v)", err)
+	} else if hasCurrent {
 		cur = &current
 	}
 	m, pm, err := resolve.Account(cfg, loadCache(env), p.Email, cur)

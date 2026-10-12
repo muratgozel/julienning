@@ -35,7 +35,9 @@ Cloudflare Workers + KV) and the repo plumbing. Keep it current.
 - **claim**: advisory "in use" marker. Holders are dev+machine pairs; an
   account can have several. Claims are driven by live Claude sessions.
 - **session**: a Claude Code conversation, `projects/<enc-cwd>/<id>.jsonl`.
-- **personal account**: any email not on the allowlist. Its dir is found by
+- **personal account**: any email not on the allowlist (`resolve.IsPersonal`;
+  with no allowlist known, i.e. `shared.json` missing, unreadable or never
+  fetched, only an email no registered dir is logged into). Its dir is found by
   `use EMAIL` (or a pin) wherever it is logged in, registered or not, and is
   never registered by that, never reports, never claims and never feeds the
   team picker (see "Personal accounts").
@@ -550,11 +552,13 @@ on stderr and exit 1, which makes the function return 1.
 `julienning resolve-dir --pin` (hidden, the wrapper's pin lookup, no
 network): `pins.Match` on the working directory (`os.Getwd`, which follows
 `$PWD`); no pins file or no covering pin → no output, exit 0. Otherwise
-`resolve.Account(cfg, cache, email, current)`: an email on the cached
-allowlist → the registered dir logged into it (`resolve.Dirs`, the current
-selection first); any other email → `resolve.Personal`, whose notes go to
-stderr as `julienning: note: …` and whose find is remembered. Prints the
-cleaned dir; a failure is `pins.UseError`:
+`resolve.Account(cfg, cache, email, current)`: a team email (not
+`resolve.IsPersonal`) → the registered dir logged into it (`resolve.Dirs`,
+the current selection first; an unreadable `current` is ignored with a
+warning, since the pin alone names the account); any other email →
+`resolve.Personal`, whose notes go to stderr as `julienning: note: …` and
+whose find is remembered. Prints the cleaned dir; a failure is
+`pins.UseError`:
 ``~/Code/side is pinned to me@x.io, which cannot be opened: <reason> (or remove the pin: julienning unpin ~/Code/side)``,
 exit 1. A corrupt or newer `pins.json` is an error too.
 
@@ -694,9 +698,11 @@ the current selection without re-ranking; nothing selected → same as
    `use` refreshes the allowlist from the Worker when it can (falling back to
    `shared.json` with a warning), then resolves TARGET (`resolve.Target`; a
    `NotLocalError` or unknown target is the error; when the target came from
-   a pin, wrapped in `pins.UseError`). A TARGET with `@` that is not on the
-   (refreshed) allowlist is validated (`"x" is not a valid email address`)
-   and leaves this flow for "Personal accounts" before `resolve.Target`.
+   a pin, wrapped in `pins.UseError`). A TARGET with `@` that
+   `resolve.IsPersonal` calls personal is validated (`"x" is not a valid email
+   address`) and leaves this flow for "Personal accounts" before
+   `resolve.Target`; offline with no allowlist known, a team email logged into
+   a registered dir therefore stays here and is selected as before.
    A dir reached by config name may be not logged in or not shared — then warn
    (`julienning3 is not logged in yet; run: julienning login julienning3`),
    skip the session list's move/merge and launch plain.
@@ -761,7 +767,7 @@ touching team state. `resolve.Personal(cfg, email)`:
    rc-file `CLAUDE_CONFIG_DIR` dirs, the current `$CLAUDE_CONFIG_DIR`) plus
    the registered dirs it does not cover; the first logged into the email in
    that order wins (default dir first, then by path, then registered dirs by
-   name). Notes, printed as `julienning: note:`:
+   name; unsafe dirs are skipped). Notes, printed as `julienning: note:`:
    `me@x.io is no longer logged in at ~/.claude; found it at ~/.claude-me`,
    `me@x.io is also logged in at ~/.claude-b; using ~/.claude-a`. The result
    is remembered (`PersonalMatch.Remember`; a failure is a warning).
@@ -773,7 +779,9 @@ touching team state. `resolve.Personal(cfg, email)`:
    after a remembered dir lost the login: `me@x.io is no longer logged in at
    ~/.claude-me, and no other … is (…); sign in again with:
    CLAUDE_CONFIG_DIR=~/.claude-me command claude` (`command claude` for the
-   default dir).
+   default dir). Searched dirs whose login could not be read are appended
+   (`; the login could not be read in ~/.claude-x: <reason>`), since the
+   account may be there; when the account is found they do not matter.
 
 `use EMAIL` then never sets `current`, never registers or patches the dir,
 and sends nothing about the account (the allowlist fetch `use` always makes
