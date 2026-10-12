@@ -360,3 +360,21 @@ func TestConfirmIgnoresEnterDuringGracePeriod(t *testing.T) {
 		t.Fatalf("lone early Enter must not accept: yes=%v err=%v", yes, err)
 	}
 }
+
+// AskYesNo prints the caller's prompt and leaves the next answer for the
+// next question (uninstall asks about sessions, then about the purge).
+func TestAskYesNoUsesThePromptAndLeavesTheRest(t *testing.T) {
+	in := strings.NewReader("x\n\nn\n")
+	var out strings.Builder
+	yes, err := AskYesNo(in, &out, "Move them? [Y/n] ")
+	if err != nil || !yes {
+		t.Fatalf("got %v, %v", yes, err)
+	}
+	if got := out.String(); got != "Move them? [Y/n] Answer y or n.\nMove them? [Y/n] " {
+		t.Errorf("output = %q", got)
+	}
+	rest, _ := io.ReadAll(in)
+	if string(rest) != "n\n" {
+		t.Errorf("rest = %q, want %q", rest, "n\n")
+	}
+}

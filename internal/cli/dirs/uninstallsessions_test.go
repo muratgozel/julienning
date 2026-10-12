@@ -1,8 +1,6 @@
 package dirs
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -360,15 +358,6 @@ func TestResumeCommandQuotesOnlyWhenNeeded(t *testing.T) {
 	} {
 		if got := resumeCommand(sessions.Session{ID: sidA, ConfigDir: dir}); got != want {
 			t.Errorf("%s:\n got %s\nwant %s", dir, got, want)
-		}
-	}
-}
-
-func TestConfirmDefaultYes(t *testing.T) {
-	for in, want := range map[string]bool{"\n": true, "y\n": true, "YES\n": true, "n\n": false, "No\n": false, "x\ny\n": true, "": false} {
-		var out bytes.Buffer
-		if got := confirmDefaultYes(&out, bufio.NewReader(strings.NewReader(in)), "Q? "); got != want {
-			t.Errorf("%q: got %v, want %v (%q)", in, got, want, out.String())
 		}
 	}
 }
