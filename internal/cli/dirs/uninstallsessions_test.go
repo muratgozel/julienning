@@ -270,34 +270,46 @@ func TestUninstallMoveErrorStopsMovingAndBlocksThePurge(t *testing.T) {
 	contains(t, out, "Purged:   ~/.julienning")
 }
 
-// Ctrl-C between two moves stops before the next one and before anything
-// else changes; a re-run finishes.
-func TestUninstallInterruptedBetweenMovesChangesNothingElse(t *testing.T) {
+// signalAfterMoves makes the session moves real, but sends the process
+// SIGINT right after the nth one returns: while uninstall holds signals and
+// sessions.Move does not, as during its source deletion or memory merge.
+func signalAfterMoves(t *testing.T, nth int) {
+	t.Helper()
 	// Guard: should the trap not work, the signal lands here instead of
 	// killing the test binary.
 	guard := make(chan os.Signal, 1)
 	signal.Notify(guard, syscall.SIGINT)
-	defer signal.Stop(guard)
+	calls := 0
+	moveSession = func(s sessions.Session, target config.ConfigDir) (sessions.Report, error) {
+		rep, err := sessions.Move(s, target)
+		if calls++; calls == nth {
+			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+				t.Error(err)
+			}
+			select {
+			case <-guard:
+			case <-time.After(5 * time.Second):
+				t.Error("signal never delivered")
+			}
+			time.Sleep(20 * time.Millisecond) // let it reach the uninstall's trap too
+		}
+		return rep, err
+	}
+	t.Cleanup(func() {
+		moveSession = sessions.Move
+		signal.Stop(guard)
+	})
+}
 
+// Ctrl-C between two moves stops before the next one and before anything
+// else changes; a re-run finishes.
+func TestUninstallInterruptedBetweenMovesChangesNothingElse(t *testing.T) {
 	h := newHarness(t)
 	custom, fresh := installed(t, h)
 	proj := filepath.Join(h.home, "proj")
 	relA := h.transcript(custom, proj, sidA, "fix login")
 	relB := h.transcript(fresh, proj, sidB, "add tests")
-	moveSession = func(s sessions.Session, target config.ConfigDir) (sessions.Report, error) {
-		rep, err := sessions.Move(s, target)
-		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
-			t.Error(err)
-		}
-		select {
-		case <-guard:
-		case <-time.After(5 * time.Second):
-			t.Error("signal never delivered")
-		}
-		time.Sleep(20 * time.Millisecond) // let it reach the uninstall's trap too
-		return rep, err
-	}
-	t.Cleanup(func() { moveSession = sessions.Move })
+	signalAfterMoves(t, 1)
 
 	err := h.run(runUninstall, "--move-sessions")
 	if err == nil || err.Error() != "uninstall interrupted while moving sessions (1 session moved, the rest are where they were); nothing else was changed, run it again to finish" {
@@ -314,6 +326,25 @@ func TestUninstallInterruptedBetweenMovesChangesNothingElse(t *testing.T) {
 	out := h.mustRun(runUninstall, "--move-sessions")
 	contains(t, out, "Sessions: moved 1 session into ~/.claude\n")
 	contains(t, out, "Shell:    removed the julienning hook line from ~/.zshrc")
+}
+
+// Ctrl-C while the last session's move deletes its source or merges memory
+// reaches only uninstall's trap; it must still stop the uninstall.
+func TestUninstallInterruptedDuringTheLastMoveChangesNothingElse(t *testing.T) {
+	h := newHarness(t)
+	custom, _ := installed(t, h)
+	rel := h.transcript(custom, filepath.Join(h.home, "proj"), sidA, "fix login")
+	signalAfterMoves(t, 1)
+
+	err := h.run(runUninstall, "--purge", "--yes", "--move-sessions")
+	if err == nil || !strings.HasPrefix(err.Error(), "uninstall interrupted while moving sessions (1 session moved") {
+		t.Fatalf("got %v", err)
+	}
+	assertExists(t, filepath.Join(h.home, ".claude", rel))
+	if !strings.Contains(h.read(filepath.Join(h.home, ".zshrc")), rcMarker) {
+		t.Fatal("the hook went although the uninstall was interrupted")
+	}
+	assertExists(t, filepath.Join(h.jl, config.ConfigFile))
 }
 
 func TestUninstallTargetInTheWayStopsTheMoves(t *testing.T) {
