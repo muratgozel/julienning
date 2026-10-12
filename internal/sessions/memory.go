@@ -29,7 +29,9 @@ type MemoryReport struct {
 	Conflicts  []string // files present on both sides with different content, kept as-is
 }
 
-func (m MemoryReport) summary() string {
+// Summary renders what the merge did ("2 files added, 1 conflict kept"), or
+// "" when it did nothing.
+func (m MemoryReport) Summary() string {
 	var added, lines, conflicts string
 	if n := len(m.Added); n > 0 {
 		added = plural(n, "file", "files") + " added"
