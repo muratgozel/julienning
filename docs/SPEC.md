@@ -45,6 +45,9 @@ Cloudflare Workers + KV) and the repo plumbing. Keep it current.
   (`~/.julienning/pins.json`): plain `claude` and `julienning use` without a
   target open that account in the directory and below it (see "pin /
   unpin").
+- **host** (planned): another machine reachable over `ssh` that runs its own
+  julienning; commands take `--host NAME` and `transfer` moves sessions
+  between machines (see "Hosts").
 
 ## Nicknames
 
@@ -1232,6 +1235,699 @@ send-usage child refreshes `shared.json` when stale and runs claim
 reconciliation at most every 10 minutes; when it did either, it then runs
 the daily update check / auto-update outside the claim-sync lock. A 404 `account is not shared` from
 the Worker removes the email from `shared.json`.
+
+## Hosts (planned)
+
+> **Planned on branch `murat/hosts`; nothing in this section is implemented
+> yet.** As each part lands, its rules move into the sections it changes
+> (Local state, setup, shell integration, next / use, accounts, Repo
+> plumbing) and this section keeps what is specific to hosts.
+
+A **host** is another machine reachable with `ssh` that runs its own
+julienning: its own registered dirs, logins, selection, pins, hooks, status
+line and claims, against the same team Worker. Every user-facing command acts
+on the machine it runs on (**this machine**) unless `--host NAME` names a
+host; then this machine forwards the command to julienning there and the host
+does all the work. `transfer` moves a session from one machine to another.
+The Worker does not change: claims, usage and exhaustion reports already
+carry dev + machine id.
+
+Hosts run macOS or Linux on amd64 or arm64 (what releases ship). Linux means
+any distribution: nothing may assume one distribution's startup files, tool
+locations or versions. Debian and Ubuntu source `~/.bashrc` from `~/.profile`
+before `~/.local/bin` joins PATH, Fedora and Arch use `~/.bash_profile`,
+Alpine has busybox and often no bash, NixOS keeps tools under
+`/run/current-system/sw/bin`; containers may lack git, curl or tmux.
+
+### Terms
+
+- **host**: an entry in `hosts.json`: a name, an ssh destination, and what was
+  learnt about the machine when it was added. Names follow the nickname rule
+  (`^[a-z0-9][a-z0-9._-]{0,31}$`); `local` is reserved and means this machine.
+- **agent**: the hidden `julienning agent VERB` command, the only thing another
+  machine runs over ssh.
+- **controller**: the machine where the command was typed. It reads
+  `hosts.json` and talks to the agents. `transfer` draws its pickers and
+  questions on the controller's terminal; a forwarded command draws its own on
+  the host, through `ssh -t`.
+
+### Local state
+
+| File | Owner | Purpose |
+|------|-------|---------|
+| `hosts.json` | hosts | `{version: 1, hosts: [...]}` sorted by name, 0600 |
+| `ssh/` | sshx | ssh control sockets, one per host (0700) |
+| `received/` | sessions | receipts of sessions this machine received by `transfer`, one per session id, pruned after 30 days |
+
+```json
+{
+  "version": 1,
+  "hosts": [
+    {
+      "name": "box",
+      "ssh": "devbox.example.com",
+      "machine_id": "9be1c0a4d2f3",
+      "home": "/home/dev",
+      "os": "linux",
+      "arch": "amd64",
+      "paths": {
+        "julienning": "/home/dev/.local/bin/julienning",
+        "claude": "/home/dev/.local/bin/claude",
+        "tmux": "/usr/bin/tmux"
+      },
+      "added_at": "2026-10-18T09:00:00Z",
+      "checked_at": "2026-10-18T09:00:00Z"
+    }
+  ]
+}
+```
+
+- `ssh` is the destination handed to ssh (an `~/.ssh/config` alias or
+  `user@host`): non-empty, no whitespace or control characters, never starting
+  with `-` (ssh would read it as an option such as `-oProxyCommand=…`), and
+  always passed after `--`.
+- `machine_id` is the host's own (its `config.json`). Every call checks it
+  first (agent `hello`): an alias that now reaches another machine is refused,
+  never acted on (a mistyped name can resolve to a router).
+- `paths` are absolute paths on the host, found when it was added. A
+  non-interactive ssh command gets a minimal PATH (Debian:
+  `/usr/local/bin:/usr/bin:/bin:/usr/games`) and `.bashrc` usually returns
+  early for it, so julienning, claude and tmux are never looked up through
+  PATH there. `claude` and `tmux` may be null. `julienning` must not contain
+  `'` or `\` (it goes on the remote command line in single quotes).
+- `home` is the host's `$HOME`. Timestamps are UTC. Unknown fields are kept on
+  save, so an older julienning never drops what a newer one added.
+- `uninstall --purge` deletes `hosts.json`, `ssh/` and `received/`; no
+  uninstall here ever touches a host (`uninstall --host NAME` does).
+
+### Transport (`internal/sshx`)
+
+- The system `ssh` (OpenSSH), never a Go ssh library: dependencies stay the
+  standard library plus x/term, and the user's `~/.ssh/config`, agent,
+  ProxyJump and known_hosts apply unchanged.
+- Every call: `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto
+  -o ControlPath=<state>/ssh/%C -o ControlPersist=60 -t|-T -- <ssh> <command>`.
+  BatchMode means a call never stops at a password or host-key prompt: hosts
+  need key-based auth and a known host key (`host add` explains how to fix
+  either: run `ssh <dest>` once by hand, add a key with `ssh-copy-id`). `-t`
+  exactly when this machine's stdin and stdout are terminals and the call runs
+  a command or claude; `-T` otherwise. One control socket per host makes a
+  command's several calls cost one handshake. When the socket path would
+  exceed 100 bytes (macOS caps socket paths at 104), the call runs without
+  `ControlMaster`.
+- The remote command line never carries anything variable in plain text:
+  `exec '<paths.julienning>' agent <verb>` with the request as JSON on stdin,
+  or, for `run` and `launch` (stdin is the terminal), as one base64url argument
+  (RFC 4648 §5, unpadded: only `[A-Za-z0-9_-]`, inert in any shell, fish
+  included). Before julienning is known (the probe, the fallback install) the
+  command is `exec /bin/sh -s` with a POSIX script on stdin. The team token is
+  only ever sent on stdin: other users of a shared host see command lines in
+  `ps`.
+- The controller runs ssh as a child, not by exec, ignores SIGINT and SIGQUIT
+  while it runs (the terminal delivers them to ssh and through it to the
+  host), and exits with the remote exit code. julienning never exits 255, so
+  255 is ssh's own failure: `cannot reach box (<ssh's last stderr line>);
+  check with: ssh devbox.example.com`.
+- Agent answers (every verb except `run` and `launch`) start with the line
+  `JULIENNING-AGENT/<proto>`; anything before it is discarded, because a
+  startup file that prints for non-interactive shells would otherwise corrupt
+  the JSON or the archive. No such line: `box: no answer from julienning at
+  <path> (run: julienning host add box to repair the entry)`.
+- This machine's `JULIENNING_*` environment overrides are never passed to a
+  host. `TERM` reaches it through `-t`; `NO_COLOR` and the display time zone
+  through `run` (see `--host`).
+
+### Agent (`julienning agent`, hidden)
+
+| Verb | Input | Output | Used by |
+|------|-------|--------|---------|
+| `hello` | – | `{proto, version, os, arch, home, machine_id, dev, worker_url, set_up, managed, setup_warning, tmux, paths, claude_version, tmux_version}` (`machine_id`, `dev`, `worker_url` null before setup) | first call of every cross-machine command |
+| `bootstrap` | stdin `{dev, worker_url, token, replace_worker}` | `{created, token_updated, worker_replaced}` | `host add` |
+| `inventory` | – | `{configs: [{name, dir, email, nickname, shared, current}]}` | `host list` |
+| `run` | argument `{machine_id, argv, project, tz, no_color}` | none: it becomes `julienning ARGV` | `--host` |
+| `locate` | stdin `{project}` | `{cwd, checkout, git_root, branch, how}` | `transfer` |
+| `sessions` | stdin `{project, all, limit}` | `{cwd, sessions: [...]}` | `transfer` (source) |
+| `choose` | stdin `{target}` | `{config, dir, email, nickname, account, warnings}` | `transfer` (destination) |
+| `export` | stdin `{id, config_dir}` | header line, then the archive | `transfer` (source) |
+| `receive` | stdin header line, then the archive | `{committed, already, report}` | `transfer` (destination) |
+| `release` | stdin `{id, config_dir, manifest_sha256}` | `{released}` | `transfer` (source) |
+| `launch` | argument `{machine_id, dir, cwd, args}` | none: it becomes claude | `transfer` (resume) |
+| `install-self` | – | `{version, link}` | `host add` (fallback install) |
+
+- `proto` is an integer, 1 at first. Within one proto a verb only gains
+  optional fields. `hello`, `inventory` and the `run` envelope are frozen
+  across protos (fields are only ever added), so `host add`, `host list`,
+  `update --host` and `uninstall --host` work across any two versions that
+  have the agent.
+- Errors: exit 1 and `{"error": {"code", "message"}}` after the frame line.
+  Codes: `NOT_SET_UP`, `MACHINE_MISMATCH`, `WORKER_MISMATCH`, `PROTO`,
+  `NOT_LOCAL`, `PERSONAL`, `NO_CHECKOUT`, `AMBIGUOUS`, `PATH_MISSING`, `LIVE`,
+  `MAYBE_OPEN`, `COLLISION`, `GONE`, `CHANGED`, `NO_SPACE`, `INVALID`.
+  Messages are worded like this machine's own errors, name things on the host
+  in the host's terms (`~` is the host's home) and are printed as
+  `julienning: box: <message>`.
+- Timestamps in answers are UTC instants; everything shown is rendered on the
+  controller in its own zone. Titles and prompts in `sessions` are cleaned on
+  the host (`cleanText`) and again on the controller, since they come from
+  another machine.
+- The agent never writes an email to `errors.log`; answers may carry emails to
+  the controller, which prints them as local commands do.
+
+### Versions
+
+- Cross-machine commands (`--host`, `transfer`) need the same major.minor on
+  both machines (`selfupdate` parsing; patch and pre-release may differ). In
+  0.x the minor is the breaking number. Release rule: a change to the agent
+  protocol or the archive format bumps the minor version. `proto` is the
+  second check (`PROTO`), in case a release gets the bump wrong.
+- Mismatch in a terminal, host older: `box runs julienning 0.9.2 and this
+  machine 0.10.0; cross-machine commands need the same 0.10. Update box to
+  0.10.0 now? [Y/n] ` → the installer on the host, pinned to this machine's
+  version (see `host add` step 3), then the command goes on. Host newer: `…
+  Update this machine to 0.10.1 now? [Y/n] ` → `update --version v0.10.1`
+  here, then `Updated 0.10.0 → 0.10.1; run the command again.` (the running
+  binary stays the old one). Declined, or no terminal: the error
+  `box runs julienning 0.9.2 and this machine 0.10.0 (cross-machine commands need the same major.minor); update box: julienning update --host box --version v0.10.0`
+  (or `update this machine: julienning update --version v0.10.1`).
+- Never refused outright for a mismatch: `host list`, `host remove`, `update
+  --host`, `uninstall --host`, and `host add`, which offers the update itself
+  and stops before step 4 when it is declined. They are how a host gets fixed
+  or removed.
+- A development build on either side (`selfupdate.IsDevBuild`) skips the
+  number check with a warning (`julienning: warning: this machine runs a
+  development build (dev); only the agent protocol is checked against box`);
+  `proto` still has to match.
+- Each machine auto-updates on its own daily schedule, so after a release the
+  two can differ for up to a day; the prompt fixes that in one step.
+
+### host add / list / remove (`internal/hosts`, `internal/cli/hosts`)
+
+`julienning host add NAME [SSH_DEST] [--yes]` (SSH_DEST defaults to NAME;
+both validated before anything runs). Idempotent: re-running it on a known
+name refreshes the entry. With `--yes` it asks nothing: questions that
+default to yes (update a host, send the token, rename the dev name) are taken
+as yes; questions that default to no (point the entry elsewhere, replace a
+changed machine id) are refused. Without a terminal and without `--yes`,
+every question is an error naming the command that answers it. In both cases
+setup there runs with `--yes`. Steps, one status line each:
+
+1. Entry. A new NAME is added. A known NAME with the same SSH_DEST is
+   refreshed. A known NAME with another SSH_DEST asks `box is
+   devbox.example.com now; point it at other.example.com instead? [y/N] `.
+2. Probe (`exec /bin/sh -s`, POSIX script on stdin): `uname -sm`, `id -un`,
+   `$HOME`, the login shell, `PRETTY_NAME` from `/etc/os-release` (or
+   `sw_vers` on macOS), the server address from `$SSH_CONNECTION`, and the
+   absolute paths of julienning, claude, tmux, bash, curl, tar and sha256sum or
+   shasum: `command -v` on the non-interactive PATH, then `~/.local/bin`,
+   `/usr/local/bin`, `/opt/homebrew/bin`, `~/.nix-profile/bin` and
+   `/run/current-system/sw/bin`, then `command -v` inside `"$SHELL" -lc` (a
+   separate call the controller stops after 5 s, since not every host has a
+   `timeout` command; output read after a marker line). Prints `Host:     box →
+   devbox.example.com (100.64.0.7): Debian GNU/Linux 13 (trixie),
+   linux/amd64, user dev, home /home/dev`, so a destination that reaches
+   another machine is visible. Refused: an OS other than darwin/linux or an
+   arch other than amd64/arm64 (`box is linux/armv7l; julienning releases
+   exist for amd64 and arm64 only`), an unreachable host, a key or host-key
+   problem (BatchMode), each with what to run.
+3. julienning there:
+   - missing → install;
+   - present, but too old to have `agent` (exit 2 on it) → install;
+   - present → `hello`; a version mismatch follows "Versions" (an update is an
+     install of this machine's version);
+   - present but not in the installer's layout (`selfupdate.ActiveLink`
+     fails there: a hand-built binary) → used as it is, with `Julienning: 0.10.0
+     at /opt/x/julienning (not from the installer: auto-update and update
+     --host leave it alone)`; a mismatch is then an error asking to update it
+     by hand.
+
+   Install: the official script run on the host, pinned to this machine's
+   version (`curl -fsSL <installer URL> | bash -s -- v0.10.0`; the latest
+   release when this machine runs a development build), so the host gets
+   exactly what a teammate's `curl | bash` gets. `JULIENNING_REPO` and
+   `JULIENNING_RELEASES_BASE` set here are passed to the script (tests,
+   mirrors). The script needs bash, curl, tar, sha256sum or shasum and access
+   to GitHub on the host. When one is missing or the download fails, the
+   fallback: this machine downloads `julienning_<ver>_<os>_<arch>.tar.gz` and
+   `checksums.txt` for the host's os/arch, verifies the checksum (fail closed,
+   `selfupdate` code), streams the binary through the probe shell into a
+   `mktemp` file there, runs it once as `<tmp> version` (it must print that
+   version) and lets it install itself (`agent install-self`: the same layout
+   and steps as `update`). Either way auto-update and `update --host` work as
+   on any machine.
+4. Team settings (`agent bootstrap`, this machine's dev name, Worker URL and
+   token on stdin):
+   - not set up there → config.json with its own machine id; the Worker is
+     checked from the host (`/healthz` and an authenticated `/accounts`) and
+     the allowlist saved; failure → error (`box cannot reach the Worker (…);
+     its hooks report usage and claims from there`), nothing saved there;
+   - set up, same Worker URL → kept; its token is checked from the host and
+     when the Worker rejects it (rotated) → `The Worker rejects box's team
+     token. Send this machine's? [Y/n] `;
+   - set up, another Worker URL → `box is set up for another Worker
+     (https://other.example.workers.dev); hosts must use this machine's. Switch
+     box to it? Its shared accounts and claims stay with the other Worker.
+     [y/N] ` → `bootstrap` with `replace_worker: true` (the token still only on
+     stdin; never `setup --token` on a host's command line); declined →
+     refused;
+   - the dev name differs → `box knows you as dev. Rename it to murat? [Y/n] `
+     → `julienning dev murat --host box`. Nothing depends on it, so without a
+     terminal (and without `--yes`) it is a `Note:` line, not an error;
+   - the machine id is never regenerated (claims refer to it). A machine id
+     already in hosts.json under another name is refused (`devbox.example.com
+     is the same machine as gpu; remove that entry first: julienning host
+     remove gpu`). A refreshed entry whose machine id changed asks `box now
+     answers as machine 77aa01c3e9f0 (was 9be1c0a4d2f3): rebuilt, or
+     devbox.example.com reaches another machine now. Replace the entry? [y/N] `
+     (no terminal: refused).
+5. Setup there: `setup --host NAME` (interactive: share, nickname and tmux
+   questions on this terminal) when step 4 created the config, the host's
+   setup warning is not empty, or tmux is installed there and tmux mode was
+   never decided; otherwise `Setup:    complete on box (change it with:
+   julienning setup --host box)`.
+6. Saves the entry: `Added box (devbox.example.com).` / `Refreshed box
+   (devbox.example.com).`, then `Next: julienning use --host box, or
+   julienning transfer --to box`.
+
+`julienning host list [--json]`: `HOST  SSH  OS  JULIENNING  CLAUDE  TMUX
+ACCOUNTS  STATUS`, every host asked in parallel (`hello` + `inventory`, 10 s
+each, never a prompt) and its `checked_at` updated. ACCOUNTS: nicknames (else
+emails) of the shared accounts logged in there, `*` on its selection, personal
+accounts only counted (`+1 personal`). STATUS: `ok`, `unreachable (…)`,
+`julienning 0.9.2 (this machine 0.10.0)`, `machine id changed`, `not set up`,
+`setup incomplete`. `--json`: `{"hosts": [{name, ssh, machine_id, os, arch,
+julienning, claude, tmux, accounts: [{email, nickname, config, current}],
+status, error?}]}`. No hosts: `No hosts. Add one with: julienning host add
+NAME [SSH_DEST]`.
+
+`julienning host remove NAME`: removes the entry and closes its control socket
+(`ssh -O exit`, best effort): `Removed box from this machine's hosts;
+julienning on box is unchanged (remove it there first with: julienning
+uninstall --host box)`. An unknown NAME is an error.
+
+### --host
+
+`cli.Main` takes `--host NAME` / `--host=NAME` off the arguments before the
+command's flags are parsed, anywhere before a `--` (arguments after `--`, as
+in `login alpha -- --model x`, are never inspected). Given twice → usage
+error. `--host local` is the same as no flag. An unknown NAME: `unknown host
+"box" (see julienning host list; add it with: julienning host add box
+SSH_DEST)`, exit 1.
+
+Each command declares its host behaviour (`cli.Command.Host`):
+
+| Behaviour | Commands | With `--host box` |
+|-----------|----------|-------------------|
+| Forward | setup, uninstall, update, dev, configs, current, adopt, new-config, rename, forget, login, sync, use, next, pin, unpin, accounts, share, unshare, nick | the whole command runs on box |
+| Source | transfer | box is where the sessions come from |
+| Local | host add / list / remove, help, version | usage error (`host list does not take --host`) |
+| Internal | statusline, shell-init and every hidden command | usage error; they run where Claude or the shell runs |
+
+Forwarding:
+
+1. `hello` (machine id, versions, `NOT_SET_UP` → `julienning is not set up on
+   box; run: julienning host add box`).
+2. `use`, `next`, `pin`, `unpin`, `login` and `new-config` depend on the
+   working directory. This machine sends the project of its working directory
+   (see "Locating a project") and the host finds its checkout. Found → the
+   command runs there. Not found → `pin` and `unpin` fail with the
+   locate message; the others run in the host's home after `julienning: note:
+   ~/Code/shop has no checkout on box (…); running in ~ there`. Other
+   commands run in the host's home.
+3. `agent run` over ssh (`-t` with a terminal), carrying the arguments, the
+   project, `NO_COLOR`, and this machine's display zone as an IANA name (`TZ`,
+   else the `zoneinfo/` part of the `/etc/localtime` link target; omitted
+   when it cannot be named, with a note). The agent checks the machine id,
+   changes into the directory, puts the dirs of `paths` first on PATH, sets
+   `TZ` and execs `julienning ARGV`. The binary embeds `time/tzdata`, so a
+   host without zoneinfo still renders this machine's zone: `accounts --host
+   box` shows resets in your time, not the host's (often UTC).
+4. The host's output and exit code pass through unchanged; `--json` is the
+   host's document.
+
+What changes in meaning: `setup --host box` on a host without team settings
+asks for them there, as setup does (`host add` sends them instead).
+`uninstall --host box` uninstalls there (its sessions move into its
+`~/.claude`); the entry stays in hosts.json. `use`/`next --host box` switch
+and launch on box, the picker and claude on this terminal through ssh, in
+box's tmux mode when it is on. `accounts --host box` lists the same Worker
+data with box's LOCAL column. `share`/`unshare`/`nick` change the same team
+state anywhere; only `Logged in here as` describes box. The shell's `claude`
+and `claude-<nick>` functions are local and never take `--host`.
+
+`accounts` here also says where your own claims come from: STATE `in use by
+you` when every claim and recent report of your dev is from this machine,
+else `in use by you on box`, `… on box, gpu`, `… here and on box`, or `… on
+another machine` for a machine id not in hosts.json. The JSON passes the
+Worker document through unchanged.
+
+### Locating a project (`internal/hosts`)
+
+A working directory's **project**, computed on the machine where it is:
+
+- the checkout: the top of the worktree containing it, its main worktree's top
+  (`gitRoot`, the memory key), the directory relative to the checkout
+  (`sub`), the checkout's folder name and its branch (from `HEAD`);
+- the repository's remote URLs: every `url` under `[remote "…"]` in its config
+  (for a linked worktree, the shared repository's), read from files like
+  `gitRoot` does, never by running git. Normalized: scheme, user and port
+  dropped, host lowercased, scp form `user@host:path` as `host/path`, a
+  trailing `/` and `.git` removed, so `git@github.com:muratgozel/julienning.git`
+  and `https://github.com/muratgozel/julienning` are both
+  `github.com/muratgozel/julienning`. `url.*.insteadOf` is ignored. The
+  repository's name is the last element of the first URL (`origin` first);
+- the directory relative to home, when it is inside home;
+- the clone URL for messages: `origin`'s as written.
+
+On the other machine, only inside its home, stopping at the first step with a
+match, and never searching further:
+
+1. Projects Claude already used there: the `cwd` of the newest session in each
+   projects folder of its registered dirs (a head read), when inside home;
+   their checkouts are candidates.
+2. Folders named like the repository or like this machine's checkout folder:
+   the same path relative to home first, then a breadth-first walk of home to
+   depth 4, not following symlinks, skipping hidden folders and
+   `node_modules`, `vendor` and `target`, bounded to 5 s and 20 000 folders
+   (`the search stopped after 5 s` when reached).
+
+A candidate counts only when it shares a normalized remote URL with the
+project: folder names nominate, the repository decides. Several matches: the
+one on the session's branch (the transcript's last `gitBranch`; this
+checkout's branch for a forwarded command), else the same path relative to
+home, else a picker (no terminal: the `AMBIGUOUS` error listing them). Then
+`sub` is appended and must exist there (`PATH_MISSING`: `box has
+~/src/shop but not its web folder (the session ran in ~/Code/shop/web here);
+check out the same branch there`).
+
+Not in a git repository on this side, or in one without any remote (nothing
+to verify a candidate by): the project is only its path relative to home,
+mapped to the same path under the other home when it exists there; outside
+home, nothing maps.
+
+Nothing found, `transfer` in a terminal:
+
+```
+box has no checkout of github.com/muratgozel/julienning under /home/dev (checked 2 projects Claude used there and folders named julienning).
+Clone it there, for example:
+  git clone git@github.com:muratgozel/julienning.git ~/Code/muratgozel/julienning
+then run the transfer again, or type the path of a checkout on box (Enter cancels):
+```
+
+The suggested target is this machine's path relative to home. A typed path
+(`~` is the host's home; anywhere, since it is not a search) must be a
+checkout sharing a remote URL, else `that is a checkout of github.com/x/y, not
+github.com/muratgozel/julienning` and the question again. Enter cancels
+(`Transfer canceled; nothing was moved.`). Not a git repository: `box has no
+~/scratch/notes (the session ran there on this machine, outside a git
+repository); create it there, for example: mkdir -p ~/scratch/notes, then run
+the transfer again, or type a path on box (Enter cancels):`. Without a
+terminal these are the error, without the question.
+
+Nothing is stored: after the first transfer the checkout holds a session
+there, so step 1 finds it the next time.
+
+### transfer (`internal/cli/hosts`, `internal/sessions`)
+
+`julienning transfer [--host SOURCE] [--to HOST] [TARGET] [--all] [--limit N] [--no-launch]`
+
+Needs a terminal (stdin and stdout), else `transfer asks which session to
+move and needs a terminal`. SOURCE is `--host` (default this machine).
+
+1. `hello` to every host involved (versions, machine ids).
+2. Destination: `--to HOST` (a host name or `local`), else `tui.Pick` in
+   choice mode: header `Transfer a session from this machine to:` (or `from
+   box`); rows `this machine` and each host (meta: its ssh destination and
+   os/arch), the source left out; Esc → `Transfer canceled; nothing was
+   moved.` (exit 0). No other machine → `no other machine to transfer to; add
+   one with: julienning host add NAME [SSH_DEST]`. The picker does not probe;
+   an unreachable host fails at the next step. Source equals destination →
+   `box is both the source and the destination; to move a session between
+   accounts there, use: julienning use --host box`.
+3. Account, on the destination (`agent choose`, or in process here): TARGET
+   resolved like `use TARGET` there (a shared account logged in there; a
+   personal email → `PERSONAL`: `transfer moves sessions between team
+   accounts only; me@x.io is personal`); without TARGET, chosen like `next`
+   there (Worker ranking, first shared account logged in there, its selection
+   preferred on ties, the exhausted and busy warnings prefixed `box: `). It
+   becomes the destination's selection, as with `next`. Nothing usable: `none
+   of the shared accounts is logged in on box; sign one in: julienning
+   new-config --host box`. The summary line names the machine and heads the
+   next picker: `Moving into alpha (claude1@x.io) in ~/.claude-x on box —
+   session 12% → 17:30, week 28% → Tue 21:00.` (`on this machine` when local).
+4. Session, on the source (`agent sessions`, or in process): listed like
+   `use`'s picker (`sharedSources` of the source: dirs logged into shared
+   accounts only, so personal sessions never appear; the source's checkout of
+   this machine's working directory, located as for `--host` when the source
+   is a host; `--all`, `--limit`), drawn here. No `New session` row. Open
+   sessions are disabled, `(may be open)` as in `use`. Scope line `37 sessions
+   in ~/Code/shop on this machine · type to filter`. None: `no session to
+   transfer in ~/Code/shop on this machine (--all lists every project)`, exit
+   1. Esc → `Transfer canceled; nothing was moved.` (the destination's
+   selection already changed, as with `next`).
+5. The session's project is located on the destination ("Locating a
+   project"); the warnings: `box runs Claude Code 2.1.290; this session was
+   last written by 2.1.302, which it may not resume` (transcript `version`)
+   and `the session was on branch feat/x; box's ~/src/shop is on main`.
+6. Confirm (`tui.Confirm`): `Move "Fix flaky clock tests" from beta on this
+   machine to alpha on box?` / `  Its transcript, checkpoints, task list and
+   session environment move to ~/src/shop on box; this machine will no longer
+   have it. Paths inside it are rewritten for box. Project memory is merged,
+   never overwritten.` Declined → back to the session picker on that row.
+7. Move ("Moving a session between machines"). Sessions over 5 MB show
+   progress (`Sending "Fix flaky clock tests" to box: 23 of 61 MB`). Report:
+   `Moved "Fix flaky clock tests" from beta on this machine to alpha on box
+   (memory: 1 file added; 214 paths rewritten for ~/src/shop).`, then memory
+   conflicts and warnings as in `use`.
+8. Resume on the destination: here `launch.Exec` from the session's new cwd;
+   on a host `agent launch` over `ssh -t`. tmux mode applies on that machine.
+   `--no-launch` prints instead `Resume it on box: cd ~/src/shop &&
+   claude-alpha --resume <id>` (`CLAUDE_CONFIG_DIR=<dir> claude --resume <id>`
+   for an account without a nickname, `command claude --resume <id>` for the
+   default dir).
+
+With both ends on hosts (`--host box --to gpu`) this machine relays: box's
+export streams through this machine into gpu's receive, and the two never
+connect to each other. A transfer back to this machine is `transfer --host
+box --to local`.
+
+### Moving a session between machines
+
+Same guarantees as `sessions.Move`: the source is untouched until the
+destination holds a verified copy, and a failure before that leaves the
+destination without leftovers.
+
+Items: exactly Move's (`projects/<enc>/<id>.jsonl`, `projects/<enc>/<id>/`,
+`file-history/<id>/`, `session-env/<id>/`, `tasks/<id>/`, `todos/<id>-*.json`,
+`debug/<id>.txt`) plus the session's project memory folder
+(`projects/<memory project>/memory/`, `memoryProject`). Nothing else:
+`.claude.json`, `.credentials.json`, `sessions/` and `*.key` files can never
+be in an archive, and the receiver rejects them by name as well.
+
+1. **Pack** (the source, `sessions.Pack`, read-only): Move's refusals (open in
+   the source's registry, may be open, invalid id). Then a header line `{proto,
+   id, source: {home, config_dir, project_folder, memory_folder, checkout,
+   checkout_real, git_root}, claude_version, git_branch}` and a gzip'd tar
+   (`archive/tar`, `compress/gzip`) of the items, whose last entry is
+   `MANIFEST.json`: per entry its path, type, mode, mtime, size and SHA-256,
+   computed while streaming.
+2. **Receive** (the destination, `sessions.Unpack`):
+   - checks that the account dir `choose` picked is still logged into that
+     account, the id is in no projects folder there (`COLLISION`) and not open
+     there (`LIVE`), and the checkout exists; prunes receipts older than 30
+     days;
+   - the session's folder is `projects/<enc(destination cwd)>/` (`EncodeCwd` of
+     the real path). A name over 200 characters is hashed by Claude, so it is
+     only used when a folder with that prefix exists whose sessions confirm the
+     cwd; else refused (`box's path for this project is too long for a new
+     project folder; open claude there once, then transfer again`). Memory goes
+     to `projects/<enc(destination git root)>/memory/`;
+   - every entry is validated before anything is written: a relative path
+     under one of this session's item roots, no `..`, no absolute path; regular
+     files, directories and symlinks only (no hard links or devices); nothing
+     written through a symlink the archive created; no more bytes than the
+     manifest says. Anything else aborts (`INVALID`);
+   - files are written under Move's temporary names and fsynced, the received
+     bytes checked against the manifest before the path rewrite, renamed into
+     place and verified like Move (against what was written);
+   - commit: every rename done and verified. Only then is a receipt written to
+     `received/<id>.json` (`{manifest_sha256, transcript_sha256, from, at}`) and
+     `{committed: true}` returned, and only then does the source release;
+   - end of input, a checksum mismatch, Ctrl-C on the controller (ssh ends, the
+     agent sees end of input or SIGHUP), ENOSPC (`NO_SPACE`) or any error
+     before the commit → the undo of Move: temporaries and created folders
+     removed;
+   - memory is merged after the commit with `mergeMemory` (never overwriting,
+     MEMORY.md lines appended, conflicts reported); its failures are warnings,
+     as in Move.
+3. **Release** (the source, `agent release` or in process): deletes the source
+   items only when the transcript is unchanged since the pack (size, mtime and
+   SHA-256 against the manifest) and not open; otherwise both copies stay:
+   `"Fix flaky clock tests" changed on this machine while it was being sent;
+   both copies are kept (box has it as it was before the change)`. Exit 1.
+4. **Dropped connection after the commit**: the source still has the session.
+   Transferring it again to the same machine, the destination finds the id
+   with a receipt whose `manifest_sha256` matches the new pack and whose
+   transcript is still `transcript_sha256`, answers `{already: true}`, and the
+   source releases: `box already had "Fix flaky clock tests" from a transfer
+   that lost its connection; finished it.`
+
+Path rewrite, while the destination writes:
+
+- Applies to every `.json` and `.jsonl` item (transcripts, subagent
+  transcripts, task files, `custom-title.json`) and to memory files before the
+  merge compares them (a file that differs only in paths is not a conflict).
+  Never to `file-history/` (copies of the user's files) or any other file. The
+  source's files are never modified.
+- Pairs, longest source path first: the checkout (as written and resolved)
+  → the destination's checkout; the main worktree (`git_root`) → the
+  destination's; the source config dir's project folder and memory folder
+  (`<config dir>/projects/<enc>`) → the destination's; the source config dir →
+  the destination's account dir; the source home → the destination home. A
+  pair whose two sides are equal is skipped.
+- In JSON files both sides of a pair are matched in their JSON-encoded form
+  (`"` and `\` and control characters escaped, as Claude writes them). A match
+  counts only when neither the byte before nor the byte after is in
+  `[A-Za-z0-9._-]`, so `/Users/murat/Code/shop` never matches inside
+  `/Users/murat/Code/shop2` or `/mnt/Users/murat`. One left-to-right pass,
+  longest match first; replaced text is never matched again. Lines that are
+  not valid JSON are rewritten the same way, never dropped.
+- Everything is rewritten (prompts, tool input and output, `cwd` fields), so
+  the conversation reads as if it ran on the destination. The report counts
+  the replacements.
+
+### tmux mode (`internal/launch`, `internal/shell`, setup)
+
+`config.json` gains `"tmux": {"enabled": true, "session": "claude"}` (absent:
+never decided; session names `^[A-Za-z0-9_-]{1,32}$`, since tmux reserves `:`
+and `.`).
+
+setup, a new step after the shell hook: when `tmux` is absent from
+config.json and tmux 2.1 or newer is found (exact `=name` targets; `-c` needs
+1.9; to be confirmed against tmux's changelog when this is built), an
+interactive run asks `Run claude inside tmux session "claude"? Sessions
+keep running when your connection drops. [Y/n] ` (`[Y/n]` when setup runs over
+ssh, i.e. `SSH_CONNECTION` is set, else `[y/N]`). `--tmux NAME` enables with
+that session name (tmux must be found), `--no-tmux` disables; together they
+are a usage error. Non-interactive without either: not asked, stays
+undecided. Once decided it is never asked again; the flags change it. Status
+line: `Tmux:     claude runs in tmux session "claude" (enabled|unchanged)`,
+`Tmux:     off (enable with: julienning setup --tmux claude)`, `Tmux:     not
+installed`. julienning's own launches follow a change at once; the shell
+functions in new terminals.
+
+Launch rule, for `launch.Exec` (use, next, login, new-config, transfer's
+resume, `agent launch`), the `claude` wrapper and the `claude-<nick>`
+functions: when tmux mode is on, stdin and stdout are terminals, `$TMUX` is
+empty, `$TERM_PROGRAM` is not `vscode` and tmux is found, claude runs in a
+window of that session instead of in place:
+
+- window command: `/bin/sh -c 'trap : INT; "$@"; exec "${SHELL:-/bin/sh}"'
+  julienning env <account> <claude path> <args>`. When claude exits the
+  window becomes a shell, and Ctrl-C cannot skip that. `<account>` is
+  `CLAUDE_CONFIG_DIR=<dir>`, or `-u CLAUDE_CONFIG_DIR` for Claude's default
+  dir (default-dir rule); for the wrapper with `CLAUDE_CONFIG_DIR` exported,
+  that value. It is explicit because a tmux window takes its
+  environment from the tmux server, not from the shell that asked for it: the
+  server keeps the environment of whichever shell started it, so an account
+  left implicit would be the wrong one;
+- `tmux has-session -t =<session>` → `tmux new-window -t =<session>: -c <cwd>
+  <command>`, then exec `tmux attach -t =<session>`; else exec `tmux
+  new-session -s <session> -c <cwd> <command>`;
+- a new window becomes the current window of every client attached to that
+  session (tmux behaviour; a provisioning `claude()` function doing the same
+  behaves identically);
+- otherwise claude runs in place, as today.
+
+The shell code mirrors this, with the tmux path and session baked in by
+`shell-init`.
+
+### Shell integration changes
+
+- The rc line calls julienning by its absolute path, so it does not depend on
+  when a distribution's startup files put `~/.local/bin` on PATH:
+  `[ -x '/home/dev/.local/bin/julienning' ] && eval "$('/home/dev/.local/bin/julienning' shell-init bash)"  # julienning-shell-hook`
+  (`paths.StableCommand`; when it is not stable, as for a build run from the
+  repo, today's `command -v julienning` form). Setup rewrites an existing
+  julienning line in place when it differs, and never moves it; uninstall
+  removes it by its marker as before.
+- The generated functions call julienning by the same path
+  (`'/home/dev/.local/bin/julienning' resolve-dir …`) instead of `command
+  julienning`.
+- Setup step 6 also reports `claude` functions (`claude() {`, `function claude`)
+  in the rc file, as it reports `alias claude=` lines: one defined before
+  julienning's line is noted (julienning's definition wins); one after it is
+  warned about (`~/.bashrc:150 defines a claude function after julienning's
+  line, so plain claude skips julienning (selection, pins, tmux mode); move
+  the line ending in # julienning-shell-hook below it`).
+
+### dev (`internal/cli/dirs`)
+
+`julienning dev` prints the dev name. `julienning dev NEW` renames it, for
+julienning only (the operating-system user is not touched): NEW is trimmed,
+lowercased and checked against the dev rule (usage error otherwise);
+unchanged → `Your dev name is already murat.` Else:
+
+1. Take the claim-sync lock, retrying for up to 5 s (`another julienning is
+   syncing claims right now; try again in a moment`).
+2. Release every claim in `claims.json` under the old name
+   (`claims.ReleaseAll` with the old identity). A failure is a warning:
+   `could not release 2 claims held as dev (…); the Worker drops them when its
+   claim TTL runs out (12 h by default)`.
+3. Re-read config.json, set `dev`, save.
+4. Reconcile claims under the new name (`claims.Reconcile`, then
+   `MarkReconciled`), so accounts in use are claimed as murat at once; then
+   release the lock.
+5. `Your dev name is now murat (was dev).`
+
+The machine id and the records already in the Worker under the old name (the
+usage `reporter`, exhaustion reports) stay until the next report replaces them
+or they expire. `setup --dev NEW` on a machine already set up runs these same
+steps (today it only overwrites the name, which leaves the old name's claims
+in the Worker until their TTL). `dev NEW --host box` renames on box.
+
+### Privacy
+
+Added to the policy note: session transcripts leave a machine only through
+`transfer`, to a machine you added, over your own ssh connection; the team
+token reaches a host only on ssh's stdin, during `host add`. Nothing about
+hosts reaches the Worker beyond what each machine already reports as itself.
+
+### Tests
+
+- Unit: hosts.json validation; the ssh argv (`--`, `-t`/`-T`, socket path
+  length); `--host` parsing (`=`, twice, after `--`); remote URL normalization;
+  the locate search order, bounds and refusals; the path rewrite (JSON escapes,
+  word boundaries, `shop` versus `shop2`, non-ASCII paths, one pass); archive
+  validation (`..`, absolute paths, links, a write through an archive symlink,
+  oversize, forbidden names); the version rule (patch, pre-release,
+  development builds); tmux command building (default dir, quoting, inherited
+  server environment); `dev` with the Worker down.
+- e2e: a second sandbox home plays the host, and a fake `ssh` on PATH (drops
+  the options and the destination, runs the command with `/bin/sh -c` under
+  that home, keeps the pseudo-terminal) exercises the real agent and archive:
+  `host add` on a fresh and on an already set up host (dev rename and version
+  prompts), `--host` forwarding (`use`'s picker on the pseudo-terminal,
+  `accounts`, `pin` without a checkout), `transfer` in both directions
+  (rewrite count, memory merge, release), a connection killed after the commit
+  and the retry, and tmux mode with a fake `tmux`.
+- Never against a real host except read-only probes.
+
+### Out of scope
+
+- Moving or syncing code: the checkout must already be on the destination
+  (git's job).
+- Personal accounts across machines; stored path mappings; direct
+  host-to-host connections (this machine relays); Windows hosts; fish shell
+  integration on hosts (forwarding still works there: it never goes through
+  the login shell).
+
+### To verify before building transfer
+
+With a real Claude Code on a Linux host, in a throwaway config dir signed in
+once: that a transferred, rewritten transcript resumes from the destination
+checkout; whether rewind works after a transfer (checkpoints are named in
+the transcript by file path); and what an older Claude Code does with a newer
+transcript.
 
 ## Worker
 
