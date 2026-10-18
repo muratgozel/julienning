@@ -81,6 +81,12 @@ julienning pin <target>      # plain claude and `use` in this directory and belo
 julienning sync              # same model, effort, cache TTLs, theme, editor mode and CLAUDE.md on every shared account
 ```
 
+Other machines you reach over ssh (a dev server, a VM) can run their own
+julienning against the same team: `julienning host add box` installs and
+sets it up there, then any command takes `--host box` (`julienning use
+--host box` picks a session and runs claude on box, on this terminal). See
+[Other machines](docs/REFERENCE.md#other-machines).
+
 The selection is machine-wide: after `next` or `use`, plain `claude` in any
 terminal runs on that account, except in a directory you pinned
 (`julienning pin`, `julienning unpin`). Pins stay on your machine.

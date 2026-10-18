@@ -39,6 +39,11 @@ quick start; keep it short and put detail in REFERENCE.md.
   dir and no fallback dirs (`internal/launch/tmux_test.go` TestMain refuses
   otherwise); shell tests bake a fake tmux's path; e2e's fake tmux is first
   on PATH from the start.
+- Tests never run a real ssh or reach a real host. `sshx.Binary` points at a
+  fake in `internal/sshx` tests; `internal/cli/hosts` tests replace
+  `agentCall`, `listCall`, `runScript`, `runForwarded` and the agent's
+  `findClaude`/`findTmux`. Never run `host add` or a `--host` command against
+  a real machine yourself; probe hosts read-only, and only when asked.
 - The team token exists only in `~/.julienning/config.json` (mode 0600), the
   Cloudflare secret `AUTH_TOKEN` and the gitignored `worker/.dev.vars`. Never
   print, log or commit it. `errors.log` must stay free of emails too.
@@ -74,6 +79,14 @@ tmux and without a terminal), `sync`
 (its questions on the pseudo-terminal, `--check`, and `--from` undoing the
 first run byte for byte), the session hooks with a fake live session (a `sleep` registered in
 `sessions/<pid>.json`) and a `dev` rename moving its claim, the status line and its detached usage report,
+hosts (a second throwaway home `$T/host` behind a fake `ssh` in `fakebin/`
+that drops the options and destination and runs the command with `/bin/sh
+-c` under that home, PATH `$T/host/.local/bin:/usr/bin:/bin`, so a real
+claude or tmux elsewhere on the machine is never used; its rc file ends with
+a provisioning `claude()` function: `host add` with the real installer from
+the fake releases host, `--host` forwarding with the picker on the
+pseudo-terminal, a launch into the host's fake tmux, a minor-version update
+of the host, `uninstall --host`, `host remove`),
 `forget`, `update` and `uninstall` (its session move into `~/.claude`, with
 an open session left behind, and plain `claude` checked native in a new shell
 and in one that loaded the integration before), and asserts byte-for-byte
@@ -98,6 +111,18 @@ Env overrides are read at runtime and never written to `config.json`.
 - Release assets: `.goreleaser.yaml`, `scripts/install.sh` and
   `internal/selfupdate` agree on `julienning_<ver>_<os>_<arch>.tar.gz` plus
   `checksums.txt`, binary at the archive root. Change all three or none.
+- CLI to CLI across machines (SPEC "Hosts"): the agent protocol is
+  `internal/hosts/proto.go` (frame line, `Proto`, request and answer types)
+  plus `internal/cli/hosts/agent.go`. A change to the agent protocol or the
+  transfer archive format bumps julienning's minor version (cross-machine
+  commands need the same major.minor), and `hosts.Proto` with it when a verb
+  changes incompatibly. Within one proto verbs only gain optional fields;
+  `hello`, `inventory` and the `run` envelope are frozen (fields only added),
+  so `host add`, `host list`, `update --host` and `uninstall --host` keep
+  working across versions. Answers start with `JULIENNING-AGENT/<proto>`
+  (startup-file noise before it is dropped); the team token travels only on
+  stdin; this machine's `JULIENNING_*` overrides never reach a host
+  (`sshx.sshEnv`). `hosts.json` keeps fields it does not know on save.
 - CLI to Worker: the Worker section of `docs/SPEC.md`. The team lead deploys
   the Worker by hand and teammates' CLIs auto-update within a day, so a newer
   CLI meets an older Worker and vice versa. New Worker fields are optional,

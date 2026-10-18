@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -267,33 +266,11 @@ func validateRemoteURL(s string) (string, error) {
 
 // httpHealthz checks GET <base>/healthz answers 200. No token is sent.
 func httpHealthz(ctx context.Context, base string) error {
-	ctx, cancel := context.WithTimeout(ctx, remoteTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/healthz", nil)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		return fmt.Errorf("cannot reach the Worker at %s: %v", base, err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) // drain for keep-alive; content is irrelevant
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("the Worker at %s answered %d on /healthz (is the URL the Worker's base URL?)", base, resp.StatusCode)
-	}
-	return nil
+	return remote.Healthz(ctx, base, remoteTimeout)
 }
 
 // isAuthError reports a Worker 401/403: the team token is wrong.
-func isAuthError(err error) bool {
-	var re *remote.Error
-	return errors.As(err, &re) && (re.Status == http.StatusUnauthorized || re.Status == http.StatusForbidden)
-}
+func isAuthError(err error) bool { return remote.IsAuth(err) }
 
 // errTokenRejected is the actionable message for isAuthError.
 var errTokenRejected = errors.New("the team token was rejected by the Worker (re-run `julienning setup` in a terminal, or pass the current one with --token)")

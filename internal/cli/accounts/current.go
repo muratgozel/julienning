@@ -15,6 +15,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "current",
+		Host:    cli.HostForward,
 		Summary: "show the selected account (nickname, email, config dir) and its usage",
 		Usage:   "current [--json]",
 		Run:     runCurrent,
@@ -124,7 +125,7 @@ func runCurrent(env cli.Env) error {
 		// Only an exhausted account gets a state line: it is the one state
 		// that changes what the user can do with the selection.
 		if account.IsExhausted() {
-			fmt.Fprintf(env.Stdout, "state: %s\n", state(account, cfg.Dev, n, loc))
+			fmt.Fprintf(env.Stdout, "state: %s\n", stateFor(account, viewerOf(env, cfg), n, loc))
 		}
 	}
 	updateHint(env.Stderr)

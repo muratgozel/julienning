@@ -45,9 +45,9 @@ Cloudflare Workers + KV) and the repo plumbing. Keep it current.
   (`~/.julienning/pins.json`): plain `claude` and `julienning use` without a
   target open that account in the directory and below it (see "pin /
   unpin").
-- **host** (planned): another machine reachable over `ssh` that runs its own
-  julienning; commands take `--host NAME` and `transfer` moves sessions
-  between machines (see "Hosts").
+- **host**: another machine reachable over `ssh` that runs its own
+  julienning; commands take `--host NAME` (see "Hosts"), and `transfer`
+  (planned) moves sessions between machines.
 
 ## Nicknames
 
@@ -166,6 +166,8 @@ integration"); dir-name aliases no longer exist.
 | `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, remembered personal dirs, name prefix, tmux mode |
 | `current` | config | absolute path of the selected config dir |
 | `pins.json` | pins | `{version: 1, pins: [{dir, email}]}` sorted by dir; removed when the last pin goes (see "pin / unpin") |
+| `hosts.json` | hosts | `{version: 1, hosts: [...]}` sorted by name, 0600 (see below and "Hosts") |
+| `ssh/` | sshx | ssh control sockets, one per host, named by ssh's `%C` hash (0700) |
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
 | `claims.json` | claims | emails this machine currently holds a claim on |
 | `patches.json` | claudecfg | per settings.json path: prior `statusLine` value for restore |
@@ -217,6 +219,50 @@ honours `JULIENNING_AUTO_UPDATE`).
 `enabled` false = off. `session` is required while enabled and must match
 `^[A-Za-z0-9_-]{1,32}$` (tmux reserves `:` and `.` in targets; checked on load
 and save; `cfg.TmuxSession()`).
+
+`hosts.json` (`internal/hosts`), the other machines this one reaches (see
+"Hosts"):
+
+```json
+{
+  "version": 1,
+  "hosts": [
+    {
+      "name": "box",
+      "ssh": "devbox.example.com",
+      "machine_id": "9be1c0a4d2f3",
+      "home": "/home/dev",
+      "os": "linux",
+      "arch": "amd64",
+      "paths": {
+        "julienning": "/home/dev/.local/bin/julienning",
+        "claude": "/home/dev/.local/bin/claude",
+        "tmux": "/usr/bin/tmux"
+      },
+      "added_at": "2026-10-18T09:00:00Z",
+      "checked_at": "2026-10-18T09:00:00Z"
+    }
+  ]
+}
+```
+
+- `ssh` is the destination handed to ssh (an `~/.ssh/config` alias or
+  `user@host`): non-empty, no whitespace or control characters, never starting
+  with `-` (ssh would read it as an option such as `-oProxyCommand=…`), and
+  always passed after `--`.
+- `machine_id` is the host's own (its `config.json`). Every call checks it
+  first (agent `hello`): an alias that now reaches another machine is refused,
+  never acted on (a mistyped name can resolve to a router).
+- `paths` are absolute paths on the host, found when it was added. A
+  non-interactive ssh command gets a minimal PATH (Debian:
+  `/usr/local/bin:/usr/bin:/bin:/usr/games`) and `.bashrc` usually returns
+  early for it, so julienning, claude and tmux are never looked up through
+  PATH there. `claude` and `tmux` may be null. `julienning` must not contain
+  `'` or `\` (it goes on the remote command line in single quotes).
+- `home` is the host's `$HOME`. Timestamps are UTC. Unknown fields are kept on
+  save, so an older julienning never drops what a newer one added.
+- Validated on load and save (`hosts.Host.Validate`): names and machine
+  ids unique, `os` darwin or linux, `arch` amd64 or arm64.
 
 Remote URL and token come only from setup (prompt or `--remote-url` /
 `--token`) or the env vars `JULIENNING_REMOTE_URL` / `JULIENNING_TOKEN`
@@ -523,7 +569,9 @@ created); remove the rc hook line (new and legacy markers); release this
 machine's claims (best effort); clear `current`; delete `pins.json`
 (`Pins:     removed N pins`), because a terminal opened before the uninstall
 keeps the wrapper, which follows pins while the file exists. `--purge` also
-removes julienning's own files (known state files in `~/.julienning`, version
+removes julienning's own files (known state files in `~/.julienning`, among
+them `hosts.json`, the `ssh/` control sockets and `received/`; no uninstall
+here ever touches a host, `uninstall --host NAME` does; version
 files named `dev` or semver in the versions dir, and the command symlink only
 when it points into the versions dir), then each directory only if it is
 empty; anything else is kept and listed. It asks unless `--yes`, and deletes
@@ -919,6 +967,14 @@ selected one (`*~/.claude-julienning1`), `-` for none. Rows keep the
 Worker's order (Ranking and state: not exhausted (exhausted ones by
 `exhausted_until` asc) → not busy → known before unknown → session asc →
 week asc → session reset asc → email).
+
+Your own use (claims and usage reports of your dev, which the Worker leaves
+out of `state`/`busy_by`) reads `in use by you` when every claim and recent
+report of your dev is from this machine, else `in use by you on box`, `… on
+box, gpu`, `… here and on box`, `… on another machine` for a machine id not
+in hosts.json (`… on box and another machine`, `… on 2 other machines`); the
+same wording follows `and` and the exhausted state (`viewer.you`). The JSON
+passes the Worker document through unchanged.
 
 STATE of an exhausted account (`exhausted` true or `state` `exhausted`;
 wins over every other state): `exhausted (<window> resets <time>)`, the
@@ -1361,15 +1417,16 @@ reconciliation at most every 10 minutes; when it did either, it then runs
 the daily update check / auto-update outside the claim-sync lock. A 404 `account is not shared` from
 the Worker removes the email from `shared.json`.
 
-## Hosts (planned)
+## Hosts
 
-> **Planned on branch `murat/hosts`.** Landed so far: tmux mode, the shell
-> integration changes (absolute-path rc line and functions) and `dev`; their
-> rules live in "tmux mode", setup, "shell integration" and "dev". Nothing
-> else in this section is implemented yet. As each part lands, its rules move
-> into the sections it changes (Local state, setup, shell integration, next /
-> use, accounts, Repo plumbing) and this section keeps what is specific to
-> hosts.
+> **Partly planned (branch `murat/hosts`).** Implemented: hosts.json, the
+> transport, the agent verbs `hello`, `bootstrap`, `inventory`, `run` and
+> `install-self`, the version rule, `host add|list|remove`, `--host` and
+> "Locating a project" (used by forwarding). Planned: `transfer`, the agent
+> verbs it uses (`locate`, `sessions`, `choose`, `export`, `receive`,
+> `release`, `launch`), `received/` and "Moving a session between
+> machines". Rules that change other sections live there (Local state,
+> uninstall, accounts, tmux mode, shell integration, dev, Repo plumbing).
 
 A **host** is another machine reachable with `ssh` that runs its own
 julienning: its own registered dirs, logins, selection, pins, hooks, status
@@ -1401,52 +1458,11 @@ Alpine has busybox and often no bash, NixOS keeps tools under
 
 ### Local state
 
+`hosts.json` and `ssh/` are in "Local state" above. Planned with `transfer`:
+
 | File | Owner | Purpose |
 |------|-------|---------|
-| `hosts.json` | hosts | `{version: 1, hosts: [...]}` sorted by name, 0600 |
-| `ssh/` | sshx | ssh control sockets, one per host (0700) |
 | `received/` | sessions | receipts of sessions this machine received by `transfer`, one per session id, pruned after 30 days |
-
-```json
-{
-  "version": 1,
-  "hosts": [
-    {
-      "name": "box",
-      "ssh": "devbox.example.com",
-      "machine_id": "9be1c0a4d2f3",
-      "home": "/home/dev",
-      "os": "linux",
-      "arch": "amd64",
-      "paths": {
-        "julienning": "/home/dev/.local/bin/julienning",
-        "claude": "/home/dev/.local/bin/claude",
-        "tmux": "/usr/bin/tmux"
-      },
-      "added_at": "2026-10-18T09:00:00Z",
-      "checked_at": "2026-10-18T09:00:00Z"
-    }
-  ]
-}
-```
-
-- `ssh` is the destination handed to ssh (an `~/.ssh/config` alias or
-  `user@host`): non-empty, no whitespace or control characters, never starting
-  with `-` (ssh would read it as an option such as `-oProxyCommand=…`), and
-  always passed after `--`.
-- `machine_id` is the host's own (its `config.json`). Every call checks it
-  first (agent `hello`): an alias that now reaches another machine is refused,
-  never acted on (a mistyped name can resolve to a router).
-- `paths` are absolute paths on the host, found when it was added. A
-  non-interactive ssh command gets a minimal PATH (Debian:
-  `/usr/local/bin:/usr/bin:/bin:/usr/games`) and `.bashrc` usually returns
-  early for it, so julienning, claude and tmux are never looked up through
-  PATH there. `claude` and `tmux` may be null. `julienning` must not contain
-  `'` or `\` (it goes on the remote command line in single quotes).
-- `home` is the host's `$HOME`. Timestamps are UTC. Unknown fields are kept on
-  save, so an older julienning never drops what a newer one added.
-- `uninstall --purge` deletes `hosts.json`, `ssh/` and `received/`; no
-  uninstall here ever touches a host (`uninstall --host NAME` does).
 
 ### Transport (`internal/sshx`)
 
@@ -1462,7 +1478,10 @@ Alpine has busybox and often no bash, NixOS keeps tools under
   a command or claude; `-T` otherwise. One control socket per host makes a
   command's several calls cost one handshake. When the socket path would
   exceed 100 bytes (macOS caps socket paths at 104), the call runs without
-  `ControlMaster`.
+  `ControlMaster`. The socket path counts as ssh binds it: `%C` (40 hex
+  characters) plus the `.` and 16 random characters of the temporary name
+  OpenSSH binds before renaming, since a path that does not fit makes ssh
+  exit 255 instead of falling back.
 - The remote command line never carries anything variable in plain text:
   `exec '<paths.julienning>' agent <verb>` with the request as JSON on stdin,
   or, for `run` and `launch` (stdin is the terminal), as one base64url argument
@@ -1482,24 +1501,25 @@ Alpine has busybox and often no bash, NixOS keeps tools under
   the JSON or the archive. No such line: `box: no answer from julienning at
   <path> (run: julienning host add box to repair the entry)`.
 - This machine's `JULIENNING_*` environment overrides are never passed to a
-  host. `TERM` reaches it through `-t`; `NO_COLOR` and the display time zone
-  through `run` (see `--host`).
+  host: ssh runs without them, so even a `SendEnv` in the user's ssh config
+  cannot forward them. `TERM` reaches it through `-t`; `NO_COLOR` and the
+  display time zone through `run` (see `--host`).
 
 ### Agent (`julienning agent`, hidden)
 
 | Verb | Input | Output | Used by |
 |------|-------|--------|---------|
 | `hello` | – | `{proto, version, os, arch, home, machine_id, dev, worker_url, set_up, managed, setup_warning, tmux, paths, claude_version, tmux_version}` (`machine_id`, `dev`, `worker_url` null before setup) | first call of every cross-machine command |
-| `bootstrap` | stdin `{dev, worker_url, token, replace_worker}` | `{created, token_updated, worker_replaced}` | `host add` |
+| `bootstrap` | stdin `{dev, worker_url, token, replace_worker, replace_token?}` | `{created, token_updated, worker_replaced, token_rejected?, worker_error?}` | `host add` |
 | `inventory` | – | `{configs: [{name, dir, email, nickname, shared, current}]}` | `host list` |
-| `run` | argument `{machine_id, argv, project, tz, no_color}` | none: it becomes `julienning ARGV` | `--host` |
-| `locate` | stdin `{project}` | `{cwd, checkout, git_root, branch, how}` | `transfer` |
-| `sessions` | stdin `{project, all, limit}` | `{cwd, sessions: [...]}` | `transfer` (source) |
-| `choose` | stdin `{target}` | `{config, dir, email, nickname, account, warnings}` | `transfer` (destination) |
-| `export` | stdin `{id, config_dir}` | header line, then the archive | `transfer` (source) |
-| `receive` | stdin header line, then the archive | `{committed, already, report}` | `transfer` (destination) |
-| `release` | stdin `{id, config_dir, manifest_sha256}` | `{released}` | `transfer` (source) |
-| `launch` | argument `{machine_id, dir, cwd, args}` | none: it becomes claude | `transfer` (resume) |
+| `run` | argument `{machine_id, argv, project, tz, no_color, host}` | none: it becomes `julienning ARGV` | `--host` |
+| `locate` (planned) | stdin `{project}` | `{cwd, checkout, git_root, branch, how}` | `transfer` |
+| `sessions` (planned) | stdin `{project, all, limit}` | `{cwd, sessions: [...]}` | `transfer` (source) |
+| `choose` (planned) | stdin `{target}` | `{config, dir, email, nickname, account, warnings}` | `transfer` (destination) |
+| `export` (planned) | stdin `{id, config_dir}` | header line, then the archive | `transfer` (source) |
+| `receive` (planned) | stdin header line, then the archive | `{committed, already, report}` | `transfer` (destination) |
+| `release` (planned) | stdin `{id, config_dir, manifest_sha256}` | `{released}` | `transfer` (source) |
+| `launch` (planned) | argument `{machine_id, dir, cwd, args}` | none: it becomes claude | `transfer` (resume) |
 | `install-self` | – | `{version, link}` | `host add` (fallback install) |
 
 - `proto` is an integer, 1 at first. Within one proto a verb only gains
@@ -1507,8 +1527,45 @@ Alpine has busybox and often no bash, NixOS keeps tools under
   across protos (fields are only ever added), so `host add`, `host list`,
   `update --host` and `uninstall --host` work across any two versions that
   have the agent.
+- `hello` (`agentHello`): `set_up` is config.json loading (a load error is
+  `setup_warning`, set_up false); `managed` is `selfupdate.ActiveLink`
+  succeeding; `setup_warning` is `no Worker is configured` or
+  `claudecfg.SetupWarning` (settings.json entries missing), `""` when
+  complete; `tmux` is config.json's tmux mode, null while undecided;
+  `paths` are the stable command (else the running binary), then
+  `launch.FindClaude` and `launch.FindTmux` (PATH, then `~/.local/bin`,
+  `/usr/local/bin`, `/opt/homebrew/bin`, `~/.nix-profile/bin`,
+  `/run/current-system/sw/bin`); `claude_version` from Claude Code's native
+  layout (the command links to `…/claude/versions/<version>`), else `claude
+  --version` (5 s).
+- `bootstrap`: not set up → the Worker is checked from the host (`/healthz`,
+  an authenticated `/accounts`), then config.json is created with a new
+  machine id and the listing saved as `shared.json`; a failure is
+  `WORKER_UNREACHABLE` and saves nothing. Set up for the same Worker URL →
+  the host's token is checked: accepted → nothing changes; rejected →
+  `token_rejected: true` and nothing changes, until a second call with
+  `replace_token: true` (after the controller's question) stores the sent
+  token, which must be accepted (`token_updated`); unreachable →
+  `worker_error`. Another Worker URL → `WORKER_MISMATCH` unless
+  `replace_worker`, which checks the new Worker from the host, stores URL and
+  token and saves its allowlist (`worker_replaced`). The machine id is never
+  regenerated, and the dev name is never changed by bootstrap.
+- `run` (`agentRun`): the request's `machine_id` must be this machine's
+  (both empty on a host without config.json, so `setup --host` works there);
+  `host` is the controller's name for this machine, used in messages the
+  agent prints itself (`julienning: box: …`), since run's output is the
+  command's. Then the directory (`project` given → "Locating a project";
+  `pin`/`unpin` fail without a checkout, other commands get the note and run
+  in the home; no `project` → the home), `PATH` with the dirs of this
+  machine's julienning, claude and tmux first, `PWD`, `TZ` (when it loads)
+  and `NO_COLOR=1`, then exec of `julienning ARGV`.
+- `install-self`: the running binary (a temporary copy) installs itself as
+  its own version (`selfupdate.InstallSelf`: versions dir, `version` run
+  first, the command symlink switched, old versions pruned).
 - Errors: exit 1 and `{"error": {"code", "message"}}` after the frame line.
-  Codes: `NOT_SET_UP`, `MACHINE_MISMATCH`, `WORKER_MISMATCH`, `PROTO`,
+  Codes: `NOT_SET_UP`, `MACHINE_MISMATCH`, `WORKER_MISMATCH`,
+  `WORKER_UNREACHABLE` (bootstrap: the Worker cannot be used from the host),
+  `PROTO`,
   `NOT_LOCAL`, `PERSONAL`, `NO_CHECKOUT`, `AMBIGUOUS`, `PATH_MISSING`, `LIVE`,
   `MAYBE_OPEN`, `COLLISION`, `GONE`, `CHANGED`, `NO_SPACE`, `INVALID`.
   Messages are worded like this machine's own errors, name things on the host
@@ -1570,13 +1627,17 @@ setup there runs with `--yes`. Steps, one status line each:
    `/usr/local/bin`, `/opt/homebrew/bin`, `~/.nix-profile/bin` and
    `/run/current-system/sw/bin`, then `command -v` inside `"$SHELL" -lc` (a
    separate call the controller stops after 5 s, since not every host has a
-   `timeout` command; output read after a marker line). Prints `Host:     box →
+   `timeout` command; output read after a marker line; the inner command is
+   plain `;`-separated commands so fish runs it too). Prints `Host:     box →
    devbox.example.com (100.64.0.7): Debian GNU/Linux 13 (trixie),
-   linux/amd64, user dev, home /home/dev`, so a destination that reaches
-   another machine is visible. Refused: an OS other than darwin/linux or an
+   linux/amd64, user dev, home /home/dev` (the address and the OS name are
+   left out when unknown, the address also when it equals SSH_DEST), so a
+   destination that reaches another machine is visible. Refused: an OS other than darwin/linux or an
    arch other than amd64/arm64 (`box is linux/armv7l; julienning releases
    exist for amd64 and arm64 only`), an unreachable host, a key or host-key
-   problem (BatchMode), each with what to run.
+   problem (BatchMode), each with what to run (`its host key is not known
+   yet: run `ssh devbox.example.com` once by hand to accept it`, `key-based
+   login is needed: add a key with `ssh-copy-id devbox.example.com``).
 3. julienning there:
    - missing → install;
    - present, but too old to have `agent` (exit 2 on it) → install;
@@ -1588,19 +1649,34 @@ setup there runs with `--yes`. Steps, one status line each:
      --host leave it alone)`; a mismatch is then an error asking to update it
      by hand.
 
+   Status lines: `Julienning: installing 0.10.0 on box…` then `Julienning:
+   0.10.0 at ~/.local/bin/julienning (installed)`, or `Julienning: 0.10.0 at
+   ~/.local/bin/julienning` for one already there. The entry's
+   `paths.julienning` is the stable command `hello` reports (the installer's
+   link survives updates).
+
    Install: the official script run on the host, pinned to this machine's
-   version (`curl -fsSL <installer URL> | bash -s -- v0.10.0`; the latest
-   release when this machine runs a development build), so the host gets
-   exactly what a teammate's `curl | bash` gets. `JULIENNING_REPO` and
-   `JULIENNING_RELEASES_BASE` set here are passed to the script (tests,
-   mirrors). The script needs bash, curl, tar, sha256sum or shasum and access
-   to GitHub on the host. When one is missing or the download fails, the
+   version (the latest release when this machine runs a development build),
+   so the host gets exactly what a teammate's `curl | bash` gets. It is
+   downloaded to a `mktemp` file first and run with bash from there (`curl
+   -fsSL <installer URL> -o "$tmp"`, `bash "$tmp" v0.10.0`), so a failed
+   download fails instead of feeding bash an empty script, with the found
+   tools' dirs first on PATH. `JULIENNING_REPO` and `JULIENNING_RELEASES_BASE`
+   set here are passed to the script (tests, mirrors); with
+   `JULIENNING_RELEASES_BASE` set the installer URL is
+   `<releases base>/raw/main/scripts/install.sh` (a path GitHub serves too),
+   else `https://raw.githubusercontent.com/<repo>/main/scripts/install.sh`
+   (`selfupdate.InstallerURL`). The script needs bash, curl, tar, sha256sum
+   or shasum and access to GitHub on the host. When one is missing or the download fails, the
    fallback: this machine downloads `julienning_<ver>_<os>_<arch>.tar.gz` and
    `checksums.txt` for the host's os/arch, verifies the checksum (fail closed,
    `selfupdate` code), streams the binary through the probe shell into a
    `mktemp` file there, runs it once as `<tmp> version` (it must print that
    version) and lets it install itself (`agent install-self`: the same layout
-   and steps as `update`). Either way auto-update and `update --host` work as
+   and steps as `update`). The binary travels base64-encoded inside the
+   script (a here-document, decoded with `base64 -d`, else `-D`), not after
+   it on stdin: dash, Debian's /bin/sh, reads its script in blocks and would
+   swallow the data. Either way auto-update and `update --host` work as
    on any machine.
 4. Team settings (`agent bootstrap`, this machine's dev name, Worker URL and
    token on stdin):
@@ -1610,7 +1686,9 @@ setup there runs with `--yes`. Steps, one status line each:
      its hooks report usage and claims from there`), nothing saved there;
    - set up, same Worker URL → kept; its token is checked from the host and
      when the Worker rejects it (rotated) → `The Worker rejects box's team
-     token. Send this machine's? [Y/n] `;
+     token. Send this machine's? [Y/n] ` (yes: a second `bootstrap` with
+     `replace_token: true`; no: a warning that its hooks cannot report until
+     it has the current one); when the check itself fails, a warning;
    - set up, another Worker URL → `box is set up for another Worker
      (https://other.example.workers.dev); hosts must use this machine's. Switch
      box to it? Its shared accounts and claims stay with the other Worker.
@@ -1619,19 +1697,29 @@ setup there runs with `--yes`. Steps, one status line each:
      refused;
    - the dev name differs → `box knows you as dev. Rename it to murat? [Y/n] `
      → `julienning dev murat --host box`. Nothing depends on it, so without a
-     terminal (and without `--yes`) it is a `Note:` line, not an error;
+     terminal (and without `--yes`) it is a `Note:` line, not an error
+     (`Note:     box knows you as dev (rename it with: julienning dev murat
+     --host box)`);
    - the machine id is never regenerated (claims refer to it). A machine id
      already in hosts.json under another name is refused (`devbox.example.com
      is the same machine as gpu; remove that entry first: julienning host
      remove gpu`). A refreshed entry whose machine id changed asks `box now
      answers as machine 77aa01c3e9f0 (was 9be1c0a4d2f3): rebuilt, or
      devbox.example.com reaches another machine now. Replace the entry? [y/N] `
-     (no terminal: refused).
+     (no terminal: refused). Both checks run before `bootstrap` when the host
+     already has a machine id, so the token never goes to a refused machine.
+
+   Status line: `Team:     set up on box (dev murat, Worker https://…)`,
+   `Team:     box now uses this machine's Worker (https://…)`, `Team:     sent
+   this machine's team token to box` or `Team:     unchanged on box`.
 5. Setup there: `setup --host NAME` (interactive: share, nickname and tmux
    questions on this terminal) when step 4 created the config, the host's
    setup warning is not empty, or tmux is installed there and tmux mode was
-   never decided; otherwise `Setup:    complete on box (change it with:
-   julienning setup --host box)`.
+   never decided (`Setup:    running julienning setup on box`, then its
+   output); otherwise `Setup:    complete on box (change it with:
+   julienning setup --host box)`. A failed setup there still saves the entry
+   and exits 1 (`setup on box did not finish (see above); fix it and run:
+   julienning setup --host box`).
 6. Saves the entry: `Added box (devbox.example.com).` / `Refreshed box
    (devbox.example.com).`, then `Next: julienning use --host box, or
    julienning transfer --to box`.
@@ -1640,11 +1728,14 @@ setup there runs with `--yes`. Steps, one status line each:
 ACCOUNTS  STATUS`, every host asked in parallel (`hello` + `inventory`, 10 s
 each, never a prompt) and its `checked_at` updated. ACCOUNTS: nicknames (else
 emails) of the shared accounts logged in there, `*` on its selection, personal
-accounts only counted (`+1 personal`). STATUS: `ok`, `unreachable (…)`,
+accounts only counted (`+1 personal`). TMUX: the version and the mode,
+`3.5a (on: claude)`, `3.5a (off)`, `3.5a (undecided)`, `-` when not
+installed. STATUS: `ok`, `unreachable (…)`,
 `julienning 0.9.2 (this machine 0.10.0)`, `machine id changed`, `not set up`,
 `setup incomplete`. `--json`: `{"hosts": [{name, ssh, machine_id, os, arch,
-julienning, claude, tmux, accounts: [{email, nickname, config, current}],
-status, error?}]}`. No hosts: `No hosts. Add one with: julienning host add
+julienning, claude, tmux, tmux_mode, accounts: [{email, nickname, config,
+current}], status, error?}]}` (`julienning`, `claude` and `tmux` are the
+versions there, null when unknown; `tmux_mode` is `hello`'s `tmux`). No hosts: `No hosts. Add one with: julienning host add
 NAME [SSH_DEST]`.
 
 `julienning host remove NAME`: removes the entry and closes its control socket
@@ -1656,8 +1747,8 @@ uninstall --host box)`. An unknown NAME is an error.
 
 `cli.Main` takes `--host NAME` / `--host=NAME` off the arguments before the
 command's flags are parsed, anywhere before a `--` (arguments after `--`, as
-in `login alpha -- --model x`, are never inspected). Given twice → usage
-error. `--host local` is the same as no flag. An unknown NAME: `unknown host
+in `login alpha -- --model x`, are never inspected). Given twice, or without
+a name → usage error. `--host local` is the same as no flag. An unknown NAME: `unknown host
 "box" (see julienning host list; add it with: julienning host add box
 SSH_DEST)`, exit 1.
 
@@ -1672,15 +1763,24 @@ Each command declares its host behaviour (`cli.Command.Host`):
 
 Forwarding:
 
-1. `hello` (machine id, versions, `NOT_SET_UP` → `julienning is not set up on
-   box; run: julienning host add box`).
+1. `hello` (machine id: another one → `box answers as machine 77aa01c3e9f0,
+   not 9be1c0a4d2f3: it was rebuilt, or devbox.example.com reaches another
+   machine now; check with: julienning host add box`; versions; not set up →
+   `julienning is not set up on box; run: julienning host add box`, except for
+   `setup`, `update` and `uninstall`, which are how a host gets set up, fixed
+   or removed; `update` and `uninstall` are also never refused for a version
+   mismatch). `setup --token …` is refused before anything runs (usage
+   error): the forwarded arguments are on the host's command line, which other
+   users there see in `ps`; `host add` sends the token on stdin.
 2. `use`, `next`, `pin`, `unpin`, `login` and `new-config` depend on the
    working directory. This machine sends the project of its working directory
    (see "Locating a project") and the host finds its checkout. Found → the
    command runs there. Not found → `pin` and `unpin` fail with the
    locate message; the others run in the host's home after `julienning: note:
    ~/Code/shop has no checkout on box (…); running in ~ there`. Other
-   commands run in the host's home.
+   commands run in the host's home. `pin --list` and `unpin DIR` name what
+   they act on and send no project. On the host, several equally good
+   checkouts are a picker there (ssh -t), else the `AMBIGUOUS` error.
 3. `agent run` over ssh (`-t` with a terminal), carrying the arguments, the
    project, `NO_COLOR`, and this machine's display zone as an IANA name (`TZ`,
    else the `zoneinfo/` part of the `/etc/localtime` link target; omitted
@@ -1702,11 +1802,8 @@ data with box's LOCAL column. `share`/`unshare`/`nick` change the same team
 state anywhere; only `Logged in here as` describes box. The shell's `claude`
 and `claude-<nick>` functions are local and never take `--host`.
 
-`accounts` here also says where your own claims come from: STATE `in use by
-you` when every claim and recent report of your dev is from this machine,
-else `in use by you on box`, `… on box, gpu`, `… here and on box`, or `… on
-another machine` for a machine id not in hosts.json. The JSON passes the
-Worker document through unchanged.
+`accounts` here also says where your own claims come from (see
+"accounts": `in use by you on box`).
 
 ### Locating a project (`internal/hosts`)
 
@@ -1742,7 +1839,14 @@ A candidate counts only when it shares a normalized remote URL with the
 project: folder names nominate, the repository decides. Several matches: the
 one on the session's branch (the transcript's last `gitBranch`; this
 checkout's branch for a forwarded command), else the same path relative to
-home, else a picker (no terminal: the `AMBIGUOUS` error listing them). Then
+home, else a picker (no terminal: the `AMBIGUOUS` error listing them). On
+macOS the walk leaves out the privacy-protected and media folders discovery
+skips (Desktop, Documents, Downloads, Library, Movies, Music, Pictures,
+Applications): stat-ing inside them can pop a permission dialog. A checkout
+there is still found by step 1 or the same path relative to home, which are
+direct lookups. Remotes are read from `[remote "…"]` sections of the
+repository's `config` (values unquoted, inline comments dropped), branches
+from the worktree's `HEAD`. Then
 `sub` is appended and must exist there (`PATH_MISSING`: `box has
 ~/src/shop but not its web folder (the session ran in ~/Code/shop/web here);
 check out the same branch there`).
@@ -1932,21 +2036,28 @@ hosts reaches the Worker beyond what each machine already reports as itself.
 
 ### Tests
 
-- Unit: hosts.json validation; the ssh argv (`--`, `-t`/`-T`, socket path
-  length); `--host` parsing (`=`, twice, after `--`); remote URL normalization;
-  the locate search order, bounds and refusals; the path rewrite (JSON escapes,
-  word boundaries, `shop` versus `shop2`, non-ASCII paths, one pass); archive
-  validation (`..`, absolute paths, links, a write through an archive symlink,
-  oversize, forbidden names); the version rule (patch, pre-release,
-  development builds).
-- e2e: a second sandbox home plays the host, and a fake `ssh` on PATH (drops
-  the options and the destination, runs the command with `/bin/sh -c` under
-  that home, keeps the pseudo-terminal) exercises the real agent and archive:
-  `host add` on a fresh and on an already set up host (dev rename and version
-  prompts), `--host` forwarding (`use`'s picker on the pseudo-terminal,
-  `accounts`, `pin` without a checkout), `transfer` in both directions
-  (rewrite count, memory merge, release), a connection killed after the commit
-  and the retry.
+Landed: hosts.json validation and kept fields, the ssh argv (`--`,
+`-t`/`-T`, socket path length), agent framing and failures over a fake ssh,
+`--host` parsing (`=`, twice, after `--`, `local`), remote URL normalization,
+the locate search order, bounds and refusals, the version rule (patch,
+pre-release, development builds, either side newer, declined, lenient),
+`host add`'s refusals and questions, `host list`, the agent verbs, and the
+fallback install script run in /bin/sh; e2e: `host add` on a fresh and on an
+already set up host (dev rename, tmux mode, a minor-version update), an
+unreachable destination, `--host` forwarding (`use`'s picker on the
+pseudo-terminal in the host's checkout, `accounts`, `configs`, `pin` without
+a checkout, the note for other commands, a launch into the host's tmux), a
+claim from the host shown as `on box`, `uninstall --host` restoring the
+host's rc file, `host remove`.
+
+Planned with transfer:
+
+- Unit: the path rewrite (JSON escapes, word boundaries, `shop` versus
+  `shop2`, non-ASCII paths, one pass); archive validation (`..`, absolute
+  paths, links, a write through an archive symlink, oversize, forbidden
+  names).
+- e2e: `transfer` in both directions (rewrite count, memory merge, release),
+  a connection killed after the commit and the retry.
 - Never against a real host except read-only probes.
 
 ### Out of scope
@@ -2068,8 +2179,12 @@ non-email keys skipped) stay.
   dependency `golang.org/x/term` only.
 - CI: gofmt, vet, `go test -race`, worker typecheck + tests.
 - `make e2e` (`scripts/e2e.sh`): end-to-end in a throwaway HOME against
-  `wrangler dev`, a fake releases host and a fake `tmux` (first on PATH, so
-  the machine's tmux server is never reached); manual, not in CI.
+  `wrangler dev`, a fake releases host (it also serves the installer at
+  `/raw/main/scripts/install.sh`) and a fake `tmux` (first on PATH, so the
+  machine's tmux server is never reached), plus a second throwaway home that
+  plays a host behind a fake `ssh` (it drops the options and the destination
+  and runs the command with `/bin/sh -c` under that home, with a minimal
+  PATH, keeping the pseudo-terminal); manual, not in CI.
 - Release: goreleaser on tags. Deploy-worker workflow unchanged.
 - No secrets in the repo: team token is distributed out of band.
 

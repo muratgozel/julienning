@@ -12,6 +12,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "nick",
+		Host:    cli.HostForward,
 		Summary: "rename a team account's nickname (and its claude-<nickname> shell function)",
 		Usage:   "nick NICKNAME|EMAIL|CONFIG NEW",
 		Run:     runNick,

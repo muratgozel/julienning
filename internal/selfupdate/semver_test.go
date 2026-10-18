@@ -79,3 +79,25 @@ func TestValidVersionName(t *testing.T) {
 		}
 	}
 }
+
+func TestSameMinor(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"0.10.0", "0.10.3", true},
+		{"v0.10.0", "0.10.1-rc.1", true},
+		{"0.10.0", "0.9.9", false},
+		{"1.2.0", "2.2.0", false},
+	} {
+		if got, err := SameMinor(c.a, c.b); err != nil || got != c.want {
+			t.Errorf("%s %s: %v %v", c.a, c.b, got, err)
+		}
+	}
+	if _, err := SameMinor("dev", "0.10.0"); err == nil {
+		t.Error("dev is not a version")
+	}
+	if got := MajorMinor("v0.10.2-rc.1"); got != "0.10" {
+		t.Errorf("MajorMinor: %q", got)
+	}
+}

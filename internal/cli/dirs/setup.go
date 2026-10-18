@@ -44,6 +44,7 @@ const indent = "          "
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "setup",
+		Host:    cli.HostForward,
 		Summary: "set up this machine: identity, Worker, config dirs, settings.json, shell hook, tmux mode",
 		Usage:   "setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--tmux SESSION | --no-tmux] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...",
 		Run:     runSetup,

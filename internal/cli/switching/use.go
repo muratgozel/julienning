@@ -19,6 +19,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "use",
+		Host:    cli.HostForward,
 		Summary: "start or resume a session on an account (TARGET: nickname, email or config name; none: this directory's pin, else the selection, else like next; --clear: back to your default)",
 		Usage:   "use [TARGET] [--all] [--limit N] [--no-launch] [--json] | use --clear",
 		Run:     runUse,

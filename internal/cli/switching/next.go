@@ -15,6 +15,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "next",
+		Host:    cli.HostForward,
 		Summary: "switch to the best shared account on this machine, then start or resume a session",
 		Usage:   "next [--all] [--limit N] [--no-launch] [--json]",
 		Run:     runNext,

@@ -13,6 +13,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "configs",
+		Host:    cli.HostForward,
 		Summary: "list registered config dirs",
 		Usage:   "configs [--json]",
 		Run:     runConfigs,

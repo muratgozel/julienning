@@ -21,6 +21,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "forget",
+		Host:    cli.HostForward,
 		Summary: "unregister a config dir by nickname, email or name, undo its settings.json changes, and optionally delete the directory",
 		Usage:   "forget TARGET [--delete|--keep]",
 		Run:     runForget,

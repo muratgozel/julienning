@@ -98,6 +98,23 @@ wait_for() {
   fail "$label: no '$needle' after ${secs}s; last output:" "$out"
 }
 
+# wait_gone LABEL SECONDS NEEDLE CMD...: polls CMD until its output no
+# longer contains NEEDLE.
+wait_gone() {
+  local label="$1" secs="$2" needle="$3" i
+  shift 3
+  for ((i = 0; i < secs * 2; i++)); do
+    out="$("$@" 2>&1 || true)"
+    case "$out" in *"$needle"*) ;; *)
+      ok "$label"
+      return
+      ;;
+    esac
+    sleep 0.5
+  done
+  fail "$label: '$needle' still there after ${secs}s; last output:" "$out"
+}
+
 # row NICK: the `accounts` table row for that nickname.
 row() {
   julienning accounts 2>/dev/null | awk -v n="$1" '$2 == n' || true
@@ -121,10 +138,11 @@ kill_tree() {
 wrangler_pid=""
 host_pid=""
 session_pid=""
+host_session_pid=""
 T=""
 cleanup() {
   local rc=$?
-  for p in "$session_pid" "$host_pid" "$wrangler_pid"; do
+  for p in "$session_pid" "$host_session_pid" "$host_pid" "$wrangler_pid"; do
     if [ -n "$p" ]; then kill_tree "$p"; fi
   done
   if [ -z "$T" ]; then return; fi
@@ -279,6 +297,8 @@ build_release() { # VERSION
 }
 build_release 9.0.0
 build_release 9.0.1
+build_release 9.1.0
+cp "$repo/scripts/install.sh" "$T/releases/install.sh" # what a host runs during host add
 printf 'v9.0.0\n' >"$T/releases/LATEST"
 (cd "$repo" && go build -o "$T/fakereleases" scripts/e2e/fakereleases.go)
 (cd "$repo" && go build -o "$T/ptydrive" scripts/e2e/ptydrive.go)
@@ -671,6 +691,170 @@ expect_contains "the command now runs 9.0.1" "9.0.1" "$out"
 ok "the previous version is kept"
 run julienning update
 expect_contains "update is a no-op when current" "9.0.1" "$out"
+
+# --- hosts: a second sandbox home plays the host, over a fake ssh ---------------------
+# The fake ssh drops the options and the destination and runs the command
+# with /bin/sh -c under the host's home, with the minimal PATH a
+# non-interactive ssh command gets (the host's own tool dir first, so a real
+# tmux or claude elsewhere on this machine is never used) and the pseudo-
+# terminal it was given. Its rc file ends with a provisioning claude()
+# function, which julienning's line, appended after it, must override.
+H="$T/host"
+mkdir -p "$H/.local/bin" "$H/.claude-team/projects"
+case "$os" in darwin) host_rc="$H/.bash_profile" ;; *) host_rc="$H/.bashrc" ;; esac
+cat >"$host_rc" <<'RC'
+# provisioned
+claude() {
+  echo PROVISIONED
+}
+RC
+cp "$host_rc" "$T/before/host_rc"
+# shellcheck disable=SC2016 # the variables are for the fake claude to expand
+printf '#!/bin/sh\necho "HOST CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$H/.local/bin/claude"
+sed -e "s|$T/tmux.log|$T/host-tmux.log|" -e "s|$T/tmux-session|$T/host-tmux-session|" -e "s|$T/fakebin/window-shell|$H/.local/bin/window-shell|" \
+  "$T/fakebin/tmux" >"$H/.local/bin/tmux"
+printf '#!/bin/sh\necho "HOST WINDOW SHELL"\n' >"$H/.local/bin/window-shell"
+chmod +x "$H/.local/bin/claude" "$H/.local/bin/tmux" "$H/.local/bin/window-shell"
+printf '{"oauthAccount":{"emailAddress":"alpha@example.com"}}' >"$H/.claude-team/.claude.json"
+printf '{\n  "theme": "dark"\n}\n' >"$H/.claude-team/settings.json"
+cat >"$T/fakebin/ssh" <<SSH
+#!/bin/sh
+dest=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -O) exit 0 ;;
+    --) shift; dest=\$1; shift; break ;;
+  esac
+  shift
+done
+printf '%s %s\n' "\$dest" "\$*" >>"$T/ssh.log"
+if [ "\$dest" != box ]; then echo "ssh: Could not resolve hostname \$dest: nodename nor servname provided" >&2; exit 255; fi
+cd "$H" || exit 255
+exec env -i HOME="$H" USER=dev LOGNAME=dev SHELL=/bin/bash PATH="$H/.local/bin:/usr/bin:/bin" \
+  SSH_CONNECTION="127.0.0.1 50000 127.0.0.2 22" TERM="\${TERM:-dumb}" /bin/sh -c "\$1"
+SSH
+chmod +x "$T/fakebin/ssh"
+on_host() { env -i HOME="$H" USER=dev SHELL=/bin/bash PATH="$H/.local/bin:/usr/bin:/bin" "$@"; }
+
+run julienning host list
+expect_contains "no hosts yet" "No hosts. Add one with: julienning host add NAME [SSH_DEST]" "$out"
+run_fail julienning host add nowhere
+expect_contains "an unreachable destination says what to check" "cannot reach nowhere (ssh: Could not resolve hostname nowhere" "$out"
+run julienning host add box
+expect_contains "host add names the machine it reached" "Host:     box → box (127.0.0.2): " "$out"
+expect_contains "host add reports the platform, user and home" "$os/$arch, user $(id -un), home $H" "$out"
+expect_contains "host add installs julienning there with the installer" "Julienning: installing 9.0.1 on box" "$out"
+expect_contains "julienning lands in the installer's layout there" "Julienning: 9.0.1 at ~/.local/bin/julienning (installed)" "$out"
+expect_contains "host add sends the team settings" "Team:     set up on box (dev e2e, Worker $W)" "$out"
+expect_contains "setup runs there" "Setup:    running julienning setup on box" "$out"
+expect_contains "setup there registers its shared account" "shared (registered as" "$out"
+expect_contains "setup there notes the provisioning claude function" "defines a claude function before julienning's line; julienning's definition wins" "$out"
+expect_contains "host add saves the entry" "Added box (box)." "$out"
+host_id="$(sed -n 's/.*"machine_id": "\([0-9a-f]*\)".*/\1/p' "$H/.julienning/config.json")"
+[ -n "$host_id" ] || fail "the host has no machine id"
+expect_contains "hosts.json records the host's own machine id" "\"machine_id\": \"$host_id\"" "$(cat "$JULIENNING_HOME/hosts.json")"
+expect_missing "the team token never travels on a host's command line" "$token" "$(cat "$T/ssh.log")"
+# shellcheck disable=SC2016 # expanded by the inner shell
+run on_host bash -c 'source "$1"; claude -p hi' _ "$host_rc"
+expect_contains "julienning's line overrides the provisioning claude function" "HOST CLAUDE dir=<unset> args=-p hi" "$out"
+expect_missing "the provisioning function no longer runs" "PROVISIONED" "$out"
+
+run julienning accounts --host box
+expect_contains "accounts --host shows the host's own dirs" "/.claude-team" "$(printf '%s\n' "$out" | awk '$2 == "alpha"')"
+run julienning configs --host box
+expect_contains "configs --host lists the host's registered dirs" " ~/.claude-team" "$out"
+run julienning host list
+expect_contains "host list shows the host as ok" "ok" "$(printf '%s\n' "$out" | awk '$1 == "box"')"
+expect_contains "host list shows the shared account logged in there" "alpha" "$(printf '%s\n' "$out" | awk '$1 == "box"')"
+run julienning host list --json
+expect_contains "host list --json carries the status" '"status": "ok"' "$out"
+run_fail julienning host list --host box
+expect_contains "host list does not take --host" "host list does not take --host" "$out"
+
+# Forwarding finds the host's checkout of this machine's working directory
+# by the repository, not the path: ~/Code/shop here, ~/src/shop there.
+git_repo() { # DIR BRANCH ORIGIN
+  mkdir -p "$1/.git" "$1/web"
+  printf 'ref: refs/heads/%s\n' "$2" >"$1/.git/HEAD"
+  printf '[remote "origin"]\n\turl = %s\n' "$3" >"$1/.git/config"
+}
+git_repo "$HOME/Code/shop" main git@github.com:team/shop.git
+git_repo "$H/src/shop" main https://github.com/team/shop
+host_enc="$(printf '%s' "$H/src/shop/web" | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$H/.claude-team/projects/$host_enc"
+printf '{"type":"user","isSidechain":false,"cwd":"%s","sessionId":"%s","message":{"role":"user","content":"host work"},"timestamp":"2026-01-01T10:00:00.000Z"}\n{"type":"ai-title","aiTitle":"Host shop task","sessionId":"%s"}\n' \
+  "$H/src/shop/web" 66666666-6666-4666-8666-666666666666 66666666-6666-4666-8666-666666666666 \
+  >"$H/.claude-team/projects/$host_enc/66666666-6666-4666-8666-666666666666.jsonl"
+touch -t 202601011000 "$H/.claude-team/projects/$host_enc/66666666-6666-4666-8666-666666666666.jsonl"
+steps=('expect=Host shop task' 'sleep=300ms' 'send=\x1b' 'expect=Not starting claude')
+out="$(cd "$HOME/Code/shop/web" && "$T/ptydrive" "${steps[@]}" -- env TERM=xterm-256color julienning use alpha --host box 2>&1)" ||
+  fail "use --host on a terminal failed" "$out"
+expect_contains "use --host draws the host's picker here, in its checkout" "Host shop task" "$out"
+expect_contains "the forwarded picker's cancel comes from the host" "Not starting claude; alpha stays selected." "$out"
+mkdir -p "$HOME/notes"
+run_fail in_dir "$HOME/notes" julienning pin alpha --host box
+expect_contains "pin --host without a counterpart fails with the locate message" "julienning: box: box has no ~/notes" "$out"
+run in_dir "$HOME/notes" julienning use alpha --host box --no-launch
+expect_contains "other commands run in the host's home after a note" "julienning: note: ~/notes has no checkout on box" "$out"
+expect_contains "and still run there" "Now using alpha (alpha@example.com) in ~/.claude-team" "$out"
+
+# A claim made on the host shows where it comes from.
+sleep 600 &
+host_session_pid=$!
+disown
+host_proc_start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$host_session_pid" | sed 's/^ *//;s/ *$//')"
+mkdir -p "$H/.claude-team/sessions"
+printf '{"pid":%d,"sessionId":"host-session-1","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","startedAt":%d,"updatedAt":%d}\n' \
+  "$host_session_pid" "$H/src/shop/web" "$host_proc_start" "$now_ms" "$now_ms" >"$H/.claude-team/sessions/$host_session_pid.json"
+printf '{"session_id":"host-session-1","cwd":"%s","source":"startup"}' "$H/src/shop/web" |
+  on_host env CLAUDE_CONFIG_DIR="$H/.claude-team" "$H/.local/bin/julienning" hook session-start
+wait_for "a claim from the host says it is on the host" 15 "and on box" row alpha
+kill "$host_session_pid" 2>/dev/null || true
+wait "$host_session_pid" 2>/dev/null || true
+host_session_pid=""
+rm -f "$H/.claude-team/sessions/"*.json
+printf '{"session_id":"host-session-1","reason":"exit"}' |
+  on_host env CLAUDE_CONFIG_DIR="$H/.claude-team" "$H/.local/bin/julienning" hook session-end
+wait_gone "the host's claim is released" 15 "on box" row alpha
+
+# Refreshing a set-up host: the dev name, then tmux mode there.
+run julienning dev other --host box
+expect_contains "dev --host renames on the host" "Your dev name is now other (was e2e)." "$out"
+run julienning host add box --yes
+expect_contains "host add --yes renames the dev back" "Your dev name is now e2e (was other)." "$out"
+expect_contains "a known host is refreshed" "Refreshed box (box)." "$out"
+run julienning setup --host box --yes --tmux claude
+expect_contains "setup --host turns tmux mode on there" 'Tmux:     claude runs in tmux session "claude" (enabled)' "$out"
+run julienning host add box
+expect_contains "a complete host is not set up again" "Setup:    complete on box (change it with: julienning setup --host box)" "$out"
+rm -f "$T/host-tmux.log" "$T/host-tmux-session"
+steps=('expect=New session' 'sleep=300ms' 'send=\r' 'expect=HOST WINDOW SHELL')
+out="$(cd "$HOME/Code/shop/web" && "$T/ptydrive" "${steps[@]}" -- env TERM=xterm-256color julienning use alpha --host box 2>&1)" ||
+  fail "use --host into tmux failed" "$out"
+expect_contains "use --host launches claude in the host's tmux session" "HOST CLAUDE dir=$H/.claude-team" "$out"
+expect_contains "in the host's checkout" "[new-session][-s][claude][-c][$H/src/shop/web]" "$(cat "$T/host-tmux.log")"
+[ ! -s "$T/tmux.log" ] || fail "this machine's tmux was used for a host launch" "$(cat "$T/tmux.log")"
+ok "the launch used the host's tmux, not this machine's"
+
+# A newer minor here: forwarded commands refuse, host add updates the host.
+run julienning update --version v9.1.0
+run_fail julienning accounts --host box
+expect_contains "a minor mismatch is refused without a terminal" \
+  "box runs julienning 9.0.1 and this machine 9.1.0 (cross-machine commands need the same major.minor); update box: julienning update --host box --version v9.1.0" "$out"
+run julienning host add box --yes
+expect_contains "host add --yes updates the host to this machine's version" "Updated julienning on box to 9.1.0." "$out"
+run julienning accounts --host box
+expect_contains "forwarding works again after the update" "alpha" "$out"
+
+run julienning uninstall --host box --purge --yes
+expect_same "uninstall --host restores the host's rc file byte for byte" "$T/before/host_rc" "$host_rc"
+[ ! -e "$H/.julienning" ] || fail "uninstall --host --purge left the host's state dir"
+ok "uninstall --host --purge removed julienning there"
+expect_contains "the entry stays after uninstall --host" '"name": "box"' "$(cat "$JULIENNING_HOME/hosts.json")"
+run julienning host remove box
+expect_contains "host remove says the host is unchanged" "Removed box from this machine's hosts; julienning on box is unchanged" "$out"
+run_fail julienning accounts --host box
+expect_contains "a removed host is unknown" 'unknown host "box"' "$out"
 
 # --- uninstall ------------------------------------------------------------------------------
 # Plain uninstall on a terminal, run from a shell that loaded the integration

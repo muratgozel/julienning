@@ -20,6 +20,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "update",
+		Host:    cli.HostForward,
 		Summary: "update julienning to the latest release (or --version vX.Y.Z)",
 		Usage:   "update [--version vX.Y.Z]",
 		Run:     runUpdate,

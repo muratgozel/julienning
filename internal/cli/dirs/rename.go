@@ -10,6 +10,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "rename",
+		Host:    cli.HostForward,
 		Summary: "rename a registered config (an internal label; `nick` renames an account)",
 		Usage:   "rename OLD NEW",
 		Run:     runRename,

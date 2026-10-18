@@ -74,19 +74,32 @@ func FindTmux() (Tmux, error) {
 	return Tmux{Path: path, Version: v}, nil
 }
 
-func lookTmux() string {
-	if p, err := exec.LookPath("tmux"); err == nil {
+func lookTmux() string { return lookTool("tmux") }
+
+// lookTool finds an executable on PATH, then in tmuxDirs.
+func lookTool(name string) string {
+	if p, err := exec.LookPath(name); err == nil {
 		if abs, err := filepath.Abs(p); err == nil {
 			return abs
 		}
 	}
 	for _, d := range tmuxDirs() {
-		p := filepath.Join(d, "tmux")
+		p := filepath.Join(d, name)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
 			return p
 		}
 	}
 	return ""
+}
+
+// FindClaude finds claude on PATH, then in the dirs tmux is searched in: a
+// host's agent runs with the minimal PATH ssh gives non-interactive
+// commands, while Claude Code's installer puts claude in ~/.local/bin.
+func FindClaude() (string, error) {
+	if p := lookTool("claude"); p != "" {
+		return p, nil
+	}
+	return "", ErrClaudeNotFound
 }
 
 var tmuxVersionRe = regexp.MustCompile(`(\d+)\.(\d+)`)

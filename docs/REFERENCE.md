@@ -21,6 +21,7 @@ Every julienning command, flag, output, file and error in one page, with output 
   - [Pins](#pins)
   - [Sync settings](#sync-settings)
   - [Other commands](#other-commands)
+- [Other machines](#other-machines)
 - [How claims work](#how-claims-work)
 - [How usage reaches KV](#how-usage-reaches-kv)
 - [How exhaustion is detected](#how-exhaustion-is-detected)
@@ -76,6 +77,11 @@ entered at `julienning setup` and shared out of band.
 - `~/.julienning/errors.log` never contains email addresses, and no file name
   under `~/.julienning` does either (per-account files are named by a short
   hash of the email).
+- **Other machines** ([hosts](#other-machines)) are reached only through your
+  own `ssh`. The team token reaches a host only on ssh's stdin, during
+  `julienning host add`, never on a command line other users there could see.
+  Nothing about hosts reaches the Worker beyond what each machine already
+  reports as itself.
 
 ## Install
 
@@ -1035,6 +1041,151 @@ Also: `julienning version`, `julienning help [command]`. `statusline` and
 `shell-init zsh|bash` are what settings.json and the rc line call, and the
 hidden `resolve-dir TARGET` is what the `claude-<nickname>` functions call.
 
+## Other machines
+
+A **host** is another machine you reach with `ssh` (a server, a VM, a
+container) that runs its own julienning against the same Worker: its own
+config dirs, logins, selection, pins, hooks and claims. Add it once from
+this machine, then run any command there with `--host NAME`.
+
+```sh
+julienning host add box devbox.example.com   # install julienning there and give it this machine's team settings
+julienning accounts --host box                # the same accounts, with box's dirs in LOCAL
+julienning use alpha --host box               # switch on box, pick a session there, run claude there, on this terminal
+julienning host list                          # every host, its versions, accounts and status
+julienning host remove box                    # forget it here; julienning on box stays
+```
+
+Hosts run macOS or Linux (any distribution) on amd64 or arm64. They need
+key-based ssh with a known host key: julienning runs the system `ssh` with
+`BatchMode`, so it never stops at a password or host-key prompt (your
+`~/.ssh/config`, agent and ProxyJump apply as usual). It keeps one ssh
+control socket per host in `~/.julienning/ssh/`, so a command's several calls
+cost one handshake.
+
+### Adding a host
+
+```
+julienning host add NAME [SSH_DEST] [--yes]
+```
+
+SSH_DEST is an `~/.ssh/config` alias or `user@host` (default: NAME). NAME is
+1–32 characters of `a-z`, `0-9`, `.`, `_`, `-`; `local` is reserved for this
+machine. Re-running it refreshes the entry. A first run:
+
+```
+Host:     box → devbox.example.com (100.64.0.7): Debian GNU/Linux 13 (trixie), linux/amd64, user dev, home /home/dev
+Julienning: installing 0.10.0 on box…
+Julienning: 0.10.0 at ~/.local/bin/julienning (installed)
+Team:     set up on box (dev murat, Worker https://julienning.example.workers.dev)
+Setup:    running julienning setup on box
+…
+Added box (devbox.example.com).
+Next: julienning use --host box, or julienning transfer --to box
+```
+
+1. **Probe**: what the machine is, whom it logs you in as, and where
+   julienning, claude and tmux are (also outside the minimal PATH an ssh
+   command gets: `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, Nix).
+   Check the `Host:` line: a destination that reaches another machine shows
+   there.
+2. **julienning there**: missing or too old, it is installed with the
+   official installer, pinned to this machine's version (the latest release
+   when this machine runs a development build). When the host has no bash,
+   curl, tar or sha256sum/shasum, or cannot download, this machine downloads
+   the release for the host's platform, checks its checksum and sends it over
+   ssh, where it installs itself. Either way the host gets the usual layout
+   and updates itself like any machine. A julienning installed some other
+   way is used as it is.
+3. **Team settings**: your dev name, the Worker URL and the team token, sent
+   on ssh's stdin. A host set up before keeps its machine id (claims refer to
+   it); when its token was rotated it asks
+   `The Worker rejects box's team token. Send this machine's? [Y/n]`, when it
+   knows you under another name `box knows you as dev. Rename it to murat? [Y/n]`,
+   and when it is set up for another Worker
+   `box is set up for another Worker (…); hosts must use this machine's. Switch box to it? Its shared accounts and claims stay with the other Worker. [y/N]`.
+4. **Setup there**: `julienning setup` runs on the host, its questions on this
+   terminal (which accounts to share, their nicknames, tmux mode; the tmux
+   question defaults to yes there), when the host was just set up, its setup
+   is incomplete or its tmux mode was never decided. Otherwise
+   `Setup:    complete on box (change it with: julienning setup --host box)`.
+
+With `--yes` nothing is asked: questions that default to yes are answered
+yes and the others refused. Without a terminal (and without `--yes`) a
+question is an error that says what to run, except the dev name, which only
+gets a `Note:`. Refused outright: a machine already added under another name
+(`devbox.example.com is the same machine as gpu; remove that entry first: julienning host remove gpu`);
+asked first: pointing a known name at another destination, and a known host
+that now answers as another machine (rebuilt, or the destination reaches a
+different machine).
+
+### --host
+
+`--host NAME` runs the whole command on the host: `setup`, `uninstall`,
+`update`, `dev`, `configs`, `current`, `adopt`, `new-config`, `rename`,
+`forget`, `login`, `sync`, `use`, `next`, `pin`, `unpin`, `accounts`,
+`share`, `unshare` and `nick`. Pickers, questions and claude itself run there
+and show on this terminal; the output and the exit code are the host's.
+`--host local` is this machine. `host`, `help` and `version` do not take it,
+nor `statusline`, `shell-init` and the hidden commands; the `claude` and
+`claude-<nickname>` shell functions are always local.
+
+- `use`, `next`, `login`, `new-config`, `pin` and `unpin` depend on where you
+  are: the host runs them in its checkout of your current project. It finds
+  it by the repository, not by the path: among the projects Claude used
+  there, then folders named like the repository or your checkout (the same
+  path under its home first, then up to four levels deep), each checked for
+  a matching remote URL (`git@github.com:x/y.git` and
+  `https://github.com/x/y` are the same). Outside git, the same path under
+  its home. Not found: `pin` and `unpin` fail
+  (`julienning: box: box has no ~/notes (…)`); the others run in the host's
+  home after
+  `julienning: note: ~/Code/shop has no checkout on box (checked 2 projects Claude used there and folders named shop); running in ~ there`.
+  Other commands run in the host's home.
+- Times show in this machine's time zone, colors follow your `NO_COLOR`.
+- `setup --host box` on a host without team settings asks for them there;
+  `--token` is refused on a host's command line (other users there see
+  command lines; `host add` sends the token on stdin).
+- `uninstall --host box` uninstalls there; the entry stays here until
+  `host remove`.
+- Both machines need the same major.minor julienning (patch versions may
+  differ). Otherwise, in a terminal:
+  `box runs julienning 0.9.2 and this machine 0.10.0; cross-machine commands need the same 0.10. Update box to 0.10.0 now? [Y/n]`
+  (or, the host being newer, `Update this machine to 0.10.1 now?`, after which
+  you run the command again); without a terminal the error names the command
+  that fixes it:
+  `box runs julienning 0.9.2 and this machine 0.10.0 (cross-machine commands need the same major.minor); update box: julienning update --host box --version v0.10.0`.
+  `host list`, `host remove`, `update --host` and `uninstall --host` always
+  work. Machines update themselves daily, so a release can leave them a day
+  apart; `host add` fixes that in one step too.
+- A host that now answers as another machine is refused:
+  `box answers as machine 77aa01c3e9f0, not 9be1c0a4d2f3: it was rebuilt, or devbox.example.com reaches another machine now; check with: julienning host add box`.
+
+In `accounts` here, your own claims say where they come from:
+`in use by you` when all are from this machine, else `in use by you on box`,
+`in use by you here and on box`, `in use by you on another machine` (a
+machine not in `host list`).
+
+### host list / host remove
+
+```
+$ julienning host list
+HOST  SSH                 OS           JULIENNING  CLAUDE   TMUX             ACCOUNTS                STATUS
+box   devbox.example.com  linux/amd64  0.10.0      2.1.302  3.5a (on: claude)  *alpha, beta, +1 personal  ok
+```
+
+Every host is asked at once, 10 s each, without any question. ACCOUNTS are
+the shared accounts logged in there (`*` on its selection), personal ones
+only counted. STATUS: `ok`, `unreachable (…)`,
+`julienning 0.9.2 (this machine 0.10.0)`, `machine id changed`, `not set up`,
+`setup incomplete` (run `julienning host add box`). `--json` prints
+`{"hosts": [...]}` with the versions, `tmux_mode`, the accounts, the status
+and, for a host that did not answer, `error`.
+
+`julienning host remove box` forgets the host here and closes its ssh
+socket:
+`Removed box from this machine's hosts; julienning on box is unchanged (remove it there first with: julienning uninstall --host box)`.
+
 ## How claims work
 
 A claim is an advisory "in use" marker, one per dev + machine, so an account
@@ -1257,8 +1408,9 @@ functions stay until you close it or run `exec $SHELL`.
 `--purge` asks first
 (`Delete ~/.julienning, ~/.local/share/julienning/versions, ~/.local/bin/julienning? This cannot be undone. [y/N]`)
 and without a terminal needs `--yes`. It deletes only julienning's own files
-there, and a directory only once that leaves it empty; anything else stays and
-is listed. The `julienning` symlink goes only when it points into the versions
+there (`hosts.json` and the ssh sockets included), and a directory only once
+that leaves it empty; anything else stays and is listed. No uninstall here
+touches a host; `julienning uninstall --host box` uninstalls there. The `julienning` symlink goes only when it points into the versions
 dir. A path that is `/`, `$HOME` or a parent of `$HOME` (a bad
 `JULIENNING_HOME`, `JULIENNING_VERSIONS_DIR` or `JULIENNING_BIN_DIR`) is
 refused before anything changes.
@@ -1424,6 +1576,13 @@ Common messages:
 
 - **`usage pending` in the status line**: normal until the first reply of a
   session.
+- **`cannot reach box (…); check with: ssh devbox.example.com`**: ssh itself
+  failed (the part in parentheses is its last message). Run the `ssh` line by
+  hand: julienning never answers password or host-key prompts, so accept the
+  host key once and use a key (`ssh-copy-id devbox.example.com`).
+- **`box: no answer from julienning at … (run: julienning host add box to repair the entry)`**:
+  julienning moved or was removed there; `host add` finds it again or
+  reinstalls it.
 - **Status line shows only model and context**: julienning replaced that dir's
   statusLine; `forget` or `uninstall` restores yours.
 - **`Worker URL or token not configured (run: julienning setup, or set JULIENNING_REMOTE_URL and JULIENNING_TOKEN)`**:
@@ -1486,6 +1645,8 @@ Common messages:
 | `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off), `tmux` ([tmux mode](#tmux-mode): absent until decided, then `enabled` and `session`) |
 | `current` | path of the selected config dir (read by the `claude` function) |
 | `pins.json` | [pins](#pins): directory → account email (the `claude` function asks julienning about pins only while it exists) |
+| `hosts.json` | [other machines](#other-machines): name, ssh destination, machine id, home, platform and the paths of julienning, claude and tmux there |
+| `ssh/` | ssh control sockets, one per host |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |
 | `claims.json` | emails this machine holds a claim on |
 | `patches.json` | statusLine values replaced in settings.json, for restore |

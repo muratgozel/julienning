@@ -22,6 +22,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "sync",
+		Host:    cli.HostForward,
 		Summary: "give every shared account here the same Claude Code settings and CLAUDE.md, asking which to keep",
 		Usage:   "sync [--from NICKNAME|EMAIL|CONFIG | --check]",
 		Run:     runSync,

@@ -14,6 +14,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "adopt",
+		Host:    cli.HostForward,
 		Summary: "register an existing Claude config dir",
 		Usage:   "adopt DIR [--name NAME]",
 		Run:     runAdopt,

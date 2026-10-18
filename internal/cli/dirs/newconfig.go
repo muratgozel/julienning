@@ -26,6 +26,7 @@ const maxAutoNumber = 999
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "new-config",
+		Host:    cli.HostForward,
 		Summary: "create and register a config dir for a team account and start claude in it to sign in; the account is shared automatically",
 		Usage:   "new-config [--name NAME] [--copy-settings-from NAME] [--nick NICK] [--no-share] [--no-login]",
 		Run:     runNewConfig,

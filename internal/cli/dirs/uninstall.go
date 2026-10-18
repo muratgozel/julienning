@@ -14,16 +14,19 @@ import (
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/hosts"
 	"github.com/muratgozel/julienning/internal/paths"
 	"github.com/muratgozel/julienning/internal/pins"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/sharedcache"
+	"github.com/muratgozel/julienning/internal/sshx"
 	"github.com/muratgozel/julienning/internal/tui"
 )
 
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "uninstall",
+		Host:    cli.HostForward,
 		Summary: "undo setup: settings.json entries, shell hook, claims, selection, pins; offers to move sessions into ~/.claude (--purge: also data and binary)",
 		Usage:   "uninstall [--purge] [--yes] [--move-sessions]",
 		Run:     runUninstall,
@@ -452,8 +455,9 @@ func purgeDir(env cli.Env, say func(string, ...any), dir string, owned func(dir 
 		}
 		path := filepath.Join(dir, e.Name())
 		if e.IsDir() {
-			// Only sent/ is an owned directory; it is emptied the same way.
-			if err := purgeDir(env, func(string, ...any) {}, path, ownedSentEntry); err != nil {
+			// The owned directories (sent/, ssh/, received/) are emptied the
+			// same way, each by its own rule.
+			if err := purgeDir(env, func(string, ...any) {}, path, ownedSubdirs[e.Name()]); err != nil {
 				return err
 			}
 			if _, err := os.Lstat(path); err == nil {
@@ -496,13 +500,22 @@ var stateFiles = map[string]bool{
 	config.ConfigFile: true, config.CurrentFile: true, config.PinsFile: true, sharedcache.File: true,
 	claims.File: true, claudecfg.PatchesFile: true, selfupdate.CheckFile: true,
 	config.ErrorLog: true, config.ErrorLog + ".trim": true, claims.LockFile: true,
-	".claims-reconciled": true,
+	".claims-reconciled": true, hosts.File: true,
+}
+
+// ownedSubdirs are the directories julienning creates in its state dir and
+// what it owns inside each: the send-usage cache, the ssh control sockets
+// (named by ssh's %C hash) and the receipts of transferred sessions.
+var ownedSubdirs = map[string]func(string, os.DirEntry) bool{
+	config.SentDir:    ownedSentEntry,
+	sshx.SocketDir:    ownedSocketEntry,
+	hosts.ReceivedDir: ownedReceiptEntry,
 }
 
 func ownedStateEntry(_ string, e os.DirEntry) bool {
 	name := e.Name()
 	if e.IsDir() { // false for a symlink, which is never julienning's
-		return name == config.SentDir
+		return ownedSubdirs[name] != nil
 	}
 	if stateFiles[name] || strings.HasPrefix(name, ".last-") {
 		return true
@@ -519,6 +532,21 @@ var sentFileRe = regexp.MustCompile(`^([0-9a-f]{8}|[^/]*@[^/]*)\.(json|inflight)
 
 func ownedSentEntry(_ string, e os.DirEntry) bool {
 	return !e.IsDir() && sentFileRe.MatchString(e.Name())
+}
+
+// socketRe matches ssh control sockets named by %C (40 hex characters), and
+// the temporary name ssh binds before renaming.
+var socketRe = regexp.MustCompile(`^[0-9a-f]{40}(\.[A-Za-z0-9]{16})?$`)
+
+func ownedSocketEntry(_ string, e os.DirEntry) bool {
+	return !e.IsDir() && socketRe.MatchString(e.Name())
+}
+
+// receiptRe matches received/<session id>.json and its atomic-write temps.
+var receiptRe = regexp.MustCompile(`^\.?[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json(\.[^/]*)?$`)
+
+func ownedReceiptEntry(_ string, e os.DirEntry) bool {
+	return !e.IsDir() && receiptRe.MatchString(e.Name())
 }
 
 // versionNameRe matches installed version files (`dev` or a semver without

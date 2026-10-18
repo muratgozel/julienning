@@ -17,12 +17,14 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "share",
+		Host:    cli.HostForward,
 		Summary: "add an account to the team allowlist under a team-wide nickname",
 		Usage:   "share EMAIL [--nick NAME]",
 		Run:     runShare,
 	})
 	cli.Register(&cli.Command{
 		Name:    "unshare",
+		Host:    cli.HostForward,
 		Summary: "remove an account from the team allowlist (deletes its usage and claims)",
 		Usage:   "unshare NICKNAME|EMAIL|CONFIG [--yes]",
 		Run:     runUnshare,

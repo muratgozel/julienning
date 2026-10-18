@@ -10,6 +10,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "login",
+		Host:    cli.HostForward,
 		Summary: "run `claude` against a config dir so it can sign in",
 		Usage:   "login NICKNAME|EMAIL|CONFIG [-- claude args...]",
 		Run:     runLogin,

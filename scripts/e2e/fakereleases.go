@@ -9,6 +9,9 @@
 //	                                          re-read per request so the harness
 //	                                          "publishes" by rewriting that file
 //	GET|HEAD /releases/download/<tag>/<asset> the file <root>/<tag>/<asset>
+//	GET|HEAD /raw/main/scripts/install.sh     the file <root>/install.sh (GitHub
+//	                                          serves the repo's files there too; it
+//	                                          is what a host runs during host add)
 //
 // Build and run: go build -o fakereleases scripts/e2e/fakereleases.go &&
 // ./fakereleases -root DIR [-port N]. It prints one line,
@@ -68,6 +71,10 @@ func main() {
 			return
 		}
 		http.ServeFile(w, r, filepath.Join(abs, tag, asset))
+	})
+
+	mux.HandleFunc("/raw/main/scripts/install.sh", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join(abs, "install.sh"))
 	})
 
 	fmt.Printf("listening on %s\n", base)

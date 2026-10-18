@@ -19,12 +19,14 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "pin",
+		Host:    cli.HostForward,
 		Summary: "make plain claude and use open an account in this directory and below (TARGET: nickname, email or config name; none: show; --list: all pins)",
 		Usage:   "pin [TARGET] | pin --list",
 		Run:     runPin,
 	})
 	cli.Register(&cli.Command{
 		Name:    "unpin",
+		Host:    cli.HostForward,
 		Summary: "remove the pin on this directory, or on DIR",
 		Usage:   "unpin [DIR]",
 		Run:     runUnpin,

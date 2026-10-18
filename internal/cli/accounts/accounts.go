@@ -14,6 +14,7 @@ import (
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/hosts"
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 	"github.com/muratgozel/julienning/internal/usage"
@@ -22,6 +23,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "accounts",
+		Host:    cli.HostForward,
 		Summary: "list the shared accounts, ranked, with usage and claims",
 		Usage:   "accounts [--json]",
 		Run:     runAccounts,
@@ -136,6 +138,7 @@ func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syn
 		return nil
 	}
 	loc := location()
+	v := viewerOf(env, cfg)
 	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "#\tNICK\tACCOUNT\tSESSION\tWEEK\tSTATE\tLOCAL\tUPDATED")
 	for i := range listing.Accounts {
@@ -146,7 +149,7 @@ func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syn
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			rank, orDash(a.Nickname), a.Email, column(a.Session, n, loc), column(a.Week, n, loc),
-			state(a, cfg.Dev, n, loc), localColumn(local[strings.ToLower(a.Email)], isCurrent), updated(a, n))
+			stateFor(a, v, n, loc), localColumn(local[strings.ToLower(a.Email)], isCurrent), updated(a, n))
 	}
 	// Unranked: the Worker has not listed them yet.
 	for _, s := range syncRows {
@@ -199,34 +202,106 @@ func column(w *remote.Window, n time.Time, loc *time.Location) string {
 // younger than this counts as "in use".
 const ownActivityTTL = 15 * time.Minute
 
-// mine reports whether the querying dev holds a claim on the account or
-// reported usage recently. The Worker leaves one's own activity out of
-// `state`/`busy_by` on purpose (so `next` never avoids your own account), so
-// the table has to add "you" back for the human reading it.
-func mine(a *remote.Account, self string, n time.Time) bool {
+// viewer is who reads the table: the dev, and for "in use by you on box"
+// this machine's id and the names hosts.json gives other machine ids.
+type viewer struct {
+	dev     string
+	machine string            // "" leaves the machines out
+	hosts   map[string]string // machine id → host name
+}
+
+// yourMachines lists the machines the querying dev holds a claim on the
+// account from or reported usage from recently, in first-seen order. The
+// Worker leaves one's own activity out of `state`/`busy_by` on purpose (so
+// `next` never avoids your own account), so the table has to add "you"
+// back for the human reading it.
+func yourMachines(a *remote.Account, self string, n time.Time) []string {
 	if self == "" {
-		return false
+		return nil
+	}
+	var ids []string
+	add := func(id string) {
+		for _, x := range ids {
+			if x == id {
+				return
+			}
+		}
+		ids = append(ids, id)
 	}
 	for _, c := range a.Claims {
 		if c.Dev == self {
-			return true
+			add(c.MachineID)
 		}
 	}
-	return a.Reporter != nil && a.Reporter.Dev == self && a.CollectedAt != nil && n.Sub(*a.CollectedAt) < ownActivityTTL
+	if a.Reporter != nil && a.Reporter.Dev == self && a.CollectedAt != nil && n.Sub(*a.CollectedAt) < ownActivityTTL {
+		add(a.Reporter.MachineID)
+	}
+	return ids
 }
 
+// you names the querying dev in STATE: "you" when every claim and recent
+// report is from this machine (SPEC "accounts"), else "you on box", "you on
+// box, gpu", "you here and on box", or "another machine" for a machine id
+// hosts.json does not know.
+func (v viewer) you(ids []string) string {
+	if v.machine == "" {
+		return "you"
+	}
+	here, unknown := false, 0
+	var names []string
+	for _, id := range ids {
+		switch name, ok := v.hosts[id]; {
+		case id == v.machine:
+			here = true
+		case ok:
+			names = append(names, name)
+		default:
+			unknown++
+		}
+	}
+	if len(names) == 0 && unknown == 0 {
+		return "you"
+	}
+	sort.Strings(names)
+	where := strings.Join(names, ", ")
+	switch {
+	case unknown == 1 && where == "":
+		where = "another machine"
+	case unknown == 1:
+		where += " and another machine"
+	case unknown > 1 && where == "":
+		where = fmt.Sprintf("%d other machines", unknown)
+	case unknown > 1:
+		where += fmt.Sprintf(" and %d other machines", unknown)
+	}
+	if here {
+		return "you here and on " + where
+	}
+	return "you on " + where
+}
+
+func mine(a *remote.Account, self string, n time.Time) bool { return len(yourMachines(a, self, n)) > 0 }
+
+// state renders STATE for dev self without telling machines apart.
 func state(a *remote.Account, self string, n time.Time, loc *time.Location) string {
+	return stateFor(a, viewer{dev: self}, n, loc)
+}
+
+func stateFor(a *remote.Account, v viewer, n time.Time, loc *time.Location) string {
+	self := v.dev
+	ids := yourMachines(a, self, n)
+	youText := v.you(ids)
 	if a.IsExhausted() {
 		s := exhaustedState(a, n, loc)
-		if mine(a, self, n) {
+		if len(ids) > 0 {
 			if len(a.BusyBy) > 0 {
-				return s + " and you"
+				return s + " and " + youText
 			}
-			return s + ", in use by you"
+			return s + ", in use by " + youText
 		}
 		return s
 	}
-	you := mine(a, self, n)
+	you := len(ids) > 0
 	switch a.State {
 	case "in_use":
 		who := a.BusyBy
@@ -235,7 +310,7 @@ func state(a *remote.Account, self string, n time.Time, loc *time.Location) stri
 		}
 		s := busy("in use", who, a.CollectedAt, n)
 		if you {
-			s += " and you"
+			s += " and " + youText
 		}
 		return s
 	case "claimed":
@@ -245,12 +320,12 @@ func state(a *remote.Account, self string, n time.Time, loc *time.Location) stri
 		}
 		s := busy("claimed", who, earliestClaim(a.Claims, who), n)
 		if you {
-			s += " and you"
+			s += " and " + youText
 		}
 		return s
 	default:
 		if you {
-			return "in use by you"
+			return "in use by " + youText
 		}
 		return "free"
 	}
@@ -389,4 +464,19 @@ func configNames(dirs []config.ConfigDir, isCurrent func(config.ConfigDir) bool)
 		preferred = names[0]
 	}
 	return names, preferred
+}
+
+// viewerOf is this machine's viewer: its machine id and the host names of
+// hosts.json (an unreadable file is warned about once and leaves them out).
+func viewerOf(env cli.Env, cfg *config.Config) viewer {
+	v := viewer{dev: cfg.Dev, machine: cfg.MachineID, hosts: map[string]string{}}
+	hf, err := hosts.Load()
+	if err != nil {
+		warnf(env, "cannot read the hosts list (%v); claims from other machines show as from another machine", err)
+		return v
+	}
+	for _, h := range hf.Hosts {
+		v.hosts[h.MachineID] = h.Name
+	}
+	return v
 }

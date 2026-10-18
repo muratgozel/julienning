@@ -15,6 +15,7 @@ import (
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "dev",
+		Host:    cli.HostForward,
 		Summary: "show or change your dev name, the name teammates see on your claims and reports",
 		Usage:   "dev [NEW]",
 		Run:     runDev,

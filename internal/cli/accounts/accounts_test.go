@@ -1347,3 +1347,42 @@ func exhaustedWith(c remote.Claim) remote.Account {
 	a.Claims = []remote.Claim{c}
 	return a
 }
+
+// STATE says where your own claims come from: hosts.json names the other
+// machines; an unknown machine id is "another machine".
+func TestStateNamesYourMachines(t *testing.T) {
+	n := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	loc := time.UTC
+	recent := n.Add(-time.Minute)
+	v := viewer{dev: "murat", machine: "aaaaaaaaaaaa", hosts: map[string]string{"bbbbbbbbbbbb": "box", "cccccccccccc": "gpu"}}
+	claim := func(dev, id string) remote.Claim { return remote.Claim{Dev: dev, MachineID: id, At: recent} }
+	cases := []struct {
+		claims   []remote.Claim
+		reporter *remote.Identity
+		state    string
+		busy     []string
+		want     string
+	}{
+		{claims: []remote.Claim{claim("murat", "aaaaaaaaaaaa")}, want: "in use by you"},
+		{claims: []remote.Claim{claim("murat", "bbbbbbbbbbbb")}, want: "in use by you on box"},
+		{claims: []remote.Claim{claim("murat", "cccccccccccc"), claim("murat", "bbbbbbbbbbbb")}, want: "in use by you on box, gpu"},
+		{claims: []remote.Claim{claim("murat", "aaaaaaaaaaaa")}, reporter: &remote.Identity{Dev: "murat", MachineID: "bbbbbbbbbbbb"}, want: "in use by you here and on box"},
+		{claims: []remote.Claim{claim("murat", "dddddddddddd")}, want: "in use by you on another machine"},
+		{claims: []remote.Claim{claim("murat", "bbbbbbbbbbbb"), claim("murat", "dddddddddddd")}, want: "in use by you on box and another machine"},
+		{claims: []remote.Claim{claim("ali", "eeeeeeeeeeee"), claim("murat", "bbbbbbbbbbbb")}, state: "claimed", busy: []string{"ali"}, want: "claimed by ali (1m) and you on box"},
+	}
+	for i, c := range cases {
+		a := remote.Account{Claims: c.claims, State: c.state, BusyBy: c.busy}
+		if c.reporter != nil {
+			a.Reporter, a.CollectedAt = c.reporter, &recent
+		}
+		if got := stateFor(&a, v, n, loc); got != c.want {
+			t.Errorf("case %d: got %q, want %q", i, got, c.want)
+		}
+	}
+	// Without a machine (the dev-only form) every claim is "you".
+	a := remote.Account{Claims: []remote.Claim{claim("murat", "bbbbbbbbbbbb")}}
+	if got := state(&a, "murat", n, loc); got != "in use by you" {
+		t.Errorf("dev only: %q", got)
+	}
+}
