@@ -22,7 +22,10 @@ func init() {
 // runShellInit emits one claude-<nick> function per team nickname in the
 // cached allowlist, logged in here or not: the function resolves the dir
 // when called, and says how to sign in when no local dir has the account.
-// It never touches the network; the cache is refreshed elsewhere.
+// It never touches the network; the cache is refreshed elsewhere. The
+// functions call julienning by its stable path (the rc line's), so they work
+// before a startup file has put ~/.local/bin on PATH; tmux mode bakes in the
+// tmux path and session, so a change reaches new terminals only.
 func runShellInit(env cli.Env) error {
 	if len(env.Args) != 1 {
 		return cli.Usagef("expected exactly one shell name (zsh or bash)")
@@ -31,7 +34,7 @@ func runShellInit(env cli.Env) error {
 	if !shell.Supported(name) {
 		return cli.Usagef("unsupported shell %q (want zsh or bash)", name)
 	}
-	_, err := config.Load()
+	cfg, err := config.Load()
 	if errors.Is(err, config.ErrNotSetup) {
 		// The rc line evals this output on every shell start: a machine that
 		// has not run setup must get empty output and exit 0, never an error.
@@ -56,7 +59,18 @@ func runShellInit(env cli.Env) error {
 			nicks = append(nicks, en.Nickname)
 		}
 	}
-	code, err := shell.Init(name, nicks, defaultDir)
+	o := shell.Options{Nicknames: nicks, DefaultDir: defaultDir}
+	if exe, stable, err := stableCommand(); err == nil && stable {
+		o.Julienning = exe
+	}
+	if session, on := cfg.TmuxSession(); on {
+		// Quietly in place when tmux is gone: this runs at every shell
+		// start, and julienning's own launches warn about it.
+		if t, err := findTmux(); err == nil {
+			o.Tmux = &shell.Tmux{Path: t.Path, Session: session}
+		}
+	}
+	code, err := shell.Init(name, o)
 	if err != nil {
 		return err
 	}

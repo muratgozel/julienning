@@ -511,7 +511,7 @@ func TestShellInitEmitsNicknameFunctions(t *testing.T) {
 	out := h.mustRun(runShellInit, "zsh")
 	contains(t, out, "# julienning shell integration (generated; do not edit)")
 	contains(t, out, `[ "$_jl_dir" != '`+def+`' ]`)
-	contains(t, out, "function claude-alpha { local _jl_dir; _jl_dir=$(command julienning resolve-dir 'alpha') || return 1; "+
+	contains(t, out, "function claude-alpha { local _jl_dir; _jl_dir=$('"+fakeExe+"' resolve-dir 'alpha') || return 1; "+
 		`if [ "$_jl_dir" = '`+def+`' ]; then env -u CLAUDE_CONFIG_DIR claude "$@"; else CLAUDE_CONFIG_DIR="$_jl_dir" command claude "$@"; fi; }`)
 	contains(t, out, "function claude-beta {")
 	if n := strings.Count(out, "function claude-"); n != 2 {
@@ -521,6 +521,46 @@ func TestShellInitEmitsNicknameFunctions(t *testing.T) {
 		notContains(t, out, gone)
 	}
 	contains(t, h.stderr.String(), `warning: skipping invalid nickname "bad;rm" of bad@team.io`)
+}
+
+// The functions call julienning by the stable path the rc line uses; a
+// build run from the repo has none and looks julienning up on PATH.
+func TestShellInitCallsJulienningByItsStablePath(t *testing.T) {
+	h := newHarness(t)
+	h.initConfig(false)
+	h.cacheNicks("claude1@team.io=alpha")
+	out := h.mustRun(runShellInit, "bash")
+	contains(t, out, "_jl_dir=$('"+fakeExe+"' resolve-dir --pin)")
+	notContains(t, out, "command julienning")
+	h.stable = false
+	out = h.mustRun(runShellInit, "bash")
+	contains(t, out, "_jl_dir=$(command julienning resolve-dir 'alpha')")
+}
+
+// tmux mode bakes the tmux path and session into the functions; with tmux
+// gone the code runs claude in place, without a word at shell start.
+func TestShellInitTmuxMode(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.initConfig(false)
+	h.cacheNicks("claude1@team.io=alpha")
+	h.tmux, h.tmuxErr = launch.Tmux{Path: "/usr/bin/tmux", Version: "3.5a"}, nil
+	out := h.mustRun(runShellInit, "bash")
+	notContains(t, out, "_julienning_claude")
+
+	cfg.Tmux = &config.Tmux{Enabled: true, Session: "work"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	out = h.mustRun(runShellInit, "bash")
+	contains(t, out, `'/usr/bin/tmux' has-session -t '=work' 2>/dev/null`)
+	contains(t, out, `_jl_dir=$('`+fakeExe+`' resolve-dir 'alpha') || return 1; if [ "$_jl_dir" = '`+filepath.Join(h.home, ".claude")+`' ]; then _julienning_claude '' "$@"; else _julienning_claude "$_jl_dir" "$@"; fi; }`)
+
+	h.tmuxErr = launch.ErrTmuxNotFound
+	out = h.mustRun(runShellInit, "bash")
+	notContains(t, out, "_julienning_claude")
+	if h.stderr.Len() != 0 {
+		t.Errorf("shell start must stay quiet: %q", h.stderr.String())
+	}
 }
 
 func TestShellInitBadArgs(t *testing.T) {

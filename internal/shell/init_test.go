@@ -6,12 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/muratgozel/julienning/internal/ptytest"
 )
 
 const testDefault = "/Users/murat/.claude"
 
 func TestInitShape(t *testing.T) {
-	got, err := Init(Zsh, []string{"beta", "alpha", "beta"}, testDefault+"/")
+	got, err := Init(Zsh, Options{Nicknames: []string{"beta", "alpha", "beta"}, DefaultDir: testDefault + "/"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +22,7 @@ func TestInitShape(t *testing.T) {
 		return "function claude-" + n + " { local _jl_dir; _jl_dir=$(command julienning resolve-dir '" + n + "') || return 1; " +
 			`if [ "$_jl_dir" = '/Users/murat/.claude' ]; then env -u CLAUDE_CONFIG_DIR claude "$@"; else CLAUDE_CONFIG_DIR="$_jl_dir" command claude "$@"; fi; }` + "\n"
 	}
-	want := wrapper(testDefault) + fn("alpha") + fn("beta")
+	want := wrapper(Options{DefaultDir: testDefault}) + fn("alpha") + fn("beta")
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -29,20 +32,81 @@ func TestInitShape(t *testing.T) {
 	if strings.Contains(got, "alias ") {
 		t.Fatalf("dir-name aliases are gone; got:\n%s", got)
 	}
+	if strings.Contains(got, "_julienning_claude") || strings.Contains(got, "tmux") {
+		t.Fatalf("tmux code without tmux mode:\n%s", got)
+	}
 }
 
-func TestInitNoNicknames(t *testing.T) {
-	got, err := Init(Bash, nil, testDefault)
+// With a stable install the functions call julienning by its path, so they
+// work before a startup file has put ~/.local/bin on PATH.
+func TestInitCallsJulienningByPath(t *testing.T) {
+	got, err := Init(Bash, Options{Nicknames: []string{"alpha"}, DefaultDir: testDefault, Julienning: "/home/dev/.local/bin/julienning"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != wrapper(testDefault) {
+	for _, want := range []string{
+		`_jl_dir=$('/home/dev/.local/bin/julienning' resolve-dir --pin) || return 1`,
+		`_jl_dir=$('/home/dev/.local/bin/julienning' resolve-dir 'alpha') || return 1;`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "command julienning") {
+		t.Errorf("still looks julienning up on PATH:\n%s", got)
+	}
+	got, err = Init(Bash, Options{Julienning: `/opt/it's/julienning`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `_jl_dir=$('/opt/it'\''s/julienning' resolve-dir --pin)`; !strings.Contains(got, want) {
+		t.Errorf("missing %q in:\n%s", want, got)
+	}
+}
+
+func TestInitTmuxShape(t *testing.T) {
+	o := Options{Nicknames: []string{"alpha"}, DefaultDir: testDefault, Tmux: &Tmux{Path: "/usr/bin/tmux", Session: "claude"}}
+	for _, sh := range []string{Bash, Zsh} {
+		got, err := Init(sh, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			`if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then _julienning_claude "$CLAUDE_CONFIG_DIR" "$@"; return; fi`,
+			`    _julienning_claude "$_jl_dir" "$@"` + "\n  else\n    _julienning_claude '' \"$@\"\n",
+			`if [ "$_jl_dir" = '/Users/murat/.claude' ]; then _julienning_claude '' "$@"; else _julienning_claude "$_jl_dir" "$@"; fi; }`,
+			`[ -z "${TMUX:-}" ] && [ "${TERM_PROGRAM:-}" != vscode ] && [ -x '/usr/bin/tmux' ]`,
+			`'/usr/bin/tmux' has-session -t '=claude' 2>/dev/null`,
+			`'/usr/bin/tmux' new-window -t '=claude:' -c "$PWD" "$@" && '/usr/bin/tmux' attach-session -t '=claude'`,
+			`env -u CLAUDE_CONFIG_DIR '/usr/bin/tmux' new-session -s 'claude' -c "$PWD" "$@"`,
+			`set -- /bin/sh -c 'trap : INT; "$@"; exec "${SHELL:-/bin/sh}"' julienning env "$@"`,
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: missing %q in:\n%s", sh, want, got)
+			}
+		}
+		find := map[string]string{Bash: "_jl_bin=$(type -P claude)", Zsh: "_jl_bin=$(whence -p claude)"}[sh]
+		if !strings.Contains(got, find) {
+			t.Errorf("%s: claude's path must come from a PATH search (%s):\n%s", sh, find, got)
+		}
+		if strings.Contains(got, "command -v claude") {
+			t.Errorf("%s: command -v names the claude function itself:\n%s", sh, got)
+		}
+	}
+}
+
+func TestInitNoNicknames(t *testing.T) {
+	got, err := Init(Bash, Options{DefaultDir: testDefault})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != wrapper(Options{DefaultDir: testDefault}) {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestInitWithoutDefaultDir(t *testing.T) {
-	got, err := Init(Zsh, []string{"alpha"}, "")
+	got, err := Init(Zsh, Options{Nicknames: []string{"alpha"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +120,7 @@ func TestInitWithoutDefaultDir(t *testing.T) {
 }
 
 func TestInitQuotesDefaultDir(t *testing.T) {
-	got, err := Init(Zsh, []string{"a"}, `/tmp/it's $HOME/.claude`)
+	got, err := Init(Zsh, Options{Nicknames: []string{"a"}, DefaultDir: `/tmp/it's $HOME/.claude`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +143,23 @@ func TestValidNickname(t *testing.T) {
 }
 
 func TestInitRejectsBadInput(t *testing.T) {
-	if _, err := Init("fish", nil, testDefault); err == nil {
+	if _, err := Init("fish", Options{DefaultDir: testDefault}); err == nil {
 		t.Error("want error for fish")
 	}
 	for _, n := range []string{"a; rm -rf /", "A", "", "$(x)"} {
-		if _, err := Init(Zsh, []string{"ok", n}, testDefault); err == nil {
+		if _, err := Init(Zsh, Options{Nicknames: []string{"ok", n}, DefaultDir: testDefault}); err == nil {
 			t.Errorf("%q: want error", n)
+		}
+	}
+	for _, o := range []Options{
+		{Julienning: "bin/julienning"},
+		{Tmux: &Tmux{Path: "tmux", Session: "claude"}},
+		{Tmux: &Tmux{Path: "/usr/bin/tmux", Session: "a:b"}},
+		{Tmux: &Tmux{Path: "/usr/bin/tmux", Session: "it's"}},
+		{Tmux: &Tmux{Path: "/usr/bin/tmux", Session: ""}},
+	} {
+		if _, err := Init(Bash, o); err == nil {
+			t.Errorf("%+v: want error", o)
 		}
 	}
 }
@@ -98,16 +173,22 @@ func TestGeneratedCodeIsValid(t *testing.T) {
 			if err != nil {
 				t.Skipf("%s not installed", sh)
 			}
-			code, err := Init(sh, []string{"a", "b.c", "d_e-f", "9"}, `/tmp/it's home/.claude`)
-			if err != nil {
-				t.Fatal(err)
-			}
-			script := filepath.Join(t.TempDir(), "init.sh")
-			if err := os.WriteFile(script, []byte(code), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if out, err := exec.Command(bin, "-n", script).CombinedOutput(); err != nil {
-				t.Fatalf("%s -n failed: %v\n%s\ncode:\n%s", sh, err, out, code)
+			for _, o := range []Options{
+				{Nicknames: []string{"a", "b.c", "d_e-f", "9"}, DefaultDir: `/tmp/it's home/.claude`},
+				{Nicknames: []string{"a"}, DefaultDir: `/tmp/it's home/.claude`, Julienning: `/opt/it's/julienning`,
+					Tmux: &Tmux{Path: `/opt/it's/tmux`, Session: "claude-x_1"}},
+			} {
+				code, err := Init(sh, o)
+				if err != nil {
+					t.Fatal(err)
+				}
+				script := filepath.Join(t.TempDir(), "init.sh")
+				if err := os.WriteFile(script, []byte(code), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command(bin, "-n", script).CombinedOutput(); err != nil {
+					t.Fatalf("%s -n failed: %v\n%s\ncode:\n%s", sh, err, out, code)
+				}
 			}
 		})
 	}
@@ -123,6 +204,12 @@ type shellFixture struct {
 }
 
 func newShellFixture(t *testing.T, sh string, nicks []string, defaultDir string) *shellFixture {
+	return newShellFixtureWith(t, sh, Options{Nicknames: nicks, DefaultDir: defaultDir})
+}
+
+// newShellFixtureWith generates the code from o. A Julienning path of
+// "fake" is replaced by the fake julienning's absolute path.
+func newShellFixtureWith(t *testing.T, sh string, o Options) *shellFixture {
 	t.Helper()
 	bin, err := exec.LookPath(sh)
 	if err != nil {
@@ -147,10 +234,13 @@ if [ -f "`+f.mapDir+`/$2" ]; then cat "`+f.mapDir+`/$2"; exit 0; fi
 echo "julienning: unknown target \"$2\"" >&2
 exit 1
 `, 0o755)
-	if defaultDir == "" {
-		defaultDir = filepath.Join(root, ".claude")
+	if o.DefaultDir == "" {
+		o.DefaultDir = filepath.Join(root, ".claude")
 	}
-	code, err := Init(sh, nicks, defaultDir)
+	if o.Julienning == "fake" {
+		o.Julienning = filepath.Join(f.binDir, "julienning")
+	}
+	code, err := Init(sh, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +450,159 @@ func TestWrapperSurvivesExistingAliases(t *testing.T) {
 			want := target + " --foo bar two words\n" + target + " baz\n"
 			if out != want {
 				t.Fatalf("got:\n%s\nwant:\n%s", out, want)
+			}
+		})
+	}
+}
+
+// tmuxFixture adds a fake tmux to a shell fixture: every call is logged to
+// map/tmux one argument per bracket, with the CLAUDE_CONFIG_DIR tmux itself
+// saw; has-session succeeds while map/session exists; new-session and
+// new-window run the window command in the -c directory, with SHELL set to a
+// fake shell that says it took over the window.
+func tmuxFixture(t *testing.T, sh string, o Options) *shellFixture {
+	t.Helper()
+	f := newShellFixtureWith(t, sh, o)
+	tmux := filepath.Join(f.binDir, "tmux")
+	f.write(tmux, `#!/bin/sh
+{ printf '[%s]' "$@"; echo " env=${CLAUDE_CONFIG_DIR-unset}"; } >> "`+f.mapDir+`/tmux"
+case "$1" in
+has-session) [ -f "`+f.mapDir+`/session" ]; exit ;;
+new-session|new-window) dir=$5; shift 5; cd "$dir" && SHELL="`+f.binDir+`/winshell" exec "$@" ;;
+attach-session) echo attached ;;
+esac
+`, 0o755)
+	f.write(filepath.Join(f.binDir, "winshell"), "#!/bin/sh\necho 'window shell'\n", 0o755)
+	// Regenerate with the fake tmux's path baked in.
+	o.Tmux = &Tmux{Path: tmux, Session: "claude"}
+	if o.DefaultDir == "" {
+		o.DefaultDir = filepath.Join(f.root, ".claude")
+	}
+	if o.Julienning == "fake" {
+		o.Julienning = filepath.Join(f.binDir, "julienning")
+	}
+	code, err := Init(sh, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.write(f.initSh, code, 0o644)
+	return f
+}
+
+// runTTY is run with stdin and stdout on a pseudo-terminal, from dir.
+func (f *shellFixture) runTTY(dir, body string, extraEnv ...string) string {
+	f.t.Helper()
+	script := filepath.Join(f.root, "run.sh")
+	f.write(script, "eval \"$(cat '"+f.initSh+"')\" || exit 3\n"+body+"\n", 0o644)
+	cmd := exec.Command(f.bin, script)
+	cmd.Dir = dir
+	cmd.Env = append([]string{
+		"PATH=" + f.binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + f.root,
+		"JULIENNING_HOME=" + f.jlHome,
+		"TERM=dumb",
+	}, extraEnv...)
+	out, ok, err := ptytest.Run(cmd, 20*time.Second)
+	if !ok {
+		f.t.Skip("no pseudo-terminal available")
+	}
+	if err != nil {
+		f.t.Fatalf("%s: %v\n%s", f.sh, err, out)
+	}
+	return out
+}
+
+func (f *shellFixture) tmuxCalls() string {
+	f.t.Helper()
+	p := filepath.Join(f.mapDir, "tmux")
+	raw, err := os.ReadFile(p)
+	if err != nil && !os.IsNotExist(err) {
+		f.t.Fatal(err)
+	}
+	_ = os.Remove(p)
+	return string(raw)
+}
+
+func TestTmuxModeLaunchRule(t *testing.T) {
+	for _, sh := range []string{Zsh, Bash} {
+		t.Run(sh, func(t *testing.T) {
+			f := tmuxFixture(t, sh, Options{Nicknames: []string{"alpha"}, Julienning: "fake"})
+			target := filepath.Join(f.root, ".claude-a")
+			other := filepath.Join(f.root, ".claude-b")
+			defaultDir := filepath.Join(f.root, ".claude")
+			work := filepath.Join(f.root, "work dir")
+			for _, d := range []string{target, other, defaultDir, work} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			work, _ = filepath.EvalSymlinks(work)
+			f.write(filepath.Join(f.jlHome, "current"), target+"\n", 0o600)
+			claude := filepath.Join(f.binDir, "claude")
+			window := func(acct ...string) string {
+				w := "[/bin/sh][-c][" + WindowScript + "][julienning][env]"
+				for _, a := range acct {
+					w += "[" + a + "]"
+				}
+				return w + "[" + claude + "][x][two words]"
+			}
+
+			// No session yet: a new one, with claude as its first window;
+			// the window's shell takes over when claude exits.
+			out := f.runTTY(work, "claude x 'two words'")
+			want := "[new-session][-s][claude][-c][" + work + "]" + window("CLAUDE_CONFIG_DIR="+target) + " env=unset\n"
+			if got := f.tmuxCalls(); got != "[has-session][-t][=claude] env=unset\n"+want {
+				t.Errorf("new session:\n got %q\nwant %q", got, want)
+			}
+			if !strings.Contains(out, target+" x two words\nwindow shell\n") {
+				t.Errorf("new session output:\n%s", out)
+			}
+
+			// A session exists: a new window in it, then attach.
+			f.write(filepath.Join(f.mapDir, "session"), "", 0o644)
+			out = f.runTTY(work, "claude x 'two words'")
+			want = "[has-session][-t][=claude] env=unset\n" +
+				"[new-window][-t][=claude:][-c][" + work + "]" + window("CLAUDE_CONFIG_DIR="+target) + " env=unset\n" +
+				"[attach-session][-t][=claude] env=unset\n"
+			if got := f.tmuxCalls(); got != want {
+				t.Errorf("existing session:\n got %q\nwant %q", got, want)
+			}
+			if !strings.Contains(out, "attached") {
+				t.Errorf("not attached:\n%s", out)
+			}
+			_ = os.Remove(filepath.Join(f.mapDir, "session"))
+
+			// An exported CLAUDE_CONFIG_DIR is the window's account, and a
+			// new tmux server never inherits it.
+			f.runTTY(work, "claude x 'two words'", "CLAUDE_CONFIG_DIR="+other)
+			if got := f.tmuxCalls(); !strings.Contains(got, window("CLAUDE_CONFIG_DIR="+other)+" env=unset\n") {
+				t.Errorf("exported variable:\n%s", got)
+			}
+
+			// The default dir is passed as an unset variable, explicitly.
+			f.write(filepath.Join(f.jlHome, "current"), defaultDir+"\n", 0o600)
+			f.runTTY(work, "claude x 'two words'")
+			if got := f.tmuxCalls(); !strings.Contains(got, window("-u", "CLAUDE_CONFIG_DIR")) {
+				t.Errorf("default dir:\n%s", got)
+			}
+
+			// claude-<nick> takes the same way, with its own dir.
+			f.point("alpha", other)
+			f.runTTY(work, "claude-alpha x 'two words'")
+			if got := f.tmuxCalls(); !strings.Contains(got, window("CLAUDE_CONFIG_DIR="+other)) {
+				t.Errorf("nickname function:\n%s", got)
+			}
+
+			// In place: inside tmux, from VS Code, or without a terminal.
+			f.write(filepath.Join(f.jlHome, "current"), target+"\n", 0o600)
+			for _, env := range []string{"TMUX=/tmp/tmux-1/default,1,0", "TERM_PROGRAM=vscode"} {
+				out := f.runTTY(work, "claude x 'two words'", env)
+				if got := f.tmuxCalls(); got != "" || !strings.Contains(out, target+" x two words") {
+					t.Errorf("%s: tmux calls %q, output %q", env, got, out)
+				}
+			}
+			if out := f.run("", "claude x 'two words'"); out != target+" x two words\n" || f.tmuxCalls() != "" {
+				t.Errorf("no terminal: %q", out)
 			}
 		})
 	}

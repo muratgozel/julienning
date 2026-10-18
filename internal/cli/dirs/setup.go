@@ -18,14 +18,17 @@ import (
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/discover"
+	"github.com/muratgozel/julienning/internal/launch"
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 	"github.com/muratgozel/julienning/internal/shell"
 )
 
-// rcMarker ends the line setup appends to the rc file. Re-runs look for it, so
-// a user who rewrites the line keeps the marker to stay idempotent.
+// rcMarker ends the line setup appends to the rc file. Re-runs find the line
+// by it and rewrite it in place when it differs from hookLine (it calls
+// julienning by its absolute path, which an install can change); it is
+// never moved, since its position decides which claude function wins.
 //
 // legacyRCMarker is what builds before v0.4 wrote. It is too generic (an
 // unrelated `# julienning is great` comment matched it), so a line still
@@ -41,8 +44,8 @@ const indent = "          "
 func init() {
 	cli.Register(&cli.Command{
 		Name:    "setup",
-		Summary: "set up this machine: identity, Worker, config dirs, settings.json, shell hook",
-		Usage:   "setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...",
+		Summary: "set up this machine: identity, Worker, config dirs, settings.json, shell hook, tmux mode",
+		Usage:   "setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--tmux SESSION | --no-tmux] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...",
 		Run:     runSetup,
 	})
 }
@@ -62,6 +65,8 @@ func runSetup(env cli.Env) error {
 	noRC := fs.Bool("no-rc", false, "do not touch the shell rc file")
 	yes := fs.Bool("yes", false, "never prompt; take the non-interactive defaults")
 	namePrefix := fs.String("name-prefix", "", "name dirs registered from now on <NAME><N> (default julienning: julienning1, …)")
+	tmuxSession := fs.String("tmux", "", "run claude inside this tmux session (tmux mode)")
+	noTmux := fs.Bool("no-tmux", false, "run claude in place, not inside tmux")
 	var shareFlags, nickFlags stringList
 	fs.Var(&shareFlags, "share", "share this account with the team (repeatable)")
 	fs.Var(&nickFlags, "nick", "team nickname for an account named by this run, as EMAIL=NAME (repeatable; default: the email's local part)")
@@ -76,6 +81,16 @@ func runSetup(env cli.Env) error {
 	}
 	if *namePrefix != "" && !config.ValidNamePrefix(*namePrefix) {
 		return cli.Usagef("invalid --name-prefix %q: %s (e.g. --name-prefix team)", *namePrefix, config.NamePrefixRule)
+	}
+	if *tmuxSession != "" && *noTmux {
+		return cli.Usagef("--tmux and --no-tmux exclude each other")
+	}
+	if *tmuxSession != "" && !config.ValidTmuxSession(*tmuxSession) {
+		return cli.Usagef("invalid --tmux %q: %s (e.g. --tmux claude)", *tmuxSession, config.TmuxSessionRule)
+	}
+	_, tmuxErr := findTmux()
+	if *tmuxSession != "" && tmuxErr != nil {
+		return fmt.Errorf("--tmux %s: %v (install tmux 2.1 or newer, or leave out --tmux)", *tmuxSession, tmuxErr)
 	}
 	if *remoteURL != "" {
 		u, err := validateRemoteURL(*remoteURL)
@@ -101,13 +116,16 @@ func runSetup(env cli.Env) error {
 	interactive := !*yes && isInteractive(env)
 
 	// 1. identity
-	cfg, fresh, err := loadOrCreate(env, in, interactive, *dev)
+	cfg, fresh, renamedFrom, err := loadOrCreate(env, in, interactive, *dev)
 	if err != nil {
 		return err
 	}
 	state := "unchanged"
-	if fresh {
+	switch {
+	case fresh:
 		state = "created"
+	case renamedFrom != "":
+		state = "renamed from " + renamedFrom
 	}
 	fmt.Fprintf(env.Stdout, "Identity: dev=%s machine=%s (%s)\n", cfg.Dev, cfg.MachineID, state)
 	if *namePrefix != "" {
@@ -148,7 +166,13 @@ func runSetup(env cli.Env) error {
 		return err
 	}
 
-	// 7. next steps
+	// 7. tmux mode
+	setupTmux(env, cfg, in, interactive, tmuxErr, *tmuxSession, *noTmux)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+
+	// 8. next steps
 	fmt.Fprintln(env.Stdout, "")
 	fmt.Fprintln(env.Stdout, "Next steps:")
 	fmt.Fprintf(env.Stdout, "  open a new terminal, or run: %s\n", sourceHint(*shellName))
@@ -174,33 +198,43 @@ func runSetup(env cli.Env) error {
 }
 
 // loadOrCreate returns the existing config or a brand new one. The machine id
-// is generated exactly once, on the first run, and never regenerated.
-func loadOrCreate(env cli.Env, in *bufio.Reader, interactive bool, devFlag string) (*config.Config, bool, error) {
-	cfg, err := config.Load()
+// is generated exactly once, on the first run, and never regenerated. A
+// --dev that renames an existing setup goes through renameDev, so the
+// claims held under the old name move to the new one; renamedFrom is the
+// old name then.
+func loadOrCreate(env cli.Env, in *bufio.Reader, interactive bool, devFlag string) (cfg *config.Config, fresh bool, renamedFrom string, err error) {
+	cfg, err = config.Load()
 	switch {
 	case err == nil:
-		if devFlag != "" {
-			name, err := normalizeDev(devFlag)
-			if err != nil {
-				return nil, false, err
-			}
-			cfg.Dev = name
+		if devFlag == "" {
+			return cfg, false, "", nil
 		}
-		return cfg, false, nil
+		name, err := normalizeDev(devFlag)
+		if err != nil {
+			return nil, false, "", err
+		}
+		if name == cfg.Dev {
+			return cfg, false, "", nil
+		}
+		old := cfg.Dev
+		if err := renameDev(env, cfg, name); err != nil {
+			return nil, false, "", err
+		}
+		return cfg, false, old, nil
 	case errors.Is(err, config.ErrNotSetup):
 	default:
-		return nil, false, err
+		return nil, false, "", err
 	}
 
 	name, err := chooseDev(env, in, interactive, devFlag)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	cfg, err = config.New(name)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
-	return cfg, true, nil
+	return cfg, true, "", nil
 }
 
 func chooseDev(env cli.Env, in *bufio.Reader, interactive bool, devFlag string) (string, error) {
@@ -864,15 +898,31 @@ func shellHook(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, shellF
 		return fmt.Errorf("read %s: %w", rc, err)
 	}
 	existing := string(raw)
-	line := hookLine(shellName)
+	exe := ""
+	if p, stable, err := stableCommand(); err == nil && stable {
+		exe = p
+	}
+	line := hookLine(shellName, exe)
 
+	final := existing
 	switch state, at := hookState(existing); state {
 	case hookPresent:
-		fmt.Fprintf(env.Stdout, "Shell:    %s unchanged (hook already present)\n", shortenHome(rc))
+		lines := strings.Split(existing, "\n")
+		if lines[at] == line {
+			fmt.Fprintf(env.Stdout, "Shell:    %s unchanged (hook already present)\n", shortenHome(rc))
+			break
+		}
+		lines[at] = line
+		final = strings.Join(lines, "\n")
+		if err := rewriteRC(rc, final); err != nil {
+			return err
+		}
+		fmt.Fprintf(env.Stdout, "Shell:    %s hook line updated\n", shortenHome(rc))
 	case hookLegacy:
 		lines := strings.Split(existing, "\n")
 		lines[at] = line
-		if err := rewriteRC(rc, strings.Join(lines, "\n")); err != nil {
+		final = strings.Join(lines, "\n")
+		if err := rewriteRC(rc, final); err != nil {
 			return err
 		}
 		fmt.Fprintf(env.Stdout, "Shell:    %s updated marker\n", shortenHome(rc))
@@ -883,7 +933,8 @@ func shellHook(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, shellF
 			buf.WriteString("\n")
 		}
 		buf.WriteString(line + "\n")
-		if err := rewriteRC(rc, buf.String()); err != nil {
+		final = buf.String()
+		if err := rewriteRC(rc, final); err != nil {
 			return err
 		}
 		fmt.Fprintf(env.Stdout, "Shell:    hook added to %s\n", shortenHome(rc))
@@ -929,7 +980,34 @@ func shellHook(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, shellF
 	for _, n := range claudeAliasLines(existing) {
 		warnf(env, "%s:%d defines `alias claude=…`; if it runs a path rather than `claude`, it bypasses julienning's claude wrapper and the selected config dir is ignored (make it call `claude`, or remove it)", shortenHome(rc), n)
 	}
+	// The last definition of a shell function wins: one before julienning's
+	// line (a provisioning script's) is replaced by the wrapper, one after it
+	// replaces the wrapper.
+	_, hookAt := hookState(final)
+	for _, n := range claudeFunctionLines(final) {
+		if n-1 < hookAt {
+			fmt.Fprintf(env.Stdout, "%snote: %s:%d defines a claude function before julienning's line; julienning's definition wins\n", indent, shortenHome(rc), n)
+			continue
+		}
+		warnf(env, "%s:%d defines a claude function after julienning's line, so plain claude skips julienning (selection, pins, tmux mode); move the line ending in %s below it", shortenHome(rc), n, rcMarker)
+	}
 	return nil
+}
+
+// claudeFunctionRe matches the definitions of a shell function named claude:
+// `claude() {`, `claude ()`, `function claude {`, `function claude() {`, but
+// not claude-<nick> or anything commented out.
+var claudeFunctionRe = regexp.MustCompile(`^\s*(function\s+claude(\s|\(|\{|$)|claude\s*\(\s*\))`)
+
+// claudeFunctionLines returns the 1-based lines defining a claude function.
+func claudeFunctionLines(content string) []int {
+	var out []int
+	for i, line := range strings.Split(content, "\n") {
+		if claudeFunctionRe.MatchString(line) {
+			out = append(out, i+1)
+		}
+	}
+	return out
 }
 
 var claudeAliasRe = regexp.MustCompile(`^\s*alias\s+(-[a-zA-Z]+\s+)*claude=`)
@@ -998,8 +1076,76 @@ func hookLineKind(line string) rcHookState {
 	}
 }
 
-func hookLine(shellName string) string {
-	return fmt.Sprintf("command -v julienning >/dev/null 2>&1 && eval \"$(julienning shell-init %s)\"  %s", shellName, rcMarker)
+// hookLine is julienning's rc line. With exe (the stable command,
+// paths.StableCommand) it calls julienning by that absolute path, so it does
+// not depend on when a distribution's startup files put ~/.local/bin on PATH
+// (Debian's ~/.profile adds it after sourcing ~/.bashrc); without one (a
+// build run from the repo) it looks julienning up on PATH.
+func hookLine(shellName, exe string) string {
+	if exe == "" {
+		return fmt.Sprintf("command -v julienning >/dev/null 2>&1 && eval \"$(julienning shell-init %s)\"  %s", shellName, rcMarker)
+	}
+	q := shell.SingleQuote(exe)
+	return fmt.Sprintf("[ -x %s ] && eval \"$(%s shell-init %s)\"  %s", q, q, shellName, rcMarker)
+}
+
+// setupTmux is setup step 7: tmux mode. --tmux and --no-tmux decide it;
+// otherwise a terminal is asked once, when tmux is installed and the mode
+// was never decided (config.json has no "tmux"), defaulting to yes over ssh,
+// where a dropped connection would end the session. tmuxErr is FindTmux's.
+func setupTmux(env cli.Env, cfg *config.Config, in *bufio.Reader, interactive bool, tmuxErr error, flagSession string, off bool) {
+	state := "unchanged"
+	prev, wasOn := cfg.TmuxSession()
+	switch {
+	case off:
+		cfg.Tmux = &config.Tmux{Enabled: false}
+	case flagSession != "":
+		cfg.Tmux = &config.Tmux{Enabled: true, Session: flagSession}
+		switch {
+		case !wasOn:
+			state = "enabled"
+		case prev != flagSession:
+			state = "updated"
+		}
+	case cfg.Tmux == nil && tmuxErr == nil && interactive:
+		overSSH := os.Getenv("SSH_CONNECTION") != ""
+		hint := "[y/N]"
+		if overSSH {
+			hint = "[Y/n]"
+		}
+		q := fmt.Sprintf("Run claude inside tmux session %q? Sessions keep running when your connection drops. %s ", config.DefaultTmuxSession, hint)
+		if yesNo(prompt(env.Stdout, in, q), overSSH) {
+			cfg.Tmux = &config.Tmux{Enabled: true, Session: config.DefaultTmuxSession}
+			state = "enabled"
+		} else {
+			cfg.Tmux = &config.Tmux{Enabled: false}
+		}
+	}
+	session, on := cfg.TmuxSession()
+	var tooOld *launch.TmuxTooOldError
+	switch {
+	case on && tmuxErr != nil:
+		fmt.Fprintf(env.Stdout, "Tmux:     on (session %q), but %v; claude runs in place until it is fixed (turn it off with: julienning setup --no-tmux)\n", session, tmuxErr)
+	case on:
+		fmt.Fprintf(env.Stdout, "Tmux:     claude runs in tmux session %q (%s)\n", session, state)
+	case errors.As(tmuxErr, &tooOld):
+		fmt.Fprintf(env.Stdout, "Tmux:     tmux %s is too old (tmux mode needs 2.1 or newer)\n", tooOld.Version)
+	case tmuxErr != nil:
+		fmt.Fprintln(env.Stdout, "Tmux:     not installed")
+	default:
+		fmt.Fprintf(env.Stdout, "Tmux:     off (enable with: julienning setup --tmux %s)\n", config.DefaultTmuxSession)
+	}
+}
+
+// yesNo reads an answer to a [Y/n] or [y/N] question; empty takes def.
+func yesNo(answer string, def bool) bool {
+	switch strings.ToLower(answer) {
+	case "y", "yes":
+		return true
+	case "n", "no":
+		return false
+	}
+	return def
 }
 
 // rewriteRC replaces an rc file's content atomically: a temp file in the

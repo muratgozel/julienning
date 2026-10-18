@@ -255,7 +255,7 @@ func TestResolveDirPin(t *testing.T) {
 // internal/shell cannot import config (config imports shell), so the
 // wrapper spells the pins file name itself; it must stay config.PinsFile.
 func TestWrapperNamesThePinsFile(t *testing.T) {
-	code, err := shell.Init(shell.Zsh, nil, "/h/.claude")
+	code, err := shell.Init(shell.Zsh, shell.Options{DefaultDir: "/h/.claude"})
 	if err != nil {
 		t.Fatal(err)
 	}

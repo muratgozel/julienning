@@ -37,7 +37,8 @@ Get the **Worker URL** and the **team token** from your team lead, then:
 
    It asks for:
 
-   - **your dev name**, the username teammates see (Enter keeps `$USER`);
+   - **your dev name**, the username teammates see (Enter keeps `$USER`;
+     `julienning dev NEW` changes it later);
    - **the Worker URL and the team token** (the token is hidden as you type;
      both are checked before anything is saved);
    - **`Share <email> (found in <dir>) with the team? [y/N]`** for each Claude
@@ -45,7 +46,11 @@ Get the **Worker URL** and the **team token** from your team lead, then:
      accounts, `n` for personal ones (it remembers). Accounts the team already
      shares are picked up without asking;
    - **`Nickname for <email> [<default>]:`** for each account you share. Enter
-     takes the part before `@`; the nickname is the same for the whole team.
+     takes the part before `@`; the nickname is the same for the whole team;
+   - **`Run claude inside tmux session "claude"?`**, once, when tmux is
+     installed: yes runs claude in a tmux window, so it keeps running when
+     your connection drops (the default over ssh; `julienning setup --tmux
+     claude` or `--no-tmux` changes it later).
 
    It then adds julienning's status line and session hooks to each team
    account's `settings.json` (a status line of your own there is saved and

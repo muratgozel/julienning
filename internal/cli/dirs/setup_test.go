@@ -457,7 +457,7 @@ func TestSetupShellHookIdempotent(t *testing.T) {
 	contains(t, out, "hook added to ~/.zshrc")
 	out = h.mustRun(runSetup)
 	contains(t, out, "~/.zshrc unchanged (hook already present)")
-	want := `command -v julienning >/dev/null 2>&1 && eval "$(julienning shell-init zsh)"  # julienning-shell-hook` + "\n"
+	want := `[ -x '/opt/bin/julienning' ] && eval "$('/opt/bin/julienning' shell-init zsh)"  # julienning-shell-hook` + "\n"
 	if rc := h.read(filepath.Join(h.home, ".zshrc")); rc != want {
 		t.Fatalf("rc =\n%q\nwant\n%q", rc, want)
 	}
@@ -483,13 +483,13 @@ func TestSetupUnrelatedCommentDoesNotCountAsHook(t *testing.T) {
 func TestSetupCommentedOutHookIsReAdded(t *testing.T) {
 	h := newHarness(t)
 	rc := filepath.Join(h.home, ".zshrc")
-	h.writeFile(rc, "# "+hookLine(shell.Zsh)+"\n")
+	h.writeFile(rc, "# "+hookLine(shell.Zsh, fakeExe)+"\n")
 
 	out := h.mustRun(runSetup)
 	contains(t, out, "hook added to ~/.zshrc")
 
 	lines := strings.Split(strings.TrimRight(h.read(rc), "\n"), "\n")
-	if len(lines) != 2 || lines[1] != hookLine(shell.Zsh) {
+	if len(lines) != 2 || lines[1] != hookLine(shell.Zsh, fakeExe) {
 		t.Fatalf("rc = %q", lines)
 	}
 	out = h.mustRun(runSetup)
@@ -510,7 +510,7 @@ func TestSetupLegacyMarkerIsRewrittenOnce(t *testing.T) {
 	out := h.mustRun(runSetup)
 	contains(t, out, "~/.zshrc updated marker")
 
-	want := "export FOO=1\n" + hookLine(shell.Zsh) + "\nexport BAR=2\n"
+	want := "export FOO=1\n" + hookLine(shell.Zsh, fakeExe) + "\nexport BAR=2\n"
 	if got := h.read(rc); got != want {
 		t.Fatalf("rc =\n%q\nwant\n%q", got, want)
 	}
@@ -560,7 +560,7 @@ func TestSetupAppendsNewlineAndWarnsAboutHandWrittenAliases(t *testing.T) {
 
 	body := h.read(rc)
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if last := lines[len(lines)-1]; last != hookLine(shell.Zsh) {
+	if last := lines[len(lines)-1]; last != hookLine(shell.Zsh, fakeExe) {
 		t.Fatalf("hook not appended on its own line: %q", last)
 	}
 	if !strings.Contains(body, "alias claude-julienning1=") {

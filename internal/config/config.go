@@ -78,6 +78,35 @@ func (s *ShareOnLogin) NicknameFor(email string) string {
 	return DefaultNickname(email)
 }
 
+// Tmux is tmux mode: julienning's launches and the shell functions run
+// claude in a window of Session instead of in place.
+type Tmux struct {
+	Enabled bool   `json:"enabled"`
+	Session string `json:"session,omitempty"`
+}
+
+// DefaultTmuxSession is the tmux session setup offers.
+const DefaultTmuxSession = "claude"
+
+// TmuxSessionRule describes ValidTmuxSession for error messages.
+const TmuxSessionRule = "1-32 letters, digits, underscore or dash"
+
+// tmuxSessionRe leaves out ':' and '.', which tmux reserves in targets, and
+// anything a shell would need quoted twice over (the name is baked into
+// shell code).
+var tmuxSessionRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// ValidTmuxSession reports whether s can name julienning's tmux session.
+func ValidTmuxSession(s string) bool { return tmuxSessionRe.MatchString(s) }
+
+// TmuxSession returns the session claude runs in when tmux mode is on.
+func (c *Config) TmuxSession() (string, bool) {
+	if c == nil || c.Tmux == nil || !c.Tmux.Enabled {
+		return "", false
+	}
+	return c.Tmux.Session, true
+}
+
 // PersonalDir is one remembered login of a personal account.
 type PersonalDir struct {
 	Email string `json:"email"` // lowercased
@@ -139,6 +168,10 @@ type Config struct {
 	// (SPEC "Install layout and updates"). nil means on; read it through
 	// AutoUpdateEnabled, which also honours EnvAutoUpdate.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
+	// Tmux is tmux mode (SPEC "tmux mode"). nil means never decided: setup
+	// asks once, in a terminal, when tmux is installed. Read it through
+	// TmuxSession.
+	Tmux *Tmux `json:"tmux,omitempty"`
 
 	// fileRemote is Remote as stored on disk and loadedRemote is Remote after
 	// env overrides. Save writes fileRemote unless the caller changed Remote,
@@ -291,6 +324,9 @@ func (c *Config) Validate() error {
 	}
 	if c.NamePrefix != "" && !ValidNamePrefix(c.NamePrefix) {
 		return fmt.Errorf("invalid name_prefix %q (%s; fix or remove it)", c.NamePrefix, NamePrefixRule)
+	}
+	if t := c.Tmux; t != nil && (t.Enabled || t.Session != "") && !ValidTmuxSession(t.Session) {
+		return fmt.Errorf("invalid tmux session %q (%s; fix it with: julienning setup --tmux NAME)", t.Session, TmuxSessionRule)
 	}
 	seenName := map[string]bool{}
 	seenDir := map[string]bool{}

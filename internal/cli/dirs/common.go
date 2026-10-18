@@ -19,6 +19,7 @@ import (
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/launch"
 	"github.com/muratgozel/julienning/internal/paths"
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/resolve"
@@ -39,6 +40,7 @@ var (
 	isInteractive = func(env cli.Env) bool { return isTerminal(env.Stdin) && isTerminal(env.Stdout) }
 	readSecret    = readSecretFromTerminal
 	stableCommand = paths.StableCommand
+	findTmux      = launch.FindTmux
 	now           = time.Now
 )
 

@@ -102,7 +102,7 @@ func TestUninstallReportsBrokenSettingsAndContinues(t *testing.T) {
 
 func TestUninstallNotSetUp(t *testing.T) {
 	h := newHarness(t)
-	h.writeFile(filepath.Join(h.home, ".zshrc"), hookLine("zsh")+"\n")
+	h.writeFile(filepath.Join(h.home, ".zshrc"), hookLine("zsh", fakeExe)+"\n")
 	out := h.mustRun(runUninstall)
 	contains(t, out, "removed the julienning hook line from ~/.zshrc")
 	notContains(t, out, "Kept")

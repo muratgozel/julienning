@@ -45,8 +45,10 @@ func ClaudePath() (string, error) {
 
 // Exec replaces the current process with `claude args...` using dir as the
 // config dir. chdir, when non-empty and existing, becomes the working
-// directory first (resuming a session from another project). A var so
-// commands can be tested without replacing the test process.
+// directory first (resuming a session from another project). With tmux mode
+// on (and the launch rule's conditions met, tmuxFor) claude runs in a window
+// of the tmux session instead (ExecTmux). A var so commands can be tested
+// without replacing the test process.
 var Exec = func(dir string, args []string, chdir string) error {
 	path, err := ClaudePath()
 	if err != nil {
@@ -58,6 +60,9 @@ var Exec = func(dir string, args []string, chdir string) error {
 				return fmt.Errorf("change directory to %s: %w", chdir, err)
 			}
 		}
+	}
+	if t, session, ok := tmuxFor(os.Stderr); ok {
+		return ExecTmux(t, session, dir, path, args)
 	}
 	argv := append([]string{"claude"}, args...)
 	if err := syscall.Exec(path, argv, Env(os.Environ(), dir)); err != nil {

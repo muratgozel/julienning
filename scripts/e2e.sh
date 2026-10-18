@@ -189,6 +189,24 @@ unset CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CONFIG_HOME JULIENNING_REMOTE_URL JULI
 # shellcheck disable=SC2016 # the variables are for the fake claude to expand
 printf '#!/bin/sh\necho "FAKE CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$T/fakebin/claude"
 chmod +x "$T/fakebin/claude"
+# A tmux that logs every call as [arg][arg]... to $T/tmux.log and keeps one
+# session (the file $T/tmux-session). A window runs its command at once, with
+# SHELL set to a fake that says it took the window over. It is on PATH before
+# any real tmux, so e2e never touches the machine's tmux server.
+cat >"$T/fakebin/tmux" <<TMUX
+#!/bin/sh
+[ "\$1" = -V ] && { echo 'tmux 3.5a'; exit 0; }
+{ printf '[%s]' "\$@"; echo; } >>"$T/tmux.log"
+case "\$1" in
+has-session) [ -f "$T/tmux-session" ] ;;
+new-session) dir=\$5; shift 5; : >"$T/tmux-session"; cd "\$dir" && SHELL="$T/fakebin/window-shell" exec "\$@" ;;
+new-window) dir=\$5; shift 5; cd "\$dir" && SHELL="$T/fakebin/window-shell" exec "\$@" ;;
+attach-session) echo "TMUX ATTACHED \$3" ;;
+*) echo "fake tmux: unexpected \$*" >&2; exit 1 ;;
+esac
+TMUX
+printf '#!/bin/sh\necho "WINDOW SHELL"\n' >"$T/fakebin/window-shell"
+chmod +x "$T/fakebin/tmux" "$T/fakebin/window-shell"
 
 # Three logged-in Claude config dirs: the default one stays personal.
 mkdir_claude() { # DIR EMAIL ACCOUNT_FILE
@@ -286,11 +304,13 @@ expect_contains "setup upgrades a settings.json from an older julienning" "updat
 expect_contains "the upgrade adds the StopFailure hook" "hook stop-failure" "$(cat "$HOME/.claude-old/settings.json")"
 expect_contains "the StopFailure hook carries the rate_limit matcher" '"matcher": "rate_limit"' "$(cat "$HOME/.claude-work/settings.json")"
 expect_contains "setup registers the work dir" ".claude-work" "$out"
+expect_contains "setup without a terminal leaves tmux mode undecided" "Tmux:     off (enable with: julienning setup --tmux claude)" "$out"
 run julienning configs
 expect_contains "configs lists alpha's dir" ".claude-work" "$out"
 expect_contains "configs lists bravo's dir" ".claude-two" "$out"
 expect_missing "the personal dir is not registered" ".claude/" "$out"
 expect_contains "setup added the shell hook line" "# julienning-shell-hook" "$(cat "$rc")"
+expect_contains "the rc line calls julienning by its absolute path" "[ -x '$JULIENNING_BIN_DIR/julienning' ] && eval \"\$('$JULIENNING_BIN_DIR/julienning' shell-init bash)\"" "$(cat "$rc")"
 expect_contains "setup patched the shared settings.json" "julienning" "$(cat "$HOME/.claude-work/settings.json")"
 expect_same "setup left the personal settings.json alone" "$T/before/personal.json" "$HOME/.claude/settings.json"
 run julienning shell-init bash
@@ -361,6 +381,39 @@ if [ ! -f "$HOME/.claude-work/projects/$enc/$sid_bravo.jsonl" ] || [ -e "$HOME/.
   fail "the moved transcript is not in alpha's dir only"
 fi
 ok "the transcript moved from bravo's dir to alpha's"
+run julienning use bravo --no-launch
+
+# --- tmux mode, with the fake tmux ---------------------------------------------------------------
+run julienning setup --yes --shell bash --tmux claude
+expect_contains "setup --tmux turns tmux mode on" 'Tmux:     claude runs in tmux session "claude" (enabled)' "$out"
+expect_contains "the shell functions run tmux by its path" "'$T/fakebin/tmux' has-session -t '=claude'" "$(julienning shell-init bash)"
+rm -f "$T/tmux.log" "$T/tmux-session"
+steps=('expect=New session' 'sleep=300ms' 'send=\r' 'expect=WINDOW SHELL')
+pty env TERM=xterm-256color julienning use alpha
+expect_contains "use starts claude in the tmux session, on the account" "FAKE CLAUDE dir=$HOME/.claude-work args=" "$out"
+window="[/bin/sh][-c][trap : INT; \"\$@\"; exec \"\${SHELL:-/bin/sh}\"][julienning][env]"
+expect_contains "no session yet: a new one, exact name, account explicit" \
+  "[new-session][-s][claude][-c][$T/proj]${window}[CLAUDE_CONFIG_DIR=$HOME/.claude-work][$T/fakebin/claude]" "$(cat "$T/tmux.log")"
+rm -f "$T/tmux.log"
+steps=('expect=TMUX ATTACHED')
+# shellcheck disable=SC2016 # expanded by the inner shell
+pty env TERM=xterm-256color bash -c 'eval "$(julienning shell-init bash)"; claude -p hi'
+expect_contains "plain claude opens a window in the existing session" "FAKE CLAUDE dir=$HOME/.claude-work args=-p hi" "$out"
+expect_contains "the window goes into the session by its exact name, then attaches" \
+  "[new-window][-t][=claude:][-c][$T/proj]${window}[CLAUDE_CONFIG_DIR=$HOME/.claude-work][$T/fakebin/claude][-p][hi]
+[attach-session][-t][=claude]" "$(cat "$T/tmux.log")"
+rm -f "$T/tmux.log"
+steps=('expect=FAKE CLAUDE')
+# shellcheck disable=SC2016 # expanded by the inner shell
+pty env TERM=xterm-256color TMUX=/tmp/tmux-e2e,1,0 bash -c 'eval "$(julienning shell-init bash)"; claude-bravo'
+expect_contains "inside tmux claude runs in place" "FAKE CLAUDE dir=$HOME/.claude-two" "$out"
+# shellcheck disable=SC2016 # expanded by the inner shell
+run bash -c 'eval "$(julienning shell-init bash)"; claude -p piped'
+expect_contains "without a terminal claude runs in place" "FAKE CLAUDE dir=$HOME/.claude-work args=-p piped" "$out"
+[ ! -s "$T/tmux.log" ] || fail "tmux was used where claude must run in place" "$(cat "$T/tmux.log")"
+ok "in place means no tmux call at all"
+run julienning setup --yes --shell bash --no-tmux
+expect_contains "setup --no-tmux turns it off" "Tmux:     off (enable with: julienning setup --tmux claude)" "$out"
 run julienning use bravo --no-launch
 
 # --- personal accounts by email -------------------------------------------------------------
@@ -538,6 +591,16 @@ printf '{"session_id":"e2e-session-1","cwd":"%s","source":"startup"}' "$T/proj" 
   CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning hook session-start
 wait_for "a live session claims the account" 15 "in use by you" row alpha
 expect_contains "the Worker lists the claim with this dev" '"dev": "e2e"' "$(account_json alpha | sed -n '/"claims": \[/,/\]/p')"
+# Renaming the dev moves the claim of the account in use to the new name.
+run julienning dev
+expect_contains "dev prints the dev name" "e2e" "$out"
+run julienning dev E2E-Renamed
+expect_contains "dev renames" "Your dev name is now e2e-renamed (was e2e)." "$out"
+claims_of() { account_json "$1" | sed -n '/"claims": \[/,/\]/p'; }
+wait_for "the claim moves to the new dev name" 15 '"dev": "e2e-renamed"' claims_of alpha
+expect_missing "no claim is left under the old dev name" '"dev": "e2e"' "$(claims_of alpha)"
+run julienning dev e2e
+wait_for "renaming back moves the claim back" 15 '"dev": "e2e"' claims_of alpha
 kill "$session_pid" 2>/dev/null || true
 wait "$session_pid" 2>/dev/null || true
 session_pid=""

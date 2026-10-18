@@ -14,6 +14,7 @@ Every julienning command, flag, output, file and error in one page, with output 
   - [The allowlist](#the-allowlist)
   - [What it changes](#what-it-changes)
   - [Default dir](#default-dir)
+  - [tmux mode](#tmux-mode)
 - [Daily use](#daily-use)
   - [Session picker](#session-picker)
   - [Personal accounts](#personal-accounts)
@@ -204,7 +205,7 @@ julienning setup
 ```
 
 ```
-julienning setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...
+julienning setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--tmux SESSION | --no-tmux] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...
 ```
 
 On the first run in a terminal it asks for (`--dev`, `--remote-url` and
@@ -212,7 +213,8 @@ On the first run in a terminal it asks for (`--dev`, `--remote-url` and
 
 - **dev name**, default `$USER` (lowercase letters, digits, `.`, `_`, `-`, at
   most 32). It goes with every report and claim. A 12-hex machine id is
-  generated once.
+  generated once. `--dev` on a machine already set up renames you like
+  [`julienning dev NEW`](#other-commands) does.
 - **Worker URL** and **team token** (typed without echo), from whoever runs the
   Worker. Both are checked with `GET /healthz` and an authenticated
   `GET /accounts` before anything is saved; a rejected token is asked for once
@@ -239,6 +241,8 @@ Dirs:     4 found
 Settings: julienning1 added, julienning2 added
           note: julienning1: replaced statusLine "~/bin/my-status.sh" (saved; `julienning uninstall` or `forget` restores it)
 Shell:    hook added to ~/.zshrc
+Run claude inside tmux session "claude"? Sessions keep running when your connection drops. [y/N] n
+Tmux:     off (enable with: julienning setup --tmux claude)
 
 Next steps:
   open a new terminal, or run: source ~/.zshrc
@@ -247,7 +251,8 @@ Next steps:
 ```
 
 The columns are the dir, the account's team nickname (`-` when it has none or
-is not shared), the email and what setup decided.
+is not shared), the email and what setup decided. The tmux question comes
+only when tmux is installed, once (see [tmux mode](#tmux-mode)).
 
 ### Nicknames
 
@@ -376,7 +381,8 @@ reporting until that email is shared.
 ### What it changes
 
 - `~/.julienning/` (`$JULIENNING_HOME`): `config.json` (0600: dev, machine id,
-  Worker URL and token, registered dirs, declined emails, name prefix) and
+  Worker URL and token, registered dirs, declined emails, name prefix, tmux
+  mode) and
   `shared.json` (allowlist snapshot: shared emails and their nicknames).
 - `<dir>/settings.json` of every registered dir, created if missing:
 
@@ -405,8 +411,17 @@ reporting until that email is shared.
   `--no-rc` skips this step.
 
   ```sh
-  command -v julienning >/dev/null 2>&1 && eval "$(julienning shell-init zsh)"  # julienning-shell-hook
+  [ -x '/Users/you/.local/bin/julienning' ] && eval "$('/Users/you/.local/bin/julienning' shell-init zsh)"  # julienning-shell-hook
   ```
+
+  It calls julienning by the same path as settings.json, so it works however
+  late your distribution's startup files put `~/.local/bin` on PATH (Debian
+  and Ubuntu add it in `~/.profile`, after `~/.bashrc` has run). A binary run
+  from the repo has no such path, and the line becomes
+  `command -v julienning >/dev/null 2>&1 && eval "$(julienning shell-init zsh)"  # julienning-shell-hook`.
+  When a re-run finds julienning's line (by its marker) with another path, it
+  rewrites it where it is (`Shell:    ~/.zshrc hook line updated`); it never
+  moves it.
 
   It defines a `claude` function that reads `~/.julienning/current` on every
   call (an exported `CLAUDE_CONFIG_DIR` always wins, then a [pin](#pins) on the
@@ -429,7 +444,12 @@ reporting until that email is shared.
   Neither is edited. An `alias claude=` line gets a warning, because an alias
   that runs a path skips the function and the selection is ignored
   (`` julienning: warning: ~/.zshrc:1 defines `alias claude=…`; if it runs a path rather than `claude`, it bypasses julienning's claude wrapper and the selected config dir is ignored (make it call `claude`, or remove it) ``).
-  It is not edited either.
+  It is not edited either. Neither is a `claude` function in the rc file
+  (`claude() {`, `function claude`), which provisioning scripts often add:
+  the last definition wins, so one above julienning's line is only noted
+  (`note: ~/.bashrc:128 defines a claude function before julienning's line; julienning's definition wins`)
+  and one below it is warned about
+  (`julienning: warning: ~/.bashrc:150 defines a claude function after julienning's line, so plain claude skips julienning (selection, pins, tmux mode); move the line ending in # julienning-shell-hook below it`).
 
 Nothing else. Config dirs themselves are never created or deleted by setup.
 
@@ -457,6 +477,49 @@ instead: `next`, `use` (also `use <personal email>` for an account logged in
 there), `login`, the `claude` function (also when a pin points there), and a
 `claude-<nickname>` function whose account is logged in there, which runs
 `env -u CLAUDE_CONFIG_DIR claude`.
+
+### tmux mode
+
+With tmux mode on, claude runs in a window of a tmux session (`claude` by
+default) instead of in your terminal, so a session keeps running when your
+connection drops or the terminal closes. Setup asks once, when tmux 2.1 or
+newer is installed (searched on PATH, then in `~/.local/bin`,
+`/usr/local/bin`, `/opt/homebrew/bin`, `~/.nix-profile/bin` and
+`/run/current-system/sw/bin`):
+
+```
+Run claude inside tmux session "claude"? Sessions keep running when your connection drops. [y/N]
+```
+
+The default is yes when setup runs over ssh (`SSH_CONNECTION` is set),
+no otherwise. Without a terminal nothing is asked and the mode stays
+undecided. `julienning setup --tmux NAME` turns it on with session NAME (1–32
+letters, digits, `_`, `-`; tmux must be installed), `--no-tmux` turns it
+off. Setup reports it on one line:
+
+```
+Tmux:     claude runs in tmux session "claude" (enabled)
+Tmux:     off (enable with: julienning setup --tmux claude)
+Tmux:     not installed
+```
+
+It applies to `next`, `use`, `login` and `new-config` when they start
+claude, to plain `claude` and to `claude-<nickname>`, whenever stdin and
+stdout are a terminal, you are not inside tmux already (`$TMUX` is empty) and
+not in VS Code's terminal (`$TERM_PROGRAM` is `vscode`). Otherwise claude runs
+in place, as without tmux mode. When the session exists, claude opens in a
+new window there and your terminal attaches to it; every terminal already
+attached to the session switches to the new window too (tmux does that).
+Otherwise a new session starts with claude as its first window. When claude
+exits, the window becomes a shell rather than closing; Ctrl-C reaches claude
+but cannot skip that. The window always names the account explicitly
+(`env CLAUDE_CONFIG_DIR=<dir> claude …`, or `env -u CLAUDE_CONFIG_DIR` for
+`~/.claude`), because a tmux window inherits the tmux server's environment,
+not your shell's. julienning's own commands follow a change at once; the
+shell functions in new terminals (they have the tmux path and session built
+in). If tmux disappears while the mode is on, claude runs in place, and
+julienning's commands warn:
+`julienning: warning: tmux mode is on, but tmux is not installed; running claude here (turn it off with: julienning setup --no-tmux)`.
 
 ## Daily use
 
@@ -939,6 +1002,24 @@ dir (see [Undo](#undo)).
 Adopted ~/.claude-backup as config "julienning4" (settings.json added).
 ```
 
+**`julienning dev [NEW]`** prints your dev name, or changes it (julienning's
+only: your operating-system user stays). The new name is lowercased and must
+follow the dev name rule. The claims this machine holds are released under
+the old name and taken again under the new one, while holding the claim-sync
+lock, so teammates see the new name on the accounts you have open right away:
+
+```
+Your dev name is now murat (was dev).
+Your dev name is already murat.
+```
+
+When the Worker cannot be reached the rename still happens and you get a
+warning:
+`julienning: warning: could not release 2 claims held as dev (…); the Worker drops them when its claim TTL runs out (12 h by default)`.
+The last usage report and refusal reports keep the old name until the next
+ones replace them. A claim sync running at that moment makes it wait up to
+5 s (`another julienning is syncing claims right now; try again in a moment`).
+
 **`julienning rename OLD NEW`** renames a registered config. Config names are
 internal labels, so no shell function changes; `nick` renames an account.
 NEW must be a valid name (letters, digits, `_`, `-`, starting with a letter or
@@ -1271,9 +1352,9 @@ Worker only: `cd worker && npm ci && npm test && npm run typecheck`.
 `make e2e` runs `scripts/e2e.sh`: it installs a release from a fake GitHub
 releases host (`scripts/e2e/fakereleases.go`) into a throwaway HOME, starts
 `wrangler dev` on a local KV namespace, builds fake Claude config dirs and a
-fake `claude`, and drives setup, the shell functions, switching, the session
-picker and the uninstall question on a pseudo-terminal (`scripts/e2e/ptydrive.go`),
-pins, `sync`, the session hooks with a fake live session, the status line and its
+fake `claude` and `tmux`, and drives setup, the shell functions, switching, the session
+picker, tmux mode and the uninstall question on a pseudo-terminal (`scripts/e2e/ptydrive.go`),
+pins, `sync`, the session hooks with a fake live session, a `dev` rename, the status line and its
 usage report, `forget`, `update` and `uninstall`, checking at the end that the
 sessions moved into `~/.claude`, that plain `claude` is native in a new
 terminal and in one left open, and that every file setup touched is
@@ -1402,7 +1483,7 @@ Common messages:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off) |
+| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off), `tmux` ([tmux mode](#tmux-mode): absent until decided, then `enabled` and `session`) |
 | `current` | path of the selected config dir (read by the `claude` function) |
 | `pins.json` | [pins](#pins): directory → account email (the `claude` function asks julienning about pins only while it exists) |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |

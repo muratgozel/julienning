@@ -163,7 +163,7 @@ integration"); dir-name aliases no longer exist.
 
 | File | Owner | Purpose |
 |------|-------|---------|
-| `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, remembered personal dirs, name prefix |
+| `config.json` | config | identity, remote, registered dirs (with pending shares from `new-config`), declined emails, remembered personal dirs, name prefix, tmux mode |
 | `current` | config | absolute path of the selected config dir |
 | `pins.json` | pins | `{version: 1, pins: [{dir, email}]}` sorted by dir; removed when the last pin goes (see "pin / unpin") |
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
@@ -194,7 +194,8 @@ integration"); dir-name aliases no longer exist.
   "personal_dirs": [{ "email": "me@personal.com", "dir": "/Users/murat/.claude" }],
   "send_min_interval_sec": 300,
   "name_prefix": "julienning",
-  "auto_update": false
+  "auto_update": false,
+  "tmux": { "enabled": true, "session": "claude" }
 }
 ```
 
@@ -212,6 +213,10 @@ claude wrapper.
 `name_prefix` is optional (absent = `julienning`, `config.Prefix()`).
 `auto_update` is optional (absent = on; `cfg.AutoUpdateEnabled()`, which also
 honours `JULIENNING_AUTO_UPDATE`).
+`tmux` is optional: tmux mode (see "tmux mode"); absent = never decided,
+`enabled` false = off. `session` is required while enabled and must match
+`^[A-Za-z0-9_-]{1,32}$` (tmux reserves `:` and `.` in targets; checked on load
+and save; `cfg.TmuxSession()`).
 
 Remote URL and token come only from setup (prompt or `--remote-url` /
 `--token`) or the env vars `JULIENNING_REMOTE_URL` / `JULIENNING_TOKEN`
@@ -381,12 +386,15 @@ exits 2. Never print secrets or tokens. `--json` prints one JSON document.
 
 ### setup
 
-`julienning setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...`
+`julienning setup [--dev NAME] [--remote-url URL] [--token TOKEN] [--name-prefix NAME] [--shell zsh|bash] [--no-rc] [--tmux SESSION | --no-tmux] [--yes] [--share EMAIL]... [--nick EMAIL=NAME]...`
 
 Idempotent. Steps, one status line each:
 
 1. Identity: as before (prompt with `$USER` default when interactive; machine
-   id generated once). `--name-prefix NAME` (validated up front, usage error
+   id generated once). On a machine already set up, a `--dev` that differs
+   renames through the steps of `dev NEW` (see "dev"), so the claims held
+   under the old name move to the new one: `Identity: dev=murat
+   machine=3fa9c2d1e07b (renamed from dev)`. `--name-prefix NAME` (validated up front, usage error
    otherwise) sets `name_prefix` and prints
    `Names:    NAME1, NAME2, … for newly registered dirs (updated|unchanged)`;
    only dirs registered afterwards are affected.
@@ -426,12 +434,29 @@ Idempotent. Steps, one status line each:
    as julienning3)`,
    ``missing (registered as NAME; run `julienning forget NAME`)``.
 5. Patch settings.json of every registered dir (see below).
-6. Shell hook line in the rc file (unchanged format and detection:
-   `… # julienning-shell-hook`). Reports, never edits, hand-written
+6. Shell hook line in the rc file, found by its `# julienning-shell-hook`
+   marker. It calls julienning by its absolute path, so it does not depend on
+   when a distribution's startup files put `~/.local/bin` on PATH (Debian's
+   `~/.profile` adds it after sourcing `~/.bashrc`):
+   `[ -x '/home/dev/.local/bin/julienning' ] && eval "$('/home/dev/.local/bin/julienning' shell-init bash)"  # julienning-shell-hook`
+   (`paths.StableCommand`, single-quoted; when it is not stable, as for a
+   build run from the repo, `command -v julienning >/dev/null 2>&1 && eval
+   "$(julienning shell-init bash)"  # julienning-shell-hook`). An existing
+   julienning line that differs is rewritten in place (`Shell:    ~/.bashrc
+   hook line updated`) and never moved; uninstall removes it by its marker.
+   Reports, never edits, hand-written
    `alias claude-<nick>=` lines for team nicknames (they hide the function),
    aliases that select a registered dir by path (the account's
-   `claude-<nick>` function replaces them), and `alias claude=` lines.
-7. Next steps.
+   `claude-<nick>` function replaces them), `alias claude=` lines, and
+   `claude` functions (`claude() {`, `claude ()`, `function claude`, not
+   commented out): one defined before julienning's line is noted
+   (`note: ~/.bashrc:128 defines a claude function before julienning's line;
+   julienning's definition wins`), one after it is warned about
+   (`~/.bashrc:150 defines a claude function after julienning's line, so plain
+   claude skips julienning (selection, pins, tmux mode); move the line ending
+   in # julienning-shell-hook below it`).
+7. tmux mode (see "tmux mode").
+8. Next steps.
 
 ### uninstall / forget
 
@@ -587,8 +612,11 @@ julienning adds, using `C = paths.StableCommand()`:
 
 `julienning shell-init zsh|bash` prints, without touching the network:
 
+- julienning is called by the absolute path of the rc line
+  (`'/home/dev/.local/bin/julienning' resolve-dir …`, `paths.StableCommand`),
+  or `command julienning` when it is not stable;
 - the `claude` wrapper: an exported `CLAUDE_CONFIG_DIR` wins; then, only
-  while `$JULIENNING_HOME/pins.json` exists, `command julienning resolve-dir
+  while `$JULIENNING_HOME/pins.json` exists, `julienning resolve-dir
   --pin` (a pin covering the working directory → its dir; no pin → empty);
   when that fails the wrapper returns 1 and never falls back to the selection
   (a pinned project must not open on another account); otherwise it reads
@@ -598,18 +626,25 @@ julienning adds, using `C = paths.StableCommand()`:
   time). A machine without pins never starts a julienning process from
   `claude`;
 - one `claude-<nick>` function per nickname in the cached allowlist (sorted,
-  deduplicated, logged in here or not): `_jl_dir=$(command julienning
+  deduplicated, logged in here or not): `_jl_dir=$(<julienning>
   resolve-dir '<nick>') || return 1`, then `env -u CLAUDE_CONFIG_DIR claude
   "$@"` when that is the default dir, else `CLAUDE_CONFIG_DIR="$_jl_dir"
   command claude "$@"`. Resolving per call means a re-login never leaves a
   stale function. It does not change `current`. A nickname failing the rule
   is skipped with a warning (nicknames become function names and cannot be
-  quoted). Dir-name aliases no longer exist.
+  quoted). Dir-name aliases no longer exist;
+- in tmux mode (on, and tmux found by `launch.FindTmux` when the code is
+  generated; otherwise nothing changes and nothing is printed), every launch
+  above goes through `_julienning_claude DIR ARGS…` (`DIR` empty = the
+  variable unset; the exported value for the wrapper with
+  `CLAUDE_CONFIG_DIR` exported), the shell side of the launch rule with the
+  tmux path and session baked in (see "tmux mode").
 
 Before setup has run it prints nothing and exits 0. Every function is
 defined as `function name { … }` (not `name() {`), so an existing alias of
 the same name in the rc file cannot break the eval; setup reports such alias
-lines (see setup step 6).
+lines (see setup step 6). A `claude()` function defined earlier in the rc file
+(provisioning scripts write one) is simply redefined.
 
 `julienning resolve-dir NICKNAME|EMAIL|CONFIG` (hidden): `resolve.Target`
 with the cached allowlist, no network; prints only the cleaned dir path on
@@ -629,7 +664,72 @@ whose find is remembered. Prints the cleaned dir; a failure is
 ``~/Code/side is pinned to me@x.io, which cannot be opened: <reason> (or remove the pin: julienning unpin ~/Code/side)``,
 exit 1. A corrupt or newer `pins.json` is an error too.
 
-### new-config / adopt / rename / login / configs
+### tmux mode (`internal/launch`, `internal/shell`, setup)
+
+`config.json` `"tmux": {"enabled": true, "session": "claude"}` (absent:
+never decided). tmux 2.1 or newer is required, checked against tmux's
+CHANGES: exact `=name` targets arrived in 2.1 (without them a target `claude`
+also matches a session `claude2`), `-c` on new-window and new-session in 1.9,
+and since 2.0 a window command given as several arguments is executed
+directly, without a shell. `launch.FindTmux` looks on PATH, then in
+`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `~/.nix-profile/bin`
+and `/run/current-system/sw/bin`, and reads `tmux -V` (a build that prints no
+number, `master`, counts as new enough).
+
+setup step 7: when `tmux` is absent from config.json and tmux is found, an
+interactive run asks `Run claude inside tmux session "claude"? Sessions
+keep running when your connection drops. [Y/n] ` (`[Y/n]` when setup runs
+over ssh, i.e. `SSH_CONNECTION` is set, else `[y/N]`; empty takes the
+default; a no records `{"enabled": false}`). `--tmux NAME` enables with that
+session name (validated up front; tmux must be found, else the error
+`--tmux NAME: tmux is not installed (install tmux 2.1 or newer, or leave out
+--tmux)` before anything changes), `--no-tmux` disables; together they are a
+usage error. Non-interactive without either: not asked, stays undecided.
+Once decided it is never asked again; the flags change it. Status line:
+`Tmux:     claude runs in tmux session "claude" (enabled|updated|unchanged)`,
+`Tmux:     off (enable with: julienning setup --tmux claude)` (off or
+undecided), `Tmux:     not installed`, `Tmux:     tmux 1.8 is too old (tmux
+mode needs 2.1 or newer)`, `Tmux:     on (session "claude"), but tmux is not
+installed; claude runs in place until it is fixed (turn it off with:
+julienning setup --no-tmux)`. julienning's own launches follow a change at
+once; the shell functions in new terminals.
+
+Launch rule, for `launch.Exec` (use, next, login, new-config), the `claude`
+wrapper and the `claude-<nick>` functions: when tmux mode is on, stdin and
+stdout are terminals, `$TMUX` is empty, `$TERM_PROGRAM` is not `vscode` and
+tmux is found, claude runs in a window of that session instead of in place
+(`launch.ExecTmux`):
+
+- window command: `/bin/sh -c 'trap : INT; "$@"; exec "${SHELL:-/bin/sh}"'
+  julienning env <account> <claude path> <args>` (`shell.WindowScript`,
+  passed to tmux as separate arguments). When claude exits the window becomes
+  a shell, and Ctrl-C cannot skip that (`trap :` installs a handler, which
+  exec resets for claude, instead of ignoring the signal). `<account>` is
+  `CLAUDE_CONFIG_DIR=<dir>`, or `-u CLAUDE_CONFIG_DIR` for Claude's default
+  dir (default-dir rule); for the wrapper with `CLAUDE_CONFIG_DIR` exported,
+  that value. It is explicit because a tmux window takes its environment
+  from the tmux server, not from the shell that asked for it: the server
+  keeps the environment of whichever shell started it, so an account left
+  implicit would be the wrong one. For the same reason tmux itself runs
+  without `CLAUDE_CONFIG_DIR` (Go: every call; shell: `new-session`, which
+  may start the server). `<claude path>` is absolute (Go: `exec.LookPath`;
+  bash `type -P claude`, zsh `whence -p claude`, never `command -v`, which
+  names the wrapper);
+- `tmux has-session -t =<session>` → `tmux new-window -t =<session>: -c <cwd>
+  <command>`, then exec `tmux attach-session -t =<session>`; else exec `tmux
+  new-session -s <session> -c <cwd> <command>`. `<cwd>` is the directory
+  claude would have started in (a resumed session's cwd). The shell code
+  quotes every target: zsh expands an unquoted word starting with `=` to a
+  command's path;
+- a new window becomes the current window of every client attached to that
+  session (tmux behaviour; a provisioning `claude()` function doing the same
+  behaves identically);
+- tmux mode on but tmux not found: `launch.Exec` warns (`tmux mode is on, but
+  tmux is not installed; running claude here (turn it off with: julienning
+  setup --no-tmux)`) and the shell code says nothing; both run in place;
+- otherwise claude runs in place, as before.
+
+### new-config / adopt / rename / login / configs / dev
 
 - `new-config [--name NAME] [--copy-settings-from NAME] [--nick NICK] [--no-share] [--no-login]`:
   without `--name`, creates `~/.claude-<prefix><N>` named `<prefix><N>` (dir
@@ -678,6 +778,31 @@ exit 1. A corrupt or newer `pins.json` is an error too.
   `{"configs": [{name, dir, email, nickname, logged_in, shared, current,
   default, share_on_login, email_error?}]}` (`shared` null when the cache is
   empty; `share_on_login` true exactly when SHARED says `shares on login`).
+- `dev [NEW]` (`internal/cli/dirs`): `julienning dev` prints the dev name.
+  `julienning dev NEW` renames it, for julienning only (the operating-system
+  user is not touched): NEW is trimmed, lowercased and checked against the
+  dev rule (usage error otherwise); unchanged → `Your dev name is already
+  murat.` Else (`renameDev`):
+
+  1. Take the claim-sync lock, retrying for up to 5 s (`another julienning
+     is syncing claims right now; try again in a moment`, nothing changed).
+  2. Release every claim in `claims.json` under the old name
+     (`claims.ReleaseAll` with the old identity). A failure is a warning:
+     `could not release 2 claims held as dev (…); the Worker drops them when
+     its claim TTL runs out (12 h by default)`. `claims.json` is emptied
+     either way: what is left was claimed under the old name, and a fresh
+     record would keep step 4 from claiming under the new one.
+  3. Re-read config.json, set `dev`, save.
+  4. Reconcile claims under the new name (`claims.Reconcile`, then
+     `MarkReconciled`; a failure is a warning, `could not claim the accounts
+     in use here as murat yet (…); the next claim sync does it`), so accounts
+     in use are claimed as murat at once; then release the lock.
+  5. `Your dev name is now murat (was dev).`
+
+  The machine id and the records already in the Worker under the old name
+  (the usage `reporter`, exhaustion reports) stay until the next report
+  replaces them or they expire. `setup --dev NEW` on a machine already set
+  up runs these same steps.
 
 ### share / unshare / nick
 
@@ -1238,10 +1363,13 @@ the Worker removes the email from `shared.json`.
 
 ## Hosts (planned)
 
-> **Planned on branch `murat/hosts`; nothing in this section is implemented
-> yet.** As each part lands, its rules move into the sections it changes
-> (Local state, setup, shell integration, next / use, accounts, Repo
-> plumbing) and this section keeps what is specific to hosts.
+> **Planned on branch `murat/hosts`.** Landed so far: tmux mode, the shell
+> integration changes (absolute-path rc line and functions) and `dev`; their
+> rules live in "tmux mode", setup, "shell integration" and "dev". Nothing
+> else in this section is implemented yet. As each part lands, its rules move
+> into the sections it changes (Local state, setup, shell integration, next /
+> use, accounts, Repo plumbing) and this section keeps what is specific to
+> hosts.
 
 A **host** is another machine reachable with `ssh` that runs its own
 julienning: its own registered dirs, logins, selection, pins, hooks, status
@@ -1795,96 +1923,6 @@ Path rewrite, while the destination writes:
   the conversation reads as if it ran on the destination. The report counts
   the replacements.
 
-### tmux mode (`internal/launch`, `internal/shell`, setup)
-
-`config.json` gains `"tmux": {"enabled": true, "session": "claude"}` (absent:
-never decided; session names `^[A-Za-z0-9_-]{1,32}$`, since tmux reserves `:`
-and `.`).
-
-setup, a new step after the shell hook: when `tmux` is absent from
-config.json and tmux 2.1 or newer is found (exact `=name` targets; `-c` needs
-1.9; to be confirmed against tmux's changelog when this is built), an
-interactive run asks `Run claude inside tmux session "claude"? Sessions
-keep running when your connection drops. [Y/n] ` (`[Y/n]` when setup runs over
-ssh, i.e. `SSH_CONNECTION` is set, else `[y/N]`). `--tmux NAME` enables with
-that session name (tmux must be found), `--no-tmux` disables; together they
-are a usage error. Non-interactive without either: not asked, stays
-undecided. Once decided it is never asked again; the flags change it. Status
-line: `Tmux:     claude runs in tmux session "claude" (enabled|unchanged)`,
-`Tmux:     off (enable with: julienning setup --tmux claude)`, `Tmux:     not
-installed`. julienning's own launches follow a change at once; the shell
-functions in new terminals.
-
-Launch rule, for `launch.Exec` (use, next, login, new-config, transfer's
-resume, `agent launch`), the `claude` wrapper and the `claude-<nick>`
-functions: when tmux mode is on, stdin and stdout are terminals, `$TMUX` is
-empty, `$TERM_PROGRAM` is not `vscode` and tmux is found, claude runs in a
-window of that session instead of in place:
-
-- window command: `/bin/sh -c 'trap : INT; "$@"; exec "${SHELL:-/bin/sh}"'
-  julienning env <account> <claude path> <args>`. When claude exits the
-  window becomes a shell, and Ctrl-C cannot skip that. `<account>` is
-  `CLAUDE_CONFIG_DIR=<dir>`, or `-u CLAUDE_CONFIG_DIR` for Claude's default
-  dir (default-dir rule); for the wrapper with `CLAUDE_CONFIG_DIR` exported,
-  that value. It is explicit because a tmux window takes its
-  environment from the tmux server, not from the shell that asked for it: the
-  server keeps the environment of whichever shell started it, so an account
-  left implicit would be the wrong one;
-- `tmux has-session -t =<session>` → `tmux new-window -t =<session>: -c <cwd>
-  <command>`, then exec `tmux attach -t =<session>`; else exec `tmux
-  new-session -s <session> -c <cwd> <command>`;
-- a new window becomes the current window of every client attached to that
-  session (tmux behaviour; a provisioning `claude()` function doing the same
-  behaves identically);
-- otherwise claude runs in place, as today.
-
-The shell code mirrors this, with the tmux path and session baked in by
-`shell-init`.
-
-### Shell integration changes
-
-- The rc line calls julienning by its absolute path, so it does not depend on
-  when a distribution's startup files put `~/.local/bin` on PATH:
-  `[ -x '/home/dev/.local/bin/julienning' ] && eval "$('/home/dev/.local/bin/julienning' shell-init bash)"  # julienning-shell-hook`
-  (`paths.StableCommand`; when it is not stable, as for a build run from the
-  repo, today's `command -v julienning` form). Setup rewrites an existing
-  julienning line in place when it differs, and never moves it; uninstall
-  removes it by its marker as before.
-- The generated functions call julienning by the same path
-  (`'/home/dev/.local/bin/julienning' resolve-dir …`) instead of `command
-  julienning`.
-- Setup step 6 also reports `claude` functions (`claude() {`, `function claude`)
-  in the rc file, as it reports `alias claude=` lines: one defined before
-  julienning's line is noted (julienning's definition wins); one after it is
-  warned about (`~/.bashrc:150 defines a claude function after julienning's
-  line, so plain claude skips julienning (selection, pins, tmux mode); move
-  the line ending in # julienning-shell-hook below it`).
-
-### dev (`internal/cli/dirs`)
-
-`julienning dev` prints the dev name. `julienning dev NEW` renames it, for
-julienning only (the operating-system user is not touched): NEW is trimmed,
-lowercased and checked against the dev rule (usage error otherwise);
-unchanged → `Your dev name is already murat.` Else:
-
-1. Take the claim-sync lock, retrying for up to 5 s (`another julienning is
-   syncing claims right now; try again in a moment`).
-2. Release every claim in `claims.json` under the old name
-   (`claims.ReleaseAll` with the old identity). A failure is a warning:
-   `could not release 2 claims held as dev (…); the Worker drops them when its
-   claim TTL runs out (12 h by default)`.
-3. Re-read config.json, set `dev`, save.
-4. Reconcile claims under the new name (`claims.Reconcile`, then
-   `MarkReconciled`), so accounts in use are claimed as murat at once; then
-   release the lock.
-5. `Your dev name is now murat (was dev).`
-
-The machine id and the records already in the Worker under the old name (the
-usage `reporter`, exhaustion reports) stay until the next report replaces them
-or they expire. `setup --dev NEW` on a machine already set up runs these same
-steps (today it only overwrites the name, which leaves the old name's claims
-in the Worker until their TTL). `dev NEW --host box` renames on box.
-
 ### Privacy
 
 Added to the policy note: session transcripts leave a machine only through
@@ -1900,8 +1938,7 @@ hosts reaches the Worker beyond what each machine already reports as itself.
   word boundaries, `shop` versus `shop2`, non-ASCII paths, one pass); archive
   validation (`..`, absolute paths, links, a write through an archive symlink,
   oversize, forbidden names); the version rule (patch, pre-release,
-  development builds); tmux command building (default dir, quoting, inherited
-  server environment); `dev` with the Worker down.
+  development builds).
 - e2e: a second sandbox home plays the host, and a fake `ssh` on PATH (drops
   the options and the destination, runs the command with `/bin/sh -c` under
   that home, keeps the pseudo-terminal) exercises the real agent and archive:
@@ -1909,7 +1946,7 @@ hosts reaches the Worker beyond what each machine already reports as itself.
   prompts), `--host` forwarding (`use`'s picker on the pseudo-terminal,
   `accounts`, `pin` without a checkout), `transfer` in both directions
   (rewrite count, memory merge, release), a connection killed after the commit
-  and the retry, and tmux mode with a fake `tmux`.
+  and the retry.
 - Never against a real host except read-only probes.
 
 ### Out of scope
@@ -2031,7 +2068,8 @@ non-email keys skipped) stay.
   dependency `golang.org/x/term` only.
 - CI: gofmt, vet, `go test -race`, worker typecheck + tests.
 - `make e2e` (`scripts/e2e.sh`): end-to-end in a throwaway HOME against
-  `wrangler dev` and a fake releases host; manual, not in CI.
+  `wrangler dev`, a fake releases host and a fake `tmux` (first on PATH, so
+  the machine's tmux server is never reached); manual, not in CI.
 - Release: goreleaser on tags. Deploy-worker workflow unchanged.
 - No secrets in the repo: team token is distributed out of band.
 

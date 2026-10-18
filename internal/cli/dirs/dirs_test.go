@@ -52,6 +52,8 @@ type harness struct {
 	secretCalls int
 	stable      bool
 	execs       []execCall
+	tmux        launch.Tmux // what findTmux finds; tmuxErr wins when set
+	tmuxErr     error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -73,10 +75,12 @@ func newHarness(t *testing.T) *harness {
 	t.Setenv("JULIENNING_TOKEN", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
-	h := &harness{t: t, home: home, jl: jl, stdin: strings.NewReader(""), fake: &remote.Fake{}, stable: true}
+	t.Setenv("SSH_CONNECTION", "")
+	h := &harness{t: t, home: home, jl: jl, stdin: strings.NewReader(""), fake: &remote.Fake{}, stable: true, tmuxErr: launch.ErrTmuxNotFound}
 
 	prevClient, prevHealth, prevInteractive := newClient, checkHealth, isInteractive
 	prevSecret, prevStable, prevNow, prevExec := readSecret, stableCommand, now, launch.Exec
+	prevFindTmux, prevLockWait := findTmux, devLockWait
 	newClient = func(*config.Config) remote.Client { return h.fake }
 	checkHealth = func(context.Context, string) error { return h.healthErr }
 	isInteractive = func(cli.Env) bool { return h.interactive }
@@ -95,9 +99,18 @@ func newHarness(t *testing.T) *harness {
 		h.execs = append(h.execs, execCall{dir, args, chdir})
 		return nil
 	}
+	// Never the machine's real tmux: setup and shell-init ask findTmux.
+	findTmux = func() (launch.Tmux, error) {
+		if h.tmuxErr != nil {
+			return launch.Tmux{}, h.tmuxErr
+		}
+		return h.tmux, nil
+	}
+	devLockWait = 200 * time.Millisecond
 	t.Cleanup(func() {
 		newClient, checkHealth, isInteractive = prevClient, prevHealth, prevInteractive
 		readSecret, stableCommand, now, launch.Exec = prevSecret, prevStable, prevNow, prevExec
+		findTmux, devLockWait = prevFindTmux, prevLockWait
 	})
 	return h
 }

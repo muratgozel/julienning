@@ -309,3 +309,50 @@ func TestValidatePersonalDirs(t *testing.T) {
 		}
 	}
 }
+
+// Absent "tmux" is "never decided"; a session name is checked on load and
+// save, since it is baked into shell code and tmux targets.
+func TestTmuxModePersistence(t *testing.T) {
+	t.Setenv(EnvHome, t.TempDir())
+	newSaved(t, Remote{})
+	if got := readConfig(t); strings.Contains(got, "tmux") {
+		t.Fatalf("undecided tmux mode written:\n%s", got)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, on := c.TmuxSession(); on || c.Tmux != nil {
+		t.Fatalf("default: %+v", c.Tmux)
+	}
+	c.Tmux = &Tmux{Enabled: true, Session: "claude"}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readConfig(t); !strings.Contains(got, "\"tmux\": {\n    \"enabled\": true,\n    \"session\": \"claude\"\n  }") {
+		t.Fatalf("tmux mode not saved:\n%s", got)
+	}
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	if s, on := c.TmuxSession(); !on || s != "claude" {
+		t.Fatalf("loaded: %q %v", s, on)
+	}
+	c.Tmux = &Tmux{Enabled: false}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if c, err = Load(); err != nil || c.Tmux == nil || c.Tmux.Enabled {
+		t.Fatalf("off: %+v %v", c.Tmux, err)
+	}
+	for _, bad := range []*Tmux{{Enabled: true}, {Enabled: true, Session: "a:b"}, {Enabled: true, Session: "a.b"}, {Session: "it's"}, {Enabled: true, Session: strings.Repeat("a", 33)}} {
+		c.Tmux = bad
+		if err := c.Save(); err == nil || !strings.Contains(err.Error(), "julienning setup --tmux NAME") {
+			t.Errorf("%+v: got %v", bad, err)
+		}
+	}
+	var nilCfg *Config
+	if _, on := nilCfg.TmuxSession(); on {
+		t.Error("nil config has tmux mode on")
+	}
+}

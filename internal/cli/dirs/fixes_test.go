@@ -61,7 +61,7 @@ func TestSetupAndUninstallRewriteSymlinkedRCInPlace(t *testing.T) {
 		}
 	}
 	assertLinkAndMode()
-	if got := h.read(real); got != "export A=1\n"+hookLine("zsh")+"\n" {
+	if got := h.read(real); got != "export A=1\n"+hookLine("zsh", fakeExe)+"\n" {
 		t.Fatalf("rc = %q", got)
 	}
 
@@ -84,7 +84,7 @@ func TestSetupCreatesMissingRCThroughDanglingSymlink(t *testing.T) {
 	if fi, err := os.Lstat(rc); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("link replaced")
 	}
-	if got := h.read(filepath.Join(h.home, "dotfiles", "zshrc")); got != hookLine("zsh")+"\n" {
+	if got := h.read(filepath.Join(h.home, "dotfiles", "zshrc")); got != hookLine("zsh", fakeExe)+"\n" {
 		t.Fatalf("rc = %q", got)
 	}
 }

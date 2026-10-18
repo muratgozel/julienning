@@ -32,6 +32,13 @@ quick start; keep it short and put detail in REFERENCE.md.
   real home.
 - Never add `"remote": true` to `worker/wrangler.jsonc`: it points `wrangler
   dev` and the test suite at the production KV namespace.
+- Tests never reach a real tmux. `tmux new-window -t =claude:` succeeds
+  against the developer's own server (and switches every attached client to
+  the new window) even when the attach after it fails. Go tests inject
+  `findTmux` (dirs) or run the launch helper with PATH starting at a fake bin
+  dir and no fallback dirs (`internal/launch/tmux_test.go` TestMain refuses
+  otherwise); shell tests bake a fake tmux's path; e2e's fake tmux is first
+  on PATH from the start.
 - The team token exists only in `~/.julienning/config.json` (mode 0600), the
   Cloudflare secret `AUTH_TOKEN` and the gitignored `worker/.dev.vars`. Never
   print, log or commit it. `errors.log` must stay free of emails too.
@@ -54,16 +61,19 @@ quick start; keep it short and put detail in REFERENCE.md.
 ## End-to-end harness
 
 `make e2e` runs `scripts/e2e.sh` (about ten seconds): a throwaway `HOME`
-with fake Claude config dirs and a fake `claude`, `wrangler dev` on a local
+with fake Claude config dirs, a fake `claude` and a fake `tmux` (logs its
+argv to `$T/tmux.log`), `wrangler dev` on a local
 KV namespace with its own token, and a fake GitHub releases host
 (`scripts/e2e/fakereleases.go`, `//go:build ignore`, run via `go build`). It
 drives the installer, setup, shell functions, switching, the session picker
 and a move on a real pseudo-terminal (`scripts/e2e/ptydrive.go`, same build
 style: `expect=`/`send=`/`sleep=` steps, stdlib ioctls for darwin and linux),
-personal accounts and pins through the generated `claude` function, `sync`
+personal accounts and pins through the generated `claude` function, tmux
+mode (`use` and the shell functions on the pseudo-terminal, in place inside
+tmux and without a terminal), `sync`
 (its questions on the pseudo-terminal, `--check`, and `--from` undoing the
 first run byte for byte), the session hooks with a fake live session (a `sleep` registered in
-`sessions/<pid>.json`), the status line and its detached usage report,
+`sessions/<pid>.json`) and a `dev` rename moving its claim, the status line and its detached usage report,
 `forget`, `update` and `uninstall` (its session move into `~/.claude`, with
 an open session left behind, and plain `claude` checked native in a new shell
 and in one that loaded the integration before), and asserts byte-for-byte
@@ -100,9 +110,22 @@ Env overrides are read at runtime and never written to `config.json`.
 - Shell: the `claude` wrapper and the `claude-<nick>` functions from
   `internal/shell` resolve dirs at call time through the hidden `resolve-dir`
   command, so a rename needs no re-source. A new nickname does need one.
+  They call julienning by the absolute path the rc line uses
+  (`paths.StableCommand`; `command julienning` only for a build run from
+  the repo). Setup rewrites julienning's rc line in place and never moves
+  it: its position decides whether a provisioning `claude()` function above
+  it is overridden.
   The wrapper tests for `pins.json` by name (`internal/shell` cannot import
   `config`; a test pins it to `config.PinsFile`) and calls `resolve-dir
   --pin` only while it exists.
+- tmux mode has two implementations of one launch rule: `launch.ExecTmux`
+  (Go: use, next, login, new-config) and `_julienning_claude` in
+  `internal/shell` (the wrapper and `claude-<nick>`, tmux path and session
+  baked in by `shell-init`). They share `shell.WindowScript`; change both or
+  neither. The account is always explicit on the window's command line, every
+  target is `=name` (exact), and in shell code it is quoted (zsh expands an
+  unquoted `=word` to a command path). tmux 2.1 is the minimum (checked
+  against tmux's CHANGES; see SPEC "tmux mode").
 - Pins and personal accounts: a pin that cannot be resolved must fail (exit
   1), never print nothing, or the wrapper falls back to the selection and
   opens a pinned project on another account. A personal account
