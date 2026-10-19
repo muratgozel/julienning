@@ -1,199 +1,130 @@
 # julienning
 
 julienning lets a team share a pool of Claude subscriptions from the shell.
-Every shared account has a team-wide nickname: `julienning use alpha` switches
-to it, `julienning next` picks the best free one, and the session picker hands
-a conversation over from one account to another. A small Cloudflare Worker
-collects each account's usage and who has it open, so `julienning accounts`
-shows everyone who is using what and how much of each account's session and
-weekly limit is left. macOS and Linux, zsh and bash; Claude Code must already
-be installed.
+Each shared account has a team-wide nickname: `julienning next` switches to
+the best free one, `julienning accounts` shows everyone's usage and who is on
+what, and the session picker carries a conversation from one account to
+another. Usage and "in use" claims go to a small Cloudflare Worker your team
+runs. macOS and Linux, zsh and bash; Claude Code must already be installed.
 
-- **No auth tokens.** julienning never reads, copies or sends Claude credentials; signing in stays Claude Code's own flow.
-- **Only `CLAUDE_CONFIG_DIR`.** That is how it switches accounts; from Claude it takes just the account email and the usage numbers Claude Code shows (its status line, and `/usage` for accounts nobody uses through julienning right now).
-- **Reports go to your team's own Worker:** that email and its nickname, those numbers, whether you have it open, when Claude refused it a request for a limit, your username and a random machine id. Session lists stay local.
-- **Personal accounts never report.** An account that is not shared with the team sends no usage and no claims.
+**Privacy.** julienning never reads, copies or sends Claude credentials; it
+switches accounts only through `CLAUDE_CONFIG_DIR`. Only accounts you share
+with the team report anything, and only to your team's Worker: the email and
+its nickname, session and weekly usage, rate-limit refusals, whether you have
+it open, your dev name and a random machine id. Personal accounts and session
+lists stay on your machine. Details: [Policy note](docs/REFERENCE.md#policy-note).
 
-Details: [Policy note](docs/REFERENCE.md#policy-note).
+## Install
 
-## For teammates
+Get the Worker URL and the team token from your team lead, then:
 
-Get the **Worker URL** and the **team token** from your team lead, then:
+```sh
+curl -fsSL https://raw.githubusercontent.com/muratgozel/julienning/main/scripts/install.sh | bash
+julienning setup
+```
 
-1. Install:
+If the installer says `~/.local/bin` is not on your PATH, run the line it
+prints. Setup asks for your dev name (what teammates see), the Worker URL and
+token, which Claude accounts on this machine to share and under which
+nickname, and, when tmux is installed, whether claude should run inside tmux.
+It adds a status line and hooks to each shared account's
+`settings.json` and one line to your shell rc file; open a new terminal
+afterwards. It is safe to re-run.
 
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/muratgozel/julienning/main/scripts/install.sh | bash
-   ```
-
-   If it prints `… is not on your PATH. Add it:`, run the `zsh:` line it
-   shows, then open a new terminal, or run `source ~/.zshrc`.
-
-2. Set up this machine:
-
-   ```sh
-   julienning setup
-   ```
-
-   It asks for:
-
-   - **your dev name**, the username teammates see (Enter keeps `$USER`;
-     `julienning dev NEW` changes it later);
-   - **the Worker URL and the team token** (the token is hidden as you type;
-     both are checked before anything is saved);
-   - **`Share <email> (found in <dir>) with the team? [y/N]`** for each Claude
-     account it finds here that the team does not share yet: `y` for team
-     accounts, `n` for personal ones (it remembers). Accounts the team already
-     shares are picked up without asking;
-   - **`Nickname for <email> [<default>]:`** for each account you share. Enter
-     takes the part before `@`; the nickname is the same for the whole team;
-   - **`Run claude inside tmux session "claude"?`**, once, when tmux is
-     installed: yes runs claude in a tmux window, so it keeps running when
-     your connection drops (the default over ssh; `julienning setup --tmux
-     claude` or `--no-tmux` changes it later).
-
-   It then adds julienning's status line and session hooks to each team
-   account's `settings.json` (a status line of your own there is saved and
-   restored by `julienning uninstall`) and one line to `~/.zshrc`.
-
-3. Open a new terminal, or run `source ~/.zshrc`, to load the new shell
-   functions.
-
-4. More accounts later: `julienning new-config` creates a fresh Claude config
-   dir (`julienning<N>`, in `~/.claude-julienning<N>`), asks for the
-   account's nickname (Enter takes the part before `@`) and starts Claude in
-   it so you can sign in with the next account. That account is shared with
-   the team automatically when your first session in it starts; nothing else
-   to run. `--nick NAME` answers the nickname question up front, and
-   `--no-share` keeps the account personal. To drop one again,
-   `julienning forget claude3` unregisters it and offers to delete the dir.
+For another account later, `julienning new-config` creates a config dir and
+starts claude in it so you can sign in; the account is shared when your first
+session starts (`--no-share` keeps it personal).
 
 ## Daily use
 
 ```sh
-julienning next              # switch to the best shared account on this machine, then pick a session
-julienning use               # stay on the current account, straight to its session picker
-julienning use <nickname>    # switch to that account, then pick a session
-claude-<nickname>            # plain claude on that account; your selection stays as it is
 julienning accounts          # every shared account: usage, who is on it, which dir here has it
-julienning use <email>       # a personal (not shared) account, wherever it is logged in; selection untouched
-julienning pin <target>      # plain claude and `use` in this directory and below open that account
-julienning sync              # same model, effort, cache TTLs, theme, editor mode and CLAUDE.md on every shared account
+julienning next              # switch to the best free account, then pick a session
+julienning use [nickname]    # switch to that account (none: stay), then pick a session
+claude                       # runs on the selected account, in any terminal
+claude-<nickname>            # claude on that account; the selection stays
+julienning use <email>       # a personal (not shared) account; the selection stays
+julienning pin <target>      # plain claude in this directory and below opens that account
+julienning sync              # the same Claude Code settings and CLAUDE.md on every shared account
+julienning login <nickname>  # sign a dir in again after Claude Code signed it out
 ```
-
-Other machines you reach over ssh (a dev server, a VM) can run their own
-julienning against the same team: `julienning host add box` installs and
-sets it up there, then any command takes `--host box` (`julienning use
---host box` picks a session and runs claude on box, on this terminal), and
-`julienning transfer --to box` moves a conversation there, into box's checkout
-of the same repository, and resumes it. See
-[Other machines](docs/REFERENCE.md#other-machines).
-
-The selection is machine-wide: after `next` or `use`, plain `claude` in any
-terminal runs on that account, except in a directory you pinned
-(`julienning pin`, `julienning unpin`). Pins stay on your machine.
 
 ```
 $ julienning accounts
-#  NICK     ACCOUNT              SESSION      WEEK             STATE                     LOCAL                   UPDATED
-1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28  free                      *~/.claude-julienning1  2m ago
-2  claude3  claude3@example.com  -            -                free                      -                       never
-3  delta    claude4@example.com  -            -                free                      ~/.claude-work          never
-4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28  in use by ali, can (12m)  -                       12m ago
+#  NICK   ACCOUNT              SESSION      WEEK              STATE                              LOCAL                   UPDATED
+1  alpha  claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               *~/.claude-julienning1  2m ago
+2  beta   claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           -                       12m ago
+3  gamma  claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  ~/.claude-work          5m ago
 ```
 
-SESSION and WEEK are the used % and when it resets, in your local time. STATE
-names the teammates on the account (`in use by you` when it is yours), says
-`exhausted (week resets Fri 10:00)`
-when a limit is used up or Claude refused a request for it (those rank last), and `syncing (just shared)` for an
-account you shared a moment ago that the Worker does not list yet. LOCAL is
-the dir here that is logged into it (`*` is your selection). `next` takes the
-highest account that is logged in on this machine, and warns when all of them
-are exhausted.
+SESSION and WEEK are the used % and reset time in your local zone; LOCAL is
+the dir here logged into the account (`*` marks your selection). `next` takes
+the best-ranked account logged in on this machine.
 
-### Session picker
+In a terminal, `next` and `use` then list recent sessions of the current
+project from all your shared accounts (`--all` for every project). Picking one
+that lives under another account moves it into the account you switched to,
+after asking; project memory is merged, never overwritten. A session open in
+another terminal can't be picked.
 
-In a terminal, `next` and `use` list recent sessions for the current project
-from all your shared accounts, newest first, with **New session** on top
-(`--all` lists every project). Sessions of personal accounts never show up
-there; `julienning use <personal email>` lists that account's own.
+## How it stays current
 
-- ↑/↓ to move (j/k too, before you type), type to filter, Enter to start or
-  resume, Esc to cancel (the selection stays).
-- Picking a session that lives under another account **moves** it into the
-  account you switched to, project memory included (merged, never
-  overwritten), and resumes it there.
-- Before moving it asks (`Move "Fix flaky clock tests" from beta to
-  alpha?`): Enter or `y` moves it, `n` or Esc goes back to the list with
-  nothing moved.
-- A session that is open in another terminal is greyed out and can't be picked
-  or moved; exit it there first.
-
-## Good to know
-
-- **Usage stays fresh even when nobody uses an account through julienning.**
-  `accounts`, `next` and `use` ask Claude Code (`claude -p "/usage"`, no
-  tokens used) for the numbers of stale shared accounts logged in on your
-  machine, which takes a few seconds, and share them with the team. A dir
-  Claude Code signed out shows `(signed out)` in `accounts`;
-  `julienning login <nickname>` signs in there again, sessions included.
-- **Claims follow open sessions.** Opening Claude on a shared account shows it
-  as yours in everyone's `accounts` (`claimed by`, then `in use by` once usage
-  comes in); closing your last session on it releases it. Switching alone
-  claims nothing.
-- **Updates install themselves:** once a day a background process installs a
-  newer release, and your next command prints `julienning updated to 0.3.0`.
-  `julienning update` updates right away. When an update adds something to your
-  Claude settings (0.7.0 added a rate-limit hook), commands print one warning
-  until you re-run `julienning setup`, which adds only what is missing. To opt out, set
-  `"auto_update": false` in `~/.julienning/config.json` (or export
-  `JULIENNING_AUTO_UPDATE=0`); commands then print a one-line hint when a
-  newer release is out.
-- **Undo** with `julienning uninstall`: it offers to move every session of
-  your registered dirs into `~/.claude`, where plain `claude` finds them again,
-  reverts what setup changed in your Claude settings and shell (settings.json
-  entries, the shell line), releases your claims and clears the selection and
-  pins. Afterwards `claude` in a new terminal is Claude's own command.
-  `--purge` also deletes julienning's own data and the command. Claude config
-  dirs and logins are never deleted, and nothing is unshared for the team. For a single account,
-  `julienning forget claude3` (a nickname, email or config name) unregisters
-  its dir, undoes its settings.json changes and offers to delete the dir
-  (default no; `--delete` / `--keep` answer up front). It never deletes
-  `~/.claude` or a dir Claude is running in, and the account stays shared.
-- **Back to plain claude:** `julienning use --clear`.
-- **Errors:** commands print theirs; the status line, hooks and background
-  reports write to `~/.julienning/errors.log` (it never contains emails). See
+- The status line reports usage as you work. For accounts nobody is using
+  through julienning, `accounts`, `next` and `use` ask Claude Code itself
+  (`claude -p "/usage"`, Claude Code 2.1.301 or newer; no quota used).
+- Session hooks claim an account while you have a session open on it and
+  release it when the last one closes.
+- julienning updates itself once a day; `julienning update` updates now, and
+  `"auto_update": false` in `~/.julienning/config.json` turns it off.
+- The status line, hooks and background reports log to
+  `~/.julienning/errors.log` (never emails). See
   [Troubleshooting](docs/REFERENCE.md#troubleshooting).
+
+## Other machines
+
+A machine you reach over ssh can run julienning against the same team:
+
+```sh
+julienning host add box          # install and set up julienning on box
+julienning use --host box        # pick a session and run claude on box, in this terminal
+julienning transfer --to box     # move a conversation into box's checkout of this repo and resume it
+```
+
+Most commands take `--host NAME`. See
+[Other machines](docs/REFERENCE.md#other-machines).
+
+## Undo
+
+- `julienning use --clear`: back to plain `claude` on your default config.
+- `julienning forget <target>`: unregister one config dir and undo its
+  settings.json changes; it offers to delete the dir.
+- `julienning uninstall`: undo setup on this machine and offer to move every
+  session into `~/.claude`, where plain `claude` finds them. `--purge` also
+  removes julienning itself.
+
+None of these unshares an account for the team.
 
 ## For the team lead
 
-1. Deploy the Worker and generate the team token:
-   [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md) walks through it from a fresh
-   Cloudflare account; the free tier is enough to start.
-2. Send teammates the Worker URL, and the token through your password manager
-   only.
-3. Manage the team's accounts (a nickname or an email works as the target):
+1. Deploy the Worker and generate the team token with
+   [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md); the free tier is enough to start.
+2. Send teammates the Worker URL, and the token through a password manager.
+3. Manage the shared accounts:
 
    ```sh
-   julienning share <email> [--nick <nickname>]   # add an account under a nickname (default: the part before @)
+   julienning share <email> [--nick <nickname>]   # share an account (nickname default: the part before @)
    julienning nick <nickname> <new>               # rename it for the whole team
-   julienning unshare <nickname>                  # remove it for everyone, with its usage and claims (asks first)
+   julienning unshare <nickname>                  # remove it for everyone, with its usage and claims
    ```
 
-Teammates pick changes up on the hourly background refresh (right away with
-`julienning accounts`) and get new `claude-<nickname>` functions in their next
-terminal. After rotating the token, everyone runs
-`julienning setup --token <new token>`.
+After rotating the token, everyone runs `julienning setup --token <new token>`.
 
 ## More
 
 - [docs/REFERENCE.md](docs/REFERENCE.md): every command, flag and output, what
   setup changes, and troubleshooting.
-- [docs/SPEC.md](docs/SPEC.md): the design, and the contract between the CLI
-  and the Worker.
-- **Development:** Go 1.25. `make build` (to `bin/julienning`), `make test` (Go
-  and Worker tests), `make e2e` (end to end in a sandbox); `make release
-  VERSION=X.Y.Z` tags and pushes a release. See
+- [docs/SPEC.md](docs/SPEC.md): the design and the CLI–Worker contract.
+- Development: `make build`, `make test`, `make e2e`; see
   [Development](docs/REFERENCE.md#development).
 
 MIT licensed; see [LICENSE](LICENSE).

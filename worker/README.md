@@ -28,6 +28,7 @@ curl -s -H "Authorization: Bearer $TOKEN" https://julienning.<your-subdomain>.wo
 ```
 
 `AUTH_TOKEN` is a Cloudflare secret, never a `vars` entry and never committed.
-Pushes to `main` that touch `worker/` deploy through
-`.github/workflows/deploy-worker.yml` (repository secrets
+Nothing deploys on push: deploy by hand with `npm run deploy`, or run the
+`deploy-worker` workflow from the Actions tab
+(`.github/workflows/deploy-worker.yml`, repository secrets
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`).
