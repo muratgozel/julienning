@@ -109,39 +109,45 @@ describe("POST /probes", () => {
 
 describe("probe and status line together", () => {
   it("shows the newer record's numbers", async () => {
+    // Each stamp is read once: iso() is the clock to the second, so a
+    // second boundary between posting and asserting would change it.
+    const newer = iso(-2);
+    const older = iso(-30);
     await shared(A, B);
-    await putUsage(A, ALI, 80, 80, iso(-30));
-    await postProbes([probeReport(A, 10, 20, iso(-2))]);
-    await postProbes([probeReport(B, 10, 20, iso(-30))]);
-    await putUsage(B, ALI, 80, 80, iso(-2));
+    await putUsage(A, ALI, 80, 80, older);
+    await postProbes([probeReport(A, 10, 20, newer)]);
+    await postProbes([probeReport(B, 10, 20, older)]);
+    await putUsage(B, ALI, 80, 80, newer);
 
     const res = await listJson("&dev=murat");
-    expect(byEmail(res, A)).toMatchObject({ source: "probe", session: { used: 10 }, numbers_at: iso(-2), collected_at: iso(-30), reporter: ALI });
-    expect(byEmail(res, B)).toMatchObject({ source: "statusline", session: { used: 80 }, numbers_at: iso(-2), collected_at: iso(-2), reporter: ALI });
+    expect(byEmail(res, A)).toMatchObject({ source: "probe", session: { used: 10 }, numbers_at: newer, collected_at: older, reporter: ALI });
+    expect(byEmail(res, B)).toMatchObject({ source: "statusline", session: { used: 80 }, numbers_at: newer, collected_at: newer, reporter: ALI });
   });
 
   it("keeps a teammate's in_use from the status line when a newer probe supplies the numbers", async () => {
+    const used = iso(-3);
     await shared(A);
-    await putUsage(A, ALI, 80, 80, iso(-3));
+    await putUsage(A, ALI, 80, 80, used);
     const res = await postProbes([probeReport(A, 85, 81)]);
     const a = byEmail(res, A);
     expect(a.source).toBe("probe");
     expect(a.session!.used).toBe(85);
     expect(a.state).toBe("in_use");
     expect(a.busy_by).toEqual(["ali"]);
-    expect(a).toMatchObject({ collected_at: iso(-3), reporter: ALI });
+    expect(a).toMatchObject({ collected_at: used, reporter: ALI });
 
     const text = await (await call("/accounts?dev=murat")).text();
     expect(text).toMatch(/in use by ali \(3m\)/);
   });
 
   it("never counts a probe as activity, and never refreshes the prober's claim", async () => {
+    const claimed = iso(-120);
     await shared(A);
-    await seed(`claim:${A}:${ALI.dev}:${ALI.machine_id}`, { at: iso(-120) });
+    await seed(`claim:${A}:${ALI.dev}:${ALI.machine_id}`, { at: claimed });
     await postProbes([probeReport(A)], ALI);
     const a = byEmail(await listJson("&dev=murat"), A);
     expect(a.state).toBe("claimed");
-    expect((await claimsOf(A))[0]!.at).toBe(iso(-120));
+    expect((await claimsOf(A))[0]!.at).toBe(claimed);
 
     await unshare(A);
     await shared(A);
