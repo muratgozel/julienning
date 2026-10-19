@@ -220,7 +220,7 @@ func Account(cfg *config.Config, cache *sharedcache.Cache, email string, current
 		if cache != nil {
 			nick = cache.Nickname(email)
 		}
-		m, err = byEmail(cfg, email, nick, ViaEmail, current)
+		m, err = byEmail(cfg, email, nick, ViaEmail, current, true)
 		return m, nil, err
 	}
 	p, err := Personal(cfg, email)

@@ -514,17 +514,18 @@ func TestLoginSignsTheLastDirInAgain(t *testing.T) {
 }
 
 // A dir that held the account but still has credentials (the account file
-// says nobody) is never signed over: login takes a new dir instead.
+// says nobody) is never signed over, and no second dir is made either: that
+// would split the account's sessions. login says how to settle it.
 func TestLoginNeverSignsOverAWorkingLogin(t *testing.T) {
 	h := newHarness(t)
 	gone := h.mkdir(".claude-sixtynine")
 	h.initConfig(false, config.ConfigDir{Name: "julienning3", Dir: gone, LastEmail: "c2@team.io"})
 	h.cacheNicks("c2@team.io=claude2")
 	h.signedIn = map[string]bool{gone: true}
-	h.loginAs = "c2@team.io"
-	h.mustRun(runLogin, "claude2")
-	if want := []loginCall{{filepath.Join(h.home, ".claude-julienning1"), "c2@team.io"}}; !reflect.DeepEqual(h.logins, want) {
-		t.Fatalf("logins = %+v, want %+v", h.logins, want)
+	err := h.run(runLogin, "claude2")
+	want := "~/.claude-sixtynine held claude2 (c2@team.io) last and Claude Code says it is still signed in there, though its account file names nobody; start claude there once so it records the account: julienning use julienning3"
+	if err == nil || err.Error() != want || len(h.logins) != 0 || len(h.names()) != 1 {
+		t.Fatalf("err %v logins %+v registered %v", err, h.logins, h.names())
 	}
 }
 

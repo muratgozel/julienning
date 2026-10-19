@@ -42,9 +42,10 @@ quick start; keep it short and put detail in REFERENCE.md.
 - Tests never run the real claude. `internal/usageprobe` tests point
   `findClaude` at a fake script; the CLI packages that probe stub
   `refreshUsage` in TestMain (`internal/cli/accounts`,
-  `internal/cli/switching`), and `internal/cli/dirs` stubs `authLogin` and
-  `checkSignedIn`. A new caller of `usageprobe.Refresh`/`SignedIn` or of
-  `claude auth` gets the same seam.
+  `internal/cli/switching`), and `internal/cli/dirs` stubs `authLogin`,
+  `authLogout` and `checkSignedIn` in its harness. A new caller of
+  `usageprobe.Refresh`/`SignedIn` or of `claude auth` gets the same seam;
+  a harness that misses one runs the real claude against a temp dir.
 - Tests never run a real ssh or reach a real host. `sshx.Binary` points at a
   fake in `internal/sshx` tests; `internal/cli/hosts` tests replace
   `agentCall`, `listCall`, `runScript`, `runForwarded` and the agent's
@@ -229,7 +230,11 @@ Each item names the only package that touches it.
   --json` (`loggedIn`, exit 1 when false) tells signed out apart. `-p`
   registers in `sessions/<pid>.json` as kind `interactive`, hence `--name`
   and `livesess.ProbeSessionName`. `claude auth login --email` pre-fills the
-  login page (`julienning login`).
+  login page (`julienning login`) but the browser's own claude.ai session
+  decides the account, so login reads it back. `claude auth logout` signs
+  one dir out; login and new-config run it only on a dir they chose moments
+  ago (unused or just created) that got the wrong account (assumed to clear
+  `oauthAccount`, not yet observed).
 - Status line stdin JSON: `rate_limits.five_hour` and `seven_day` with
   `used_percentage` and `resets_at`; an unexpected shape is reported as
   `USAGE_INVALID` with a type signature (`internal/usage`).

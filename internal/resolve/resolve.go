@@ -7,10 +7,12 @@ package resolve
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/config"
+	"github.com/muratgozel/julienning/internal/discover"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 )
 
@@ -33,6 +35,10 @@ type Match struct {
 // machine is logged into it.
 type NotLocalError struct {
 	Nickname, Email string
+	// Shared is true when the account is known to be on the team allowlist,
+	// so `julienning login` can sign it in here; any other email is pointed
+	// at new-config, which decides whether it is shared.
+	Shared bool
 	// SignedOut are the registered dirs that held the account last
 	// (config.ConfigDir.LastEmail) and have no login now: Claude Code signed
 	// them out. Their sessions are still there; `julienning login` signs in
@@ -56,7 +62,10 @@ func (e *NotLocalError) Error() string {
 	if e.Nickname != "" {
 		return fmt.Sprintf("%s (%s) is shared but not logged in on this machine; sign it in here with: julienning login %s", e.Nickname, e.Email, e.Nickname)
 	}
-	return fmt.Sprintf("no registered config dir on this machine is logged in as %s; sign it in here with: julienning login %s", e.Email, e.Email)
+	if e.Shared {
+		return fmt.Sprintf("no registered config dir on this machine is logged in as %s; sign it in here with: julienning login %s", e.Email, e.Email)
+	}
+	return fmt.Sprintf("no registered config dir on this machine is logged in as %s; sign it into a new dir with: julienning new-config (`--no-share` keeps it personal)", e.Email)
 }
 
 // Dirs returns the registered dirs currently logged into email, the current
@@ -104,7 +113,7 @@ func Target(cfg *config.Config, cache *sharedcache.Cache, arg string, current *c
 	lower := strings.ToLower(arg)
 	if cache != nil {
 		if email, ok := cache.ByNickname(lower); ok {
-			return byEmail(cfg, email, lower, ViaNickname, current)
+			return byEmail(cfg, email, lower, ViaNickname, current, true)
 		}
 	}
 	if strings.Contains(lower, "@") {
@@ -112,7 +121,7 @@ func Target(cfg *config.Config, cache *sharedcache.Cache, arg string, current *c
 		if cache != nil {
 			nick = cache.Nickname(lower)
 		}
-		return byEmail(cfg, lower, nick, ViaEmail, current)
+		return byEmail(cfg, lower, nick, ViaEmail, current, cache != nil && cache.Contains(lower))
 	}
 	if cd, ok := cfg.Find(arg); ok {
 		m := Match{Dir: cd, Via: ViaDir}
@@ -127,12 +136,34 @@ func Target(cfg *config.Config, cache *sharedcache.Cache, arg string, current *c
 	return Match{}, fmt.Errorf("unknown target %q: not a team nickname, an email, or a config name (see `julienning accounts` and `julienning configs`)", arg)
 }
 
-func byEmail(cfg *config.Config, email, nick, via string, current *config.ConfigDir) (Match, error) {
+func byEmail(cfg *config.Config, email, nick, via string, current *config.ConfigDir, shared bool) (Match, error) {
 	dirs := Dirs(cfg, email, current)
 	if len(dirs) == 0 {
-		return Match{}, &NotLocalError{Nickname: nick, Email: email, SignedOut: SignedOutDirs(cfg, email)}
+		return Match{}, &NotLocalError{Nickname: nick, Email: email, Shared: shared, SignedOut: SignedOutDirs(cfg, email)}
 	}
 	return Match{Dir: dirs[0], Email: email, Nickname: nick, Via: via}, nil
+}
+
+// Unregistered returns the Claude config dirs setup would discover that are
+// logged into email but not registered, default dir first, then by path. An
+// unreadable login is skipped: it cannot be told to hold the account.
+func Unregistered(cfg *config.Config, email string) ([]string, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve home directory (set $HOME): %w", err)
+	}
+	found, err := discover.Find(cfg.Configs, cfg.Prefix())
+	if err != nil {
+		return nil, fmt.Errorf("search for Claude config dirs: %w", err)
+	}
+	var out []string
+	for _, c := range found {
+		if !c.Registered && c.LoggedIn && c.Email == email && !discover.IsUnsafeConfigDir(c.Dir, home) {
+			out = append(out, c.Dir)
+		}
+	}
+	return out, nil
 }
 
 // Label is how a dir is shown to users: the account nickname when the dir

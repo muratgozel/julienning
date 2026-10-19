@@ -309,6 +309,15 @@ func accountLabel(nick, email string) string {
 	return nick + " (" + email + ")"
 }
 
+// nickOrEmail is how a command line names an account: its nickname, else
+// its email.
+func nickOrEmail(nick, email string) string {
+	if nick != "" {
+		return nick
+	}
+	return email
+}
+
 // loadCache reads shared.json. An unreadable cache is reported and treated
 // as empty, sharedcache's "nothing is shared" rule.
 func loadCache(env cli.Env) *sharedcache.Cache {

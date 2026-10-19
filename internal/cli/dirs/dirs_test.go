@@ -60,6 +60,10 @@ type harness struct {
 	logins   []loginCall
 	loginAs  string
 	loginErr error
+	// logouts records `claude auth logout` runs (each clears the dir's
+	// login); logoutErr fails them.
+	logouts   []string
+	logoutErr error
 	// signedIn is what the fake `claude auth status` says per dir.
 	signedIn map[string]bool
 }
@@ -91,7 +95,7 @@ func newHarness(t *testing.T) *harness {
 	prevClient, prevHealth, prevInteractive := newClient, checkHealth, isInteractive
 	prevSecret, prevStable, prevNow, prevExec := readSecret, stableCommand, now, launch.Exec
 	prevFindTmux, prevLockWait := findTmux, devLockWait
-	prevAuthLogin, prevSignedIn := authLogin, checkSignedIn
+	prevAuthLogin, prevAuthLogout, prevSignedIn := authLogin, authLogout, checkSignedIn
 	// Never the real claude: login's sign-in and its check are faked.
 	authLogin = func(_ cli.Env, dir, email string) error {
 		h.logins = append(h.logins, loginCall{dir, email})
@@ -105,6 +109,13 @@ func newHarness(t *testing.T) *harness {
 			}
 		}
 		return nil
+	}
+	authLogout = func(_ cli.Env, dir string) error {
+		h.logouts = append(h.logouts, dir)
+		if h.logoutErr != nil {
+			return h.logoutErr
+		}
+		return os.WriteFile(claudecfg.AccountFilePath(dir), []byte(`{"numStartups":1}`), 0o600)
 	}
 	checkSignedIn = func(_ context.Context, dir string) (bool, error) { return h.signedIn[dir], nil }
 	newClient = func(*config.Config) remote.Client { return h.fake }
@@ -137,7 +148,7 @@ func newHarness(t *testing.T) *harness {
 		newClient, checkHealth, isInteractive = prevClient, prevHealth, prevInteractive
 		readSecret, stableCommand, now, launch.Exec = prevSecret, prevStable, prevNow, prevExec
 		findTmux, devLockWait = prevFindTmux, prevLockWait
-		authLogin, checkSignedIn = prevAuthLogin, prevSignedIn
+		authLogin, authLogout, checkSignedIn = prevAuthLogin, prevAuthLogout, prevSignedIn
 	})
 	return h
 }

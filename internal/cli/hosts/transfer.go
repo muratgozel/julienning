@@ -422,7 +422,7 @@ func chooseOn(ctx context.Context, dst side, target string) (switching.Choice, e
 	if dst.local {
 		c, err := switching.Choose(target, switching.Location())
 		if errors.Is(err, switching.ErrNoneLoggedIn) {
-			return c, errors.New("none of the shared accounts is logged in on this machine; sign one in: julienning new-config")
+			return c, errors.New("none of the shared accounts is logged in on this machine; sign one in: julienning login NICKNAME (`julienning accounts` lists them)")
 		}
 		return c, err
 	}
@@ -430,7 +430,7 @@ func chooseOn(ctx context.Context, dst side, target string) (switching.Choice, e
 	err := agentCall(ctx, sshx.TargetOf(dst.host), "choose", hosts.ChooseRequest{Target: target, TZ: hosts.DisplayZone()}, &ans)
 	var ae *hosts.AgentError
 	if errors.As(err, &ae) && ae.Code == hosts.CodeNotLocal && ae.Message == "none of the shared accounts is logged in" {
-		return switching.Choice{}, fmt.Errorf("none of the shared accounts is logged in on %s; sign one in: julienning new-config --host %s", dst.name(), dst.name())
+		return switching.Choice{}, fmt.Errorf("none of the shared accounts is logged in on %s; sign one in: julienning login NICKNAME --host %s", dst.name(), dst.name())
 	}
 	if err != nil {
 		return switching.Choice{}, hostErr(dst.name(), err)

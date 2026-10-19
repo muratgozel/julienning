@@ -68,13 +68,9 @@ func runNext(env cli.Env) error {
 		best := listing.Accounts[0]
 		email := strings.ToLower(best.Email)
 		nick := cache.Nickname(best.Email)
-		again := email
-		if nick != "" {
-			again = nick
-		}
 		return fmt.Errorf("none of the %d shared accounts is logged in on this machine (best ranked: %s); "+
 			"sign it in here with: julienning login %s",
-			len(listing.Accounts), accountName(nick, email), again)
+			len(listing.Accounts), accountName(nick, email), orEmail(nick, email))
 	}
 	if err := config.SetCurrent(cd); err != nil {
 		return err

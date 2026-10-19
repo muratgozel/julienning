@@ -781,8 +781,13 @@ run julienning accounts
 expect_contains "the account stays shared for the team" "bravo" "$out"
 
 # --- signing a team account in where no dir holds it (as on a second machine) ---------------
-# No registered dir holds bravo now: login creates one and signs it in,
-# pre-filled; new-config then refuses to make a second.
+# ~/.claude-two still holds bravo, unregistered now: login says to adopt it
+# rather than sign bravo in twice.
+run_fail julienning login bravo
+expect_contains "login adopts rather than doubles a dir julienning does not manage" "bravo (beta@example.com) is signed in on this machine in ~/.claude-two, which julienning does not manage yet; register it with: julienning adopt ~/.claude-two" "$out"
+# Without that login, as on a second machine, login creates a dir and signs
+# it in, pre-filled; new-config then refuses to make another.
+mv "$HOME/.claude-two/.claude.json" "$T/two-account.saved"
 run julienning login bravo
 expect_contains "login creates a dir for a team account no dir here holds" "no dir here holds bravo (beta@example.com); created ~/.claude-" "$out"
 newdir="$(printf '%s\n' "$out" | sed -n 's|.*created ~/\(\.claude-[^ ]*\) (config.*|\1|p')"
@@ -792,6 +797,7 @@ expect_contains "the new dir's login page was pre-filled" "login $HOME/$newdir|a
 expect_contains "login reports the account it got" "Signed in: bravo (beta@example.com) in ~/$newdir." "$out"
 run_fail julienning new-config --nick bravo --no-login
 expect_contains "new-config does not double a team account signed in here" "bravo (beta@example.com) is already signed in on this machine, in ~/$newdir; use it with: julienning use bravo" "$out"
+mv "$T/two-account.saved" "$HOME/.claude-two/.claude.json"
 
 # --- self-update ----------------------------------------------------------------------------
 printf 'v9.0.1\n' >"$T/releases/LATEST"

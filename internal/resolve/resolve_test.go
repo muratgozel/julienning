@@ -57,8 +57,15 @@ func TestTargetNicknameEmailDir(t *testing.T) {
 	if _, err := Target(cfg, cache, "nobody", nil); err == nil {
 		t.Fatal("unknown must fail")
 	}
-	if _, err := Target(cfg, cache, "ghost@x.io", nil); err == nil || !strings.Contains(err.Error(), "no registered config dir on this machine is logged in as ghost@x.io") {
+	// login signs in a team account; any other email is new-config's.
+	if _, err := Target(cfg, cache, "ghost@x.io", nil); err == nil || err.Error() != "no registered config dir on this machine is logged in as ghost@x.io; sign it into a new dir with: julienning new-config (`--no-share` keeps it personal)" {
 		t.Fatalf("email not local wording: %v", err)
+	}
+	if _, err := Target(cfg, cache, "NINE", nil); err == nil || err.Error() != "nine (claude9@x.io) is shared but not logged in on this machine; sign it in here with: julienning login nine" {
+		t.Fatalf("nickname not local wording: %v", err)
+	}
+	if _, err := Target(cfg, &sharedcache.Cache{Emails: []string{"legacy@x.io"}}, "legacy@x.io", nil); err == nil || err.Error() != "no registered config dir on this machine is logged in as legacy@x.io; sign it in here with: julienning login legacy@x.io" {
+		t.Fatalf("shared email without a nickname: %v", err)
 	}
 	if _, err := Target(cfg, nil, "alpha", nil); err == nil {
 		t.Fatal("nil cache: nickname unknown, not a dir → error")

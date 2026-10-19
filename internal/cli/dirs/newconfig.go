@@ -15,6 +15,7 @@ import (
 	"github.com/muratgozel/julienning/internal/launch"
 	"github.com/muratgozel/julienning/internal/resolve"
 	"github.com/muratgozel/julienning/internal/sharedcache"
+	"github.com/muratgozel/julienning/internal/tui"
 )
 
 // dirPrefix is the prefix of every non-default Claude config dir julienning
@@ -100,15 +101,21 @@ func runNewConfig(env cli.Env) error {
 		cache = loadCache(env)
 		switch {
 		case nick != "":
-			account, _ = cache.ByNickname(nick)
+			if account, _ = cache.ByNickname(nick); account != "" {
+				here, err := accountHere(cfg, cache, account)
+				if err != nil {
+					return err
+				}
+				if here != "" {
+					return errors.New(here)
+				}
+			}
 		case isInteractive(env):
-			nick, account = askNewNickname(env, cache)
-		}
-		if account != "" {
-			if err := signedInHere(cfg, cache, account); err != nil {
+			if nick, account, err = askNewNickname(env, cfg, cache); err != nil {
 				return err
 			}
-		} else {
+		}
+		if account == "" {
 			share = &config.ShareOnLogin{Nickname: nick}
 		}
 	}
@@ -153,10 +160,7 @@ func runNewConfig(env cli.Env) error {
 // names the account rather than the config.
 func signInNewDir(env cli.Env, cache *sharedcache.Cache, cd config.ConfigDir, email string, noLogin bool) error {
 	nick := cache.Nickname(email)
-	again := email
-	if nick != "" {
-		again = nick
-	}
+	again := nickOrEmail(nick, email)
 	if noLogin {
 		fmt.Fprintf(env.Stdout, "Sign in: julienning login %s\n", again)
 		return nil
@@ -165,26 +169,33 @@ func signInNewDir(env cli.Env, cache *sharedcache.Cache, cd config.ConfigDir, em
 	if err := authLogin(env, cd.Dir, email); err != nil {
 		return fmt.Errorf("%w; %s is created, sign in later with: julienning login %s", err, shortenHome(cd.Dir), again)
 	}
-	return verifyLogin(env, cache, cd, email, "")
+	return verifyLogin(env, cache, cd, email, "", true)
 }
 
-// signedInHere refuses a new dir for a team account a registered dir here
-// already holds (it is ready to use), or held last and lost to a sign-out
-// (signing in there again keeps its sessions with the account).
-func signedInHere(cfg *config.Config, cache *sharedcache.Cache, email string) error {
+// accountHere says why a team account gets no new dir here, "" when it may:
+// a registered dir holds it (ready to use), a dir julienning does not manage
+// holds it (adopt that one), or a registered dir held it last and lost it to
+// a sign-out (login signs in there again, sessions and all). A second dir
+// would split the account's sessions.
+func accountHere(cfg *config.Config, cache *sharedcache.Cache, email string) (string, error) {
 	nick := cache.Nickname(email)
-	who := email
-	if nick != "" {
-		who = nick
-	}
+	who := nickOrEmail(nick, email)
 	if dirs := resolve.Dirs(cfg, email, nil); len(dirs) > 0 {
-		return fmt.Errorf("%s is already signed in on this machine, in %s; use it with: julienning use %s",
-			accountLabel(nick, email), shortenHome(dirs[0].Dir), who)
+		return fmt.Sprintf("%s is already signed in on this machine, in %s; use it with: julienning use %s",
+			accountLabel(nick, email), shortenHome(dirs[0].Dir), who), nil
+	}
+	held, err := resolve.Unregistered(cfg, email)
+	if err != nil {
+		return "", err
+	}
+	if len(held) > 0 {
+		return fmt.Sprintf("%s is already signed in on this machine, in %s, which julienning does not manage yet; register it with: julienning adopt %s",
+			accountLabel(nick, email), shortenHome(held[0]), shortenHome(held[0])), nil
 	}
 	if out := resolve.SignedOutDirs(cfg, email); len(out) > 0 {
-		return &resolve.NotLocalError{Nickname: nick, Email: email, SignedOut: out}
+		return (&resolve.NotLocalError{Nickname: nick, Email: email, Shared: true, SignedOut: out}).Error(), nil
 	}
-	return nil
+	return "", nil
 }
 
 // createDir creates, patches and registers a new config dir (see
@@ -245,24 +256,42 @@ func createDir(env cli.Env, name, dir string, settings []byte, share *config.Sha
 // input) returns "", which the share on login turns into the email's local
 // part. An invalid answer is explained and asked again: the share itself
 // happens later in the background, where it can no longer be asked about.
-// A nickname the cached allowlist shows a team account holding names that
-// account instead, returned as account (nick is then "").
-func askNewNickname(env cli.Env, cache *sharedcache.Cache) (nick, account string) {
+// A nickname the cached allowlist shows a team account holding may name
+// that account (returned as account, nick ""): a confirmation, because
+// meaning a new nickname and hitting a teammate's would sign in theirs.
+func askNewNickname(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) (nick, account string, err error) {
 	in := bufio.NewReader(env.Stdin)
+	const again = "choose another nickname (or press Enter for the email's name)"
 	for {
 		answer, ok := ask(env.Stdout, in, "Nickname for this account [the email's name]: ")
 		if !ok || answer == "" {
-			return "", ""
+			return "", "", nil
 		}
 		n, err := normalizeNickname(answer)
 		if err != nil {
 			fmt.Fprintf(env.Stdout, "%v\n", err)
 			continue
 		}
-		if holder, taken := cache.ByNickname(n); taken {
-			return "", holder
+		holder, taken := cache.ByNickname(n)
+		if !taken {
+			return n, "", nil
 		}
-		return n, ""
+		yes, err := tui.AskYesNo(in, env.Stdout, fmt.Sprintf("%s is the team account %s. Sign it in here? [Y/n] ", n, holder))
+		if err != nil {
+			return "", "", err
+		}
+		if !yes {
+			fmt.Fprintf(env.Stdout, "Then %s.\n", again)
+			continue
+		}
+		here, err := accountHere(cfg, cache, holder)
+		if err != nil {
+			return "", "", err
+		}
+		if here == "" {
+			return "", holder, nil
+		}
+		fmt.Fprintf(env.Stdout, "%s\nOr %s.\n", here, again)
 	}
 }
 
@@ -305,5 +334,5 @@ func resolveNewName(cfg *config.Config, home, flagValue string) (string, string,
 		}
 		return name, dir, nil
 	}
-	return "", "", fmt.Errorf("no free %s<N> name up to %d; pass --name", prefix, maxAutoNumber)
+	return "", "", fmt.Errorf("no free %s<N> name up to %d (name one with: julienning new-config --name NAME)", prefix, maxAutoNumber)
 }
