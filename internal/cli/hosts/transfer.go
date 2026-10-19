@@ -101,6 +101,9 @@ func runTransfer(env cli.Env) error {
 		return errors.New("transfer asks which session to move and needs a terminal")
 	}
 	err = transfer(env, target, *to, *all, *limit, *noLaunch)
+	if errors.Is(err, sshx.ErrInterrupted) {
+		return errors.New("transfer interrupted (Ctrl-C); the source still has the session, and the destination keeps nothing partial")
+	}
 	if errors.Is(err, errCanceled) {
 		fmt.Fprintln(env.Stdout, "Transfer canceled; nothing was moved.")
 		return nil
@@ -221,7 +224,15 @@ func transfer(env cli.Env, target, toName string, all bool, limit int, noLaunch 
 	from := labelOf(ls.Labels, s.ConfigName) + " " + src.on()
 	into := choiceLabel(choice) + " " + dst.on()
 	if res.Already {
-		fmt.Fprintf(env.Stdout, "%s already had %q from a transfer that lost its connection; finished it.\n", dst.name(), s.Label())
+		where := ""
+		if res.Dir != "" && filepath.Clean(res.Dir) != filepath.Clean(choice.Config.Dir) {
+			where = " (in " + dst.short(res.Dir) + ")"
+		}
+		fmt.Fprintf(env.Stdout, "%s already had %q%s from a transfer that lost its connection; finished it.\n", dst.name(), s.Label(), where)
+		if where != "" {
+			// It resumes where the first transfer put it.
+			choice.Config, choice.Nickname = config.ConfigDir{Dir: res.Dir}, ""
+		}
 	} else {
 		var details []string
 		if m := res.Memory.Summary(); m != "" {
@@ -598,7 +609,7 @@ func moveBetween(ctx context.Context, env cli.Env, src, dst side, s sessions.Ses
 		res, err = receiveOn(ctx, dst, req, archive)
 	}
 	if prog != nil {
-		prog.done()
+		prog.done(err == nil)
 	}
 	if err != nil {
 		cancel()
@@ -717,7 +728,7 @@ func receiveOn(ctx context.Context, dst side, req hosts.ReceiveRequest, archive 
 // was packed.
 func releaseOn(ctx context.Context, src side, s sessions.Session, manifestSHA string) ([]string, error) {
 	if src.local {
-		return sessions.Release(s, sessions.PackSource{}, manifestSHA)
+		return sessions.Release(s, manifestSHA)
 	}
 	var ans hosts.ReleaseAnswer
 	err := agentCall(ctx, sshx.TargetOf(src.host), "release", hosts.ReleaseRequest{ID: s.ID, ConfigDir: s.ConfigDir, ManifestSHA256: manifestSHA}, &ans)
@@ -820,8 +831,16 @@ func (p *progress) add(n int64) {
 	fmt.Fprintf(p.env.Stdout, "\r%s: %d of %d MB", p.what, min(p.seen, p.total)>>20, p.total>>20)
 }
 
-func (p *progress) done() {
+// done ends the line: the total when the destination took it all, else
+// what got through.
+func (p *progress) done(ok bool) {
 	p.pw.Close()
 	p.wg.Wait()
-	fmt.Fprintf(p.env.Stdout, "\r%s: %d of %d MB\n", p.what, p.total>>20, p.total>>20)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sent := min(p.seen, p.total)
+	if ok {
+		sent = p.total
+	}
+	fmt.Fprintf(p.env.Stdout, "\r%s: %d of %d MB\n", p.what, sent>>20, p.total>>20)
 }

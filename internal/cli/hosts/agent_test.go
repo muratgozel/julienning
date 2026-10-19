@@ -419,3 +419,70 @@ func TestRunEnvKeepsTheHostZoneForAnUnknownOne(t *testing.T) {
 		t.Fatalf("%q", env)
 	}
 }
+
+// A host set up without a Worker (setup --yes without --remote-url) takes
+// this machine's, instead of failing as "another Worker ()".
+func TestAgentBootstrapHostWithoutWorker(t *testing.T) {
+	sandbox(t)
+	before := setUp(t, "", "")
+	fakeWorker(t, nil, "t")
+	res, err := bootstrapReq(t, hosts.BootstrapRequest{Dev: "murat", WorkerURL: "https://w.example.dev", Token: "t"})
+	if err != nil || !res.WorkerReplaced {
+		t.Fatalf("%+v %v", res, err)
+	}
+	cfg, _ := config.Load()
+	if cfg.Remote.URL != "https://w.example.dev" || cfg.Remote.Token != "t" || cfg.MachineID != before.MachineID {
+		t.Fatalf("after: %+v", cfg.Remote)
+	}
+}
+
+// A config.json that does not load must not block the commands that repair
+// or remove the setup; other commands still stop on it.
+func TestAgentRunWithABrokenConfig(t *testing.T) {
+	home := sandbox(t)
+	got := captureExec(t)
+	p := filepath.Join(home, ".julienning", config.ConfigFile)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"setup", "update", "uninstall"} {
+		got.argv = nil
+		if _, err := runReq(t, hosts.RunRequest{Argv: []string{cmd}, Host: "box"}); err != nil || len(got.argv) == 0 || got.argv[0] != cmd {
+			t.Errorf("%s: %v %q", cmd, err, got.argv)
+		}
+	}
+	got.argv = nil
+	errOut, err := runReq(t, hosts.RunRequest{Argv: []string{"accounts"}, Host: "box"})
+	if err == nil || got.argv != nil || !strings.Contains(errOut, "julienning: box: ") {
+		t.Errorf("accounts: %v %q", err, errOut)
+	}
+}
+
+// agent launch puts this machine's tool dirs on PATH for claude.
+func TestAgentLaunchPutsToolsOnPATH(t *testing.T) {
+	home := sandbox(t)
+	cfg := setUp(t, "https://w", "t")
+	dir := filepath.Join(home, ".claude-x")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = cfg.Add(config.ConfigDir{Name: "julienning1", Dir: dir})
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	writeExe(t, filepath.Join(home, ".local", "bin", "claude"))
+	var path string
+	prev := execClaude
+	execClaude = func(d string, args []string, cwd string) error { path = os.Getenv("PATH"); return nil }
+	t.Cleanup(func() { execClaude = prev })
+	arg, _ := hosts.EncodeArg(hosts.LaunchRequest{MachineID: cfg.MachineID, Dir: dir, Args: []string{"--resume", "x"}, Host: "box"})
+	if _, errOut, err := runAgentVerb(t, "", "launch", arg); err != nil {
+		t.Fatalf("%v %s", err, errOut)
+	}
+	if !strings.Contains(path, filepath.Join(home, ".local", "bin")+":") {
+		t.Fatalf("PATH: %s", path)
+	}
+}

@@ -485,3 +485,14 @@ func TestFrames(t *testing.T) {
 		t.Fatalf("round trip: %+v %v", back, err)
 	}
 }
+
+// An error that is not an *AgentError keeps its message in the answer.
+func TestEncodeAnswerKeepsPlainErrors(t *testing.T) {
+	out := EncodeAnswer(errors.New("several project folders could hold the memory"))
+	var h Hello
+	_, err := DecodeAnswer(out, &h)
+	var ae *AgentError
+	if !errors.As(err, &ae) || ae.Code != CodeInvalid || ae.Message != "several project folders could hold the memory" {
+		t.Fatalf("got %v", err)
+	}
+}

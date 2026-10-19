@@ -415,3 +415,49 @@ func TestInstallerScript(t *testing.T) {
 		t.Error("an unset override was passed")
 	}
 }
+
+// After this machine updated itself (the host runs a newer minor), host add
+// stops cleanly: run it again with the new binary.
+func TestHostAddStopsCleanlyAfterUpdatingHere(t *testing.T) {
+	sandbox(t)
+	f := newFakeHost(t)
+	setUp(t, "https://w.example.dev", "tok")
+	f.handlers["hello"] = func(json.RawMessage) (any, error) { return helloFor("9be1c0a4d2f3", "0.11.0", "murat"), nil }
+	prev := updateHere
+	updateHere = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { updateHere = prev })
+	out, _, err := run(t, "add", "box", "--yes")
+	if err != nil || !strings.Contains(out, "Updated 0.10.0 → 0.11.0; run the command again.") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// After the installer ran, its link is used, never a PATH lookup (an older
+// julienning earlier on the non-interactive PATH would win that).
+func TestInstallUsesTheInstallersLink(t *testing.T) {
+	sandbox(t)
+	f := newFakeHost(t)
+	var asked string
+	f.handlers["hello"] = func(json.RawMessage) (any, error) { return helloFor("", "0.10.0", ""), nil }
+	prevCall := agentCall
+	agentCall = func(ctx context.Context, tg sshx.Target, verb string, req, resp any) error {
+		asked = tg.Julienning
+		return prevCall(ctx, tg, verb, req, resp)
+	}
+	p := hosts.Probe{Home: "/home/dev", Paths: map[string]string{"bash": "/usr/bin/bash", "curl": "/usr/bin/curl", "tar": "/usr/bin/tar", "sha256sum": "/usr/bin/sha256sum", "julienning": "/usr/local/bin/julienning"}}
+	env := cli.Env{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	path, err := installOnHost(context.Background(), env, sshx.Target{Name: "box", SSH: "box"}, p, "linux", "amd64", "v0.10.0")
+	if err != nil || path != "/home/dev/.local/bin/julienning" || asked != path {
+		t.Fatalf("%q %v (asked %q)", path, err, asked)
+	}
+}
+
+func TestProgressShowsWhatGotThrough(t *testing.T) {
+	var out bytes.Buffer
+	p := newProgress(cli.Env{Stdout: &out}, `Sending "X" to box`, 61<<20)
+	p.add(23 << 20)
+	p.done(false)
+	if !strings.HasSuffix(out.String(), "\rSending \"X\" to box: 23 of 61 MB\n") {
+		t.Fatalf("failed transfer: %q", out.String())
+	}
+}

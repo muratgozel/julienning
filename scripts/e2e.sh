@@ -696,8 +696,9 @@ expect_contains "update is a no-op when current" "9.0.1" "$out"
 # --- hosts: a second sandbox home plays the host, over a fake ssh ---------------------
 # The fake ssh drops the options and the destination and runs the command
 # with /bin/sh -c under the host's home, with the minimal PATH a
-# non-interactive ssh command gets (the host's own tool dir first, so a real
-# tmux or claude elsewhere on this machine is never used) and the pseudo-
+# non-interactive ssh command gets: no ~/.local/bin, where claude and
+# julienning live (as on a real host), and first a dir holding only the fake
+# tmux, so a real tmux in /usr/bin is never found. It keeps the pseudo-
 # terminal it was given. Its rc file ends with a provisioning claude()
 # function, which julienning's line, appended after it, must override.
 H="$T/host"
@@ -717,6 +718,8 @@ sed -e "s|$T/tmux.log|$T/host-tmux.log|" -e "s|$T/tmux-session|$T/host-tmux-sess
   "$T/fakebin/tmux" >"$H/.local/bin/tmux"
 printf '#!/bin/sh\necho "HOST WINDOW SHELL"\n' >"$H/.local/bin/window-shell"
 chmod +x "$H/.local/bin/claude" "$H/.local/bin/tmux" "$H/.local/bin/window-shell"
+mkdir -p "$T/hostpath"
+ln -s "$H/.local/bin/tmux" "$T/hostpath/tmux"
 printf '{"oauthAccount":{"emailAddress":"alpha@example.com"}}' >"$H/.claude-team/.claude.json"
 printf '{\n  "theme": "dark"\n}\n' >"$H/.claude-team/settings.json"
 cat >"$T/fakebin/ssh" <<SSH
@@ -733,7 +736,7 @@ printf '%s %s\n' "\$dest" "\$*" >>"$T/ssh.log"
 if [ "\$dest" != box ]; then echo "ssh: Could not resolve hostname \$dest: nodename nor servname provided" >&2; exit 255; fi
 cd "$H" || exit 255
 remote() {
-  env -i HOME="$H" USER=dev LOGNAME=dev SHELL=/bin/bash PATH="$H/.local/bin:/usr/bin:/bin" \
+  env -i HOME="$H" USER=dev LOGNAME=dev SHELL=/bin/bash PATH="$T/hostpath:/usr/bin:/bin" \
     SSH_CONNECTION="127.0.0.1 50000 127.0.0.2 22" TERM="\${TERM:-dumb}" /bin/sh -c "\$1"
 }
 # \$T/drop-receive: the next receive runs, but its answer is lost.

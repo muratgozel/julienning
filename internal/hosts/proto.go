@@ -71,14 +71,27 @@ type errorBody struct {
 	Error *AgentError `json:"error"`
 }
 
-// EncodeAnswer writes the frame line and v as JSON (an *AgentError as the
-// error body).
+// ToAgentError gives any error an agent code: an *AgentError as it is, a
+// move refusal its kind (LIVE, COLLISION, …), anything else INVALID, the
+// message kept either way.
+func ToAgentError(err error) *AgentError {
+	var ae *AgentError
+	if errors.As(err, &ae) {
+		return ae
+	}
+	if kind := sessions.ErrorKind(err); kind != "" {
+		return Errorf(kind, "%s", err.Error())
+	}
+	return Errorf(CodeInvalid, "%s", err.Error())
+}
+
+// EncodeAnswer writes the frame line and v as JSON (an error as the error
+// body, through ToAgentError: an error value has no fields to encode).
 func EncodeAnswer(v any) []byte {
 	var b bytes.Buffer
 	b.WriteString(Frame() + "\n")
-	var ae *AgentError
-	if err, ok := v.(error); ok && errors.As(err, &ae) {
-		v = errorBody{Error: ae}
+	if err, ok := v.(error); ok {
+		v = errorBody{Error: ToAgentError(err)}
 	}
 	raw, err := json.Marshal(v)
 	if err != nil {

@@ -38,7 +38,10 @@ func runHost(env cli.Env) error {
 	sub, args := env.Args[0], env.Args[1:]
 	switch sub {
 	case "add":
-		return hostAdd(env, args)
+		if err := hostAdd(env, args); !errors.Is(err, errUpdatedHere) {
+			return err
+		}
+		return nil
 	case "list":
 		return hostList(env, args)
 	case "remove":

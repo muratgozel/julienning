@@ -31,7 +31,11 @@ func put(t *testing.T, p, body string) { writeFile(t, p, body, 0o644, time.Time{
 
 func newMachine(t *testing.T, checkoutRel, dirName, email string) machine {
 	t.Helper()
-	home := filepath.Join(t.TempDir(), "home")
+	root, err := filepath.EvalSymlinks(t.TempDir()) // physical, as Claude records cwd
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(root, "home")
 	m := machine{home: home, dir: filepath.Join(home, dirName), checkout: filepath.Join(home, checkoutRel)}
 	put(t, filepath.Join(m.dir, ".claude.json"), `{"oauthAccount":{"emailAddress":"`+email+`"}}`)
 	if err := os.MkdirAll(filepath.Join(m.dir, "sessions"), 0o700); err != nil {
@@ -197,7 +201,7 @@ func TestPackUnpackRelease(t *testing.T) {
 		t.Fatal("the retry wrote something")
 	}
 
-	warnings, err := Release(s, packSource(src, s), msha)
+	warnings, err := Release(s, msha)
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("release: %v %v", warnings, err)
 	}
@@ -230,7 +234,7 @@ func TestReleaseKeepsAChangedSession(t *testing.T) {
 	}
 	old := time.Now().Add(-time.Hour)
 	_ = os.Chtimes(p, old, old)
-	if _, err := Release(s, packSource(src, s), msha); !errors.Is(err, ErrChanged) || !strings.Contains(err.Error(), "changed on this machine while it was being sent; both copies are kept") {
+	if _, err := Release(s, msha); !errors.Is(err, ErrChanged) || !strings.Contains(err.Error(), "changed on this machine while it was being sent; both copies are kept") {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := os.Stat(p); err != nil {
@@ -372,6 +376,112 @@ func TestPackRefusesAnOpenSession(t *testing.T) {
 	alive(t)
 	put(t, filepath.Join(src.dir, "sessions", "4242.json"), `{"pid":4242,"sessionId":"`+moveID+`","cwd":"/x","kind":"interactive"}`)
 	if _, _, err := Pack(s, packSource(src, s), &bytes.Buffer{}); !errors.Is(err, ErrLive) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Another session of the project may write the shared memory while one
+// travels: that is not the travelling session changing.
+func TestReleaseIgnoresSharedMemoryChanges(t *testing.T) {
+	src := newMachine(t, "Code/shop", ".claude-a", "claude1@x.io")
+	dst := newMachine(t, "src/shop", ".claude-x", "claude2@x.io")
+	s := sourceSession(t, src)
+	var buf bytes.Buffer
+	if _, _, err := Pack(s, packSource(src, s), &buf); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Unpack(bytes.NewReader(buf.Bytes()), unpackOpts(dst, "claude2@x.io"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, filepath.Join(src.dir, "projects", EncodeCwd(src.checkout), "memory", "new.md"), "written by another session\n")
+	if _, err := Release(s, res.ManifestSHA256); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}
+
+// A transfer whose answer was lost may be retried into another account;
+// the receipt finds the first copy, so the session is not received twice.
+func TestRetryIntoAnotherAccountFindsTheFirstCopy(t *testing.T) {
+	src := newMachine(t, "Code/shop", ".claude-a", "claude1@x.io")
+	dst := newMachine(t, "src/shop", ".claude-x", "claude2@x.io")
+	other := filepath.Join(dst.home, ".claude-y")
+	put(t, filepath.Join(other, ".claude.json"), `{"oauthAccount":{"emailAddress":"claude3@x.io"}}`)
+	s := sourceSession(t, src)
+	var buf bytes.Buffer
+	if _, _, err := Pack(s, packSource(src, s), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Unpack(bytes.NewReader(buf.Bytes()), unpackOpts(dst, "claude2@x.io")); err != nil {
+		t.Fatal(err)
+	}
+	o := unpackOpts(dst, "claude3@x.io")
+	o.Dir = other
+	res, err := Unpack(bytes.NewReader(buf.Bytes()), o)
+	if err != nil || !res.Already || res.Dir != dst.dir {
+		t.Fatalf("retry into another account: %+v %v", res, err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(other, "projects", "*", moveID+".jsonl")); len(matches) != 0 {
+		t.Fatal("the session was received a second time")
+	}
+}
+
+// A checkout reached through a symlink is stored under its physical path,
+// the one Claude Code records and keys folders by.
+func TestUnpackNamesTheRealCheckout(t *testing.T) {
+	src := newMachine(t, "Code/shop", ".claude-a", "claude1@x.io")
+	dst := newMachine(t, "data/shop", ".claude-x", "claude2@x.io")
+	link := filepath.Join(dst.home, "code")
+	if err := os.Symlink(filepath.Join(dst.home, "data"), link); err != nil {
+		t.Fatal(err)
+	}
+	s := sourceSession(t, src)
+	var buf bytes.Buffer
+	if _, _, err := Pack(s, packSource(src, s), &buf); err != nil {
+		t.Fatal(err)
+	}
+	o := unpackOpts(dst, "claude2@x.io")
+	o.Cwd, o.Checkout, o.GitRoot = filepath.Join(link, "shop", "web"), filepath.Join(link, "shop"), filepath.Join(link, "shop")
+	res, err := Unpack(bytes.NewReader(buf.Bytes()), o)
+	real := filepath.Join(dst.checkout, "web")
+	if err != nil || res.ProjectFolder != EncodeCwd(real) {
+		t.Fatalf("folder: %+v %v", res, err)
+	}
+	if got := read(t, filepath.Join(dst.dir, "projects", EncodeCwd(real), moveID+".jsonl")); !strings.Contains(got, `"cwd":"`+real+`"`) {
+		t.Fatalf("cwd not the physical path:\n%s", got)
+	}
+}
+
+// The first copy went into another account and the source changed since:
+// a collision, naming where the first copy is.
+func TestRetryIntoAnotherAccountAfterAChange(t *testing.T) {
+	src := newMachine(t, "Code/shop", ".claude-a", "claude1@x.io")
+	dst := newMachine(t, "src/shop", ".claude-x", "claude2@x.io")
+	other := filepath.Join(dst.home, ".claude-y")
+	put(t, filepath.Join(other, ".claude.json"), `{"oauthAccount":{"emailAddress":"claude3@x.io"}}`)
+	s := sourceSession(t, src)
+	var buf bytes.Buffer
+	if _, _, err := Pack(s, packSource(src, s), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Unpack(bytes.NewReader(buf.Bytes()), unpackOpts(dst, "claude2@x.io")); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := filepath.Join(src.dir, "projects", s.ProjectDir, moveID+".jsonl")
+	f, err := os.OpenFile(jsonl, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"type":"user","message":{"content":"one more"}}` + "\n")
+	f.Close()
+	buf.Reset()
+	if _, _, err := Pack(s, packSource(src, s), &buf); err != nil {
+		t.Fatal(err)
+	}
+	o := unpackOpts(dst, "claude3@x.io")
+	o.Dir = other
+	_, err = Unpack(bytes.NewReader(buf.Bytes()), o)
+	if !errors.Is(err, ErrCollision) || !strings.Contains(err.Error(), dst.dir) {
 		t.Fatalf("got %v", err)
 	}
 }

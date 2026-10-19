@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 
@@ -34,14 +33,10 @@ func Env(environ []string, dir string) []string {
 	return out
 }
 
-// ClaudePath finds the claude binary on PATH.
-func ClaudePath() (string, error) {
-	p, err := exec.LookPath("claude")
-	if err != nil {
-		return "", ErrClaudeNotFound
-	}
-	return p, nil
-}
+// ClaudePath finds the claude binary: on PATH, then in the usual install
+// dirs (FindClaude). A host's agent runs with the minimal PATH ssh gives
+// non-interactive commands, where Claude Code's ~/.local/bin is missing.
+func ClaudePath() (string, error) { return FindClaude() }
 
 // Exec replaces the current process with `claude args...` using dir as the
 // config dir. chdir, when non-empty and existing, becomes the working

@@ -46,10 +46,10 @@ func NewRewriter(pairs []Pair) *Rewriter {
 // JSON rewrites a .json or .jsonl file, matching both sides as they appear
 // inside JSON strings. Lines that are not valid JSON are rewritten the same
 // way, never dropped. It returns the new content and the replacements made.
-func (r *Rewriter) JSON(data []byte) ([]byte, int) { return replacePaths(data, r.json) }
+func (r *Rewriter) JSON(data []byte) ([]byte, int) { return replacePaths(data, r.json, true) }
 
 // Text rewrites a plain text file (project memory).
-func (r *Rewriter) Text(data []byte) ([]byte, int) { return replacePaths(data, r.text) }
+func (r *Rewriter) Text(data []byte) ([]byte, int) { return replacePaths(data, r.text, false) }
 
 // pathByte is a byte that can continue a path component: a match must not
 // have one on either side, so /home/a/shop never matches inside
@@ -58,10 +58,65 @@ func pathByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '.' || b == '_' || b == '-'
 }
 
+// afterEscape reports whether data[:at] ends with a JSON escape: \b \f \n
+// \r \t or \uXXXX, introduced by an unescaped backslash. Its last byte is
+// a letter or a hex digit, which pathByte would take for part of a path,
+// yet a path right after a newline in a tool's output starts there.
+func afterEscape(data []byte, at int) bool {
+	if afterTerminalCode(data, at) {
+		return true
+	}
+	start := -1
+	switch {
+	case at >= 2 && data[at-2] == '\\' && bytes.IndexByte([]byte("bfnrt"), data[at-1]) >= 0:
+		start = at - 2
+	case at >= 6 && data[at-6] == '\\' && data[at-5] == 'u' && isHex(data[at-4:at]):
+		start = at - 6
+	default:
+		return false
+	}
+	n := 0 // backslashes ending at start: an odd run is an escape
+	for i := start; i >= 0 && data[i] == '\\'; i-- {
+		n++
+	}
+	return n%2 == 1
+}
+
+// afterTerminalCode reports whether data[:at] ends with a terminal color or
+// cursor code as JSON writes it (\u001b[32m, \u001b[0;1m): colored tool
+// output puts paths right after one, and its final letter is not a path's.
+func afterTerminalCode(data []byte, at int) bool {
+	i := at - 1
+	if i < 0 || !(data[i] >= 'A' && data[i] <= 'Z' || data[i] >= 'a' && data[i] <= 'z') {
+		return false
+	}
+	i--
+	for i >= 0 && (data[i] >= '0' && data[i] <= '9' || data[i] == ';') {
+		i--
+	}
+	if i < 6 || data[i] != '[' || string(data[i-6:i]) != `\u001b` {
+		return false
+	}
+	n := 0
+	for j := i - 6; j >= 0 && data[j] == '\\'; j-- {
+		n++
+	}
+	return n%2 == 1
+}
+
+func isHex(b []byte) bool {
+	for _, c := range b {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 // replacePaths makes one left-to-right pass: at the leftmost match, the
 // longest pair whose boundaries hold wins; replaced text is never looked at
-// again.
-func replacePaths(data []byte, pairs []bytePair) ([]byte, int) {
+// again. In JSON a match may also follow an escape (afterEscape).
+func replacePaths(data []byte, pairs []bytePair, inJSON bool) ([]byte, int) {
 	if len(pairs) == 0 {
 		return data, 0
 	}
@@ -89,7 +144,8 @@ func replacePaths(data []byte, pairs []bytePair) ([]byte, int) {
 		}
 		at := next[best]
 		end := at + len(pairs[best].from)
-		if (at > 0 && pathByte(data[at-1])) || (end < len(data) && pathByte(data[end])) {
+		before := at > 0 && pathByte(data[at-1]) && !(inJSON && afterEscape(data, at))
+		if before || (end < len(data) && pathByte(data[end])) {
 			next[best] = indexFrom(data, pairs[best].from, at+1)
 			continue
 		}

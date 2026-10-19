@@ -50,3 +50,19 @@ func TestRewriteUntouched(t *testing.T) {
 		t.Fatal("unchanged input must come back as is")
 	}
 }
+
+// Multi-line tool output: in JSON every path after the first follows a \n
+// escape, whose 'n' must not count as part of the path.
+func TestRewriteAfterJSONEscapes(t *testing.T) {
+	r := NewRewriter([]Pair{{From: "/Users/m/Code/shop", To: "/home/dev/src/shop"}})
+	in := `{"stdout":"/Users/m/Code/shop/a.go\n/Users/m/Code/shop/b.go\t/Users/m/Code/shop/c.go\u001b[0m/Users/m/Code/shop/d.go\\n/Users/m/Code/shop/e.go"}`
+	got, n := r.JSON([]byte(in))
+	want := `{"stdout":"/home/dev/src/shop/a.go\n/home/dev/src/shop/b.go\t/home/dev/src/shop/c.go\u001b[0m/home/dev/src/shop/d.go\\n/Users/m/Code/shop/e.go"}`
+	if string(got) != want || n != 4 {
+		t.Fatalf("got %d:\n%s\nwant:\n%s", n, got, want)
+	}
+	// In plain text an "n" before a path is just a letter.
+	if got, n := r.Text([]byte(`n/Users/m/Code/shop`)); n != 0 || string(got) != `n/Users/m/Code/shop` {
+		t.Fatalf("text: %s %d", got, n)
+	}
+}

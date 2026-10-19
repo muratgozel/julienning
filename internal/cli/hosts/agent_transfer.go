@@ -39,16 +39,7 @@ func registered(dir string) (*config.Config, config.ConfigDir, error) {
 }
 
 // moveErr gives a move error its agent code (LIVE, COLLISION, …).
-func moveErr(err error) error {
-	var ae *hosts.AgentError
-	if errors.As(err, &ae) {
-		return err
-	}
-	if kind := sessions.ErrorKind(err); kind != "" {
-		return hosts.Errorf(kind, "%s", err.Error())
-	}
-	return err
-}
+func moveErr(err error) error { return hosts.ToAgentError(err) }
 
 func configDirs(cfg *config.Config) []string {
 	var dirs []string
@@ -213,7 +204,7 @@ func agentExport(env cli.Env, req hosts.ExportRequest) error {
 	cw := &countingWriter{w: env.Stdout}
 	if _, _, err := sessions.Pack(s, packSourceOf(s, home), cw); err != nil {
 		if cw.n == 0 {
-			raw, _ := json.Marshal(map[string]any{"error": moveErr(err)})
+			raw, _ := json.Marshal(map[string]any{"error": hosts.ToAgentError(err)})
 			_, _ = env.Stdout.Write(append(raw, '\n'))
 		} else {
 			fmt.Fprintf(env.Stderr, "julienning: %v\n", err)
@@ -265,7 +256,7 @@ func agentRelease(req hosts.ReleaseRequest) (hosts.ReleaseAnswer, error) {
 	if err != nil {
 		return hosts.ReleaseAnswer{}, moveErr(err)
 	}
-	warnings, err := sessions.Release(s, sessions.PackSource{}, req.ManifestSHA256)
+	warnings, err := sessions.Release(s, req.ManifestSHA256)
 	if err != nil {
 		return hosts.ReleaseAnswer{}, moveErr(err)
 	}
@@ -294,6 +285,12 @@ func agentLaunch(env cli.Env, arg string) error {
 	}
 	if req.MachineID != cfg.MachineID {
 		return fail("this is machine %q, not %q; refusing to start claude for another machine", cfg.MachineID, req.MachineID)
+	}
+	// claude and its tools are often outside ssh's non-interactive PATH;
+	// what it runs (its Bash tool) gets the same dirs a forwarded command
+	// does.
+	if err := os.Setenv("PATH", toolPath(os.Getenv("PATH"))); err != nil {
+		return fail("%v", err)
 	}
 	if err := execClaude(cd.Dir, req.Args, req.Cwd); err != nil {
 		return fail("%v", err)

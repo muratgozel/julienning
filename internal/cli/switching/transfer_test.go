@@ -2,6 +2,8 @@ package switching
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -99,5 +101,22 @@ func TestTransferSessionsListsSharedAccountsOnly(t *testing.T) {
 	}
 	if got := ScopeLine(1, 10, false, "~/Code/shop", "on box"); got != "1 session in ~/Code/shop on box" {
 		t.Errorf("scope: %s", got)
+	}
+}
+
+// An unreadable allowlist with the Worker down lists nothing (a personal
+// session must never be offered), and does not crash.
+func TestTransferSessionsWithAnUnreadableAllowlist(t *testing.T) {
+	f := setup(t)
+	a := f.addConfig("julienning1", email1)
+	f.save()
+	f.writeSession(a, sidA, "Team task", "fix", time.Hour)
+	f.fake.ListErr = errors.New("connection refused")
+	if err := os.WriteFile(filepath.Join(f.jul, "shared.json"), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, _, warnings, err := TransferSessions(f.proj, false, 10)
+	if err != nil || len(list) != 0 || len(warnings) == 0 || !strings.Contains(warnings[len(warnings)-1], "no session is offered") {
+		t.Fatalf("%+v %q %v", list, warnings, err)
 	}
 }

@@ -1462,7 +1462,9 @@ Alpine has busybox and often no bash, NixOS keeps tools under
   standard library plus x/term, and the user's `~/.ssh/config`, agent,
   ProxyJump and known_hosts apply unchanged.
 - Every call: `ssh -o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto
-  -o ControlPath=<state>/ssh/%C -o ControlPersist=60 -t|-T -- <ssh> <command>`.
+  -o ControlPath=<state>/ssh/%C -o ControlPersist=60 -t|-T -- <ssh> <command>`
+  (the ControlPath double-quoted when it holds whitespace; without
+  `ControlMaster` when it holds a `"`).
   BatchMode means a call never stops at a password or host-key prompt: hosts
   need key-based auth and a known host key (`host add` explains how to fix
   either: run `ssh <dest>` once by hand, add a key with `ssh-copy-id`). `-t`
@@ -1533,7 +1535,9 @@ Alpine has busybox and often no bash, NixOS keeps tools under
 - `bootstrap`: not set up → the Worker is checked from the host (`/healthz`,
   an authenticated `/accounts`), then config.json is created with a new
   machine id and the listing saved as `shared.json`; a failure is
-  `WORKER_UNREACHABLE` and saves nothing. Set up for the same Worker URL →
+  `WORKER_UNREACHABLE` and saves nothing. Set up without a Worker (setup
+  `--yes` without `--remote-url`) → the sent one is checked and stored like
+  on a fresh machine (`worker_replaced`). Set up for the same Worker URL →
   the host's token is checked: accepted → nothing changes; rejected →
   `token_rejected: true` and nothing changes, until a second call with
   `replace_token: true` (after the controller's question) stores the sent
@@ -1543,7 +1547,9 @@ Alpine has busybox and often no bash, NixOS keeps tools under
   token and saves its allowlist (`worker_replaced`). The machine id is never
   regenerated, and the dev name is never changed by bootstrap.
 - `run` (`agentRun`): the request's `machine_id` must be this machine's
-  (both empty on a host without config.json, so `setup --host` works there);
+  (both empty on a host without config.json, so `setup --host` works there;
+  a config.json that does not load counts as none for `setup`, `update` and
+  `uninstall`, the commands that repair or remove it, and stops the rest);
   `host` is the controller's name for this machine, used in messages the
   agent prints itself (`julienning: box: …`), since run's output is the
   command's. Then the directory (`project` given → "Locating a project";
@@ -1568,8 +1574,10 @@ Alpine has busybox and often no bash, NixOS keeps tools under
   error, a failure later cuts the stream (the receiver finds no manifest).
   `receive` takes the controller's request line ahead of the export, since
   where the session goes (the chosen account dir and the located directory)
-  is decided before the move. `launch` checks the machine id and runs
-  `launch.Exec` (tmux mode applies).
+  is decided before the move. `launch` checks the machine id, puts this
+  machine's julienning, claude and tmux dirs first on PATH (as `run` does)
+  and runs `launch.Exec` (tmux mode applies; `launch.ClaudePath` looks on
+  PATH, then in `~/.local/bin` and the other install dirs).
 - Errors: exit 1 and `{"error": {"code", "message"}}` after the frame line.
   Codes: `NOT_SET_UP`, `MACHINE_MISMATCH`, `WORKER_MISMATCH`,
   `WORKER_UNREACHABLE` (bootstrap: the Worker cannot be used from the host),
@@ -1665,8 +1673,10 @@ setup there runs with `--yes`. Steps, one status line each:
 
    Install: the official script run on the host, pinned to this machine's
    version (the latest release when this machine runs a development build),
-   so the host gets exactly what a teammate's `curl | bash` gets. It is
-   downloaded to a `mktemp` file first and run with bash from there (`curl
+   so the host gets exactly what a teammate's `curl | bash` gets; afterwards
+   the entry uses the installer's link (`~/.local/bin/julienning`, checked
+   with `hello`), never a PATH lookup, where an older julienning could come
+   first. It is downloaded to a `mktemp` file first and run with bash from there (`curl
    -fsSL <installer URL> -o "$tmp"`, `bash "$tmp" v0.10.0`), so a failed
    download fails instead of feeding bash an empty script, with the found
    tools' dirs first on PATH. `JULIENNING_REPO` and `JULIENNING_RELEASES_BASE`
@@ -1997,7 +2007,9 @@ be in an archive, and the receiver rejects them by name as well.
      there (`LIVE`), and the checkout exists; prunes receipts older than 30
      days;
    - the session's folder is `projects/<enc(destination cwd)>/` (`EncodeCwd` of
-     the real path). A name over 200 characters is hashed by Claude, so it is
+     the real path: the cwd, checkout and git root are resolved through
+     symlinks first, since Claude Code records and keys folders by the
+     physical directory). A name over 200 characters is hashed by Claude, so it is
      only used when a folder with that prefix exists whose sessions confirm the
      cwd; else refused (`box's path for this project is too long for a new
      project folder; open claude there once, then transfer again`). Memory goes
@@ -2021,20 +2033,27 @@ be in an archive, and the receiver rejects them by name as well.
      MEMORY.md lines appended, conflicts reported); its failures are warnings,
      as in Move.
 3. **Release** (the source, `agent release` or in process): deletes the source
-   items only when they are unchanged since the pack and not open: the source
-   packs the session again (to nowhere) and compares that manifest's SHA-256
-   with the one the destination received (`manifest_sha256` of `receive`'s
-   answer), which covers the transcript's size, mtime and SHA-256 and every
-   side file; the source keeps no state between export and release.
+   items only when they are unchanged since the pack and not open. The
+   session's fingerprint (`sessions.Fingerprint`) is the SHA-256 of its
+   manifest without the project memory entries: memory is merged, never
+   moved, and another session of the project may write it meanwhile. The
+   source computes it afresh over its items (sizes, mtimes and SHA-256 of the
+   transcript and every side file, nothing compressed) and compares it with
+   the one the destination received (`manifest_sha256` of `receive`'s
+   answer); the source keeps no state between export and release.
    Otherwise both copies stay:
    `"Fix flaky clock tests" changed on this machine while it was being sent;
    both copies are kept (box has it as it was before the change)`. Exit 1.
 4. **Dropped connection after the commit**: the source still has the session.
    Transferring it again to the same machine, the destination finds the id
-   with a receipt whose `manifest_sha256` matches the new pack and whose
-   transcript is still `transcript_sha256`, answers `{already: true}`, and the
-   source releases: `box already had "Fix flaky clock tests" from a transfer
-   that lost its connection; finished it.`
+   with a receipt (`{manifest_sha256, dir, transcript_sha256, from, at}`)
+   whose fingerprint matches the new pack and whose transcript, in the
+   receipt's `dir`, is still `transcript_sha256`, answers `{already: true,
+   dir}`, and the source releases: `box already had "Fix flaky clock tests"
+   from a transfer that lost its connection; finished it.` The retry chooses
+   the account again and may pick another one; the receipt's `dir` still
+   finds the first copy (`… "Fix flaky clock tests" (in ~/.claude-a) from …`),
+   so the session is never received twice, and it resumes there.
 
 Path rewrite, while the destination writes:
 
@@ -2053,7 +2072,10 @@ Path rewrite, while the destination writes:
   (`"` and `\` and control characters escaped, as Claude writes them). A match
   counts only when neither the byte before nor the byte after is in
   `[A-Za-z0-9._-]`, so `/Users/murat/Code/shop` never matches inside
-  `/Users/murat/Code/shop2` or `/mnt/Users/murat`. One left-to-right pass,
+  `/Users/murat/Code/shop2` or `/mnt/Users/murat`. In JSON a match may also
+  follow an escape (`\n`, `\t`, `\uXXXX`, an unescaped backslash
+  introducing it) or a terminal code written as `\u001b[…m`: every path that
+  starts a line of a tool's output follows one. One left-to-right pass,
   longest match first; replaced text is never matched again. Lines that are
   not valid JSON are rewritten the same way, never dropped.
 - Everything is rewritten (prompts, tool input and output, `cwd` fields), so

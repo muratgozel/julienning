@@ -218,11 +218,30 @@ func Pack(s Session, src PackSource, w io.Writer) (PackHeader, string, error) {
 	if err := gz.Close(); err != nil {
 		return h, "", err
 	}
-	sum := sha256.Sum256(mraw)
-	return h, hex.EncodeToString(sum[:]), nil
+	return h, Fingerprint(m, mem), nil
+}
+
+// Fingerprint identifies a packed session: the SHA-256 of its manifest
+// without the project memory entries. Memory is merged, never moved, and
+// every session of the project shares it, so another session writing it
+// while one travels must not count as the travelling session changing.
+// The receipt records it, Release compares a fresh one with it.
+func Fingerprint(m Manifest, memFolder string) string {
+	kept := Manifest{ID: m.ID, Entries: []ManifestEntry{}}
+	mem := "projects/" + memFolder + "/memory"
+	for _, e := range m.Entries {
+		if memFolder != "" && (e.Path == mem || strings.HasPrefix(e.Path, mem+"/")) {
+			continue
+		}
+		kept.Entries = append(kept.Entries, e)
+	}
+	raw, _ := json.Marshal(kept)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // packTree writes src (file, symlink or directory, never followed) as rel.
+// With tw nil it only records the manifest entries (Release).
 func packTree(tw *tar.Writer, src, rel string, m *Manifest) error {
 	if forbiddenName(rel) {
 		return fmt.Errorf("refusing to send %s", rel)
@@ -237,15 +256,19 @@ func packTree(tw *tar.Writer, src, rel string, m *Manifest) error {
 	case fi.Mode().IsRegular():
 		e.Type, e.Size = "file", fi.Size()
 		hdr.Typeflag, hdr.Size = tar.TypeReg, fi.Size()
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
+		var w io.Writer = io.Discard
+		if tw != nil {
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
+			w = tw
 		}
 		f, err := os.Open(src)
 		if err != nil {
 			return err
 		}
 		h := sha256.New()
-		n, err := io.Copy(io.MultiWriter(tw, h), io.LimitReader(f, fi.Size()))
+		n, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(f, fi.Size()))
 		f.Close()
 		if err != nil {
 			return err
@@ -264,13 +287,18 @@ func packTree(tw *tar.Writer, src, rel string, m *Manifest) error {
 		e.Type, e.Link = "symlink", link
 		hdr.Typeflag, hdr.Linkname = tar.TypeSymlink, link
 		m.Entries = append(m.Entries, e)
+		if tw == nil {
+			return nil
+		}
 		return tw.WriteHeader(hdr)
 	case fi.IsDir():
 		e.Type = "dir"
 		hdr.Typeflag, hdr.Name = tar.TypeDir, rel+"/"
 		m.Entries = append(m.Entries, e)
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
+		if tw != nil {
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
+			}
 		}
 		entries, err := os.ReadDir(src)
 		if err != nil {
@@ -309,8 +337,11 @@ type UnpackResult struct {
 	// Already: the id is here with a receipt of this very pack (a transfer
 	// whose answer was lost after the commit); nothing was written.
 	Already bool `json:"already"`
-	// ManifestSHA256 identifies what was received; the source releases
-	// against it.
+	// Dir is the account dir that holds the session now (for Already, the
+	// one the first, lost transfer committed into).
+	Dir string `json:"dir,omitempty"`
+	// ManifestSHA256 is the Fingerprint of what was received; the source
+	// releases against it.
 	ManifestSHA256 string       `json:"manifest_sha256"`
 	Header         PackHeader   `json:"-"`
 	ProjectFolder  string       `json:"project_folder"`
@@ -321,7 +352,8 @@ type UnpackResult struct {
 
 // Receipt records a received session (received/<id>.json).
 type Receipt struct {
-	ManifestSHA256   string    `json:"manifest_sha256"`
+	ManifestSHA256   string    `json:"manifest_sha256"` // the session's Fingerprint
+	Dir              string    `json:"dir,omitempty"`   // the account dir it went into
 	TranscriptSHA256 string    `json:"transcript_sha256"`
 	From             string    `json:"from"`
 	At               time.Time `json:"at"`
@@ -430,6 +462,16 @@ func Unpack(r io.Reader, o UnpackOptions) (UnpackResult, error) {
 	if fi, err := os.Stat(o.Cwd); err != nil || !fi.IsDir() {
 		return res, fmt.Errorf("the session's directory %s does not exist here", o.Cwd)
 	}
+	// Claude Code keys project folders by the physical working directory
+	// (getcwd resolves symlinks) and writes it into every cwd field, so a
+	// checkout reached through a link must be named by where it really is.
+	for _, p := range []*string{&o.Cwd, &o.Checkout, &o.GitRoot} {
+		if *p != "" {
+			if real, err := filepath.EvalSymlinks(*p); err == nil {
+				*p = real
+			}
+		}
+	}
 	pruneReceipts(o.ReceivedDir, o.Now)
 	ls, err := livesess.List(o.Dir)
 	if err != nil {
@@ -442,9 +484,22 @@ func Unpack(r io.Reader, o UnpackOptions) (UnpackResult, error) {
 	}
 
 	rv := &receiver{o: o, h: h, roots: map[string]*receivedItem{}, links: map[string]bool{}, got: map[string]ManifestEntry{}}
-	existing, _ := filepath.Glob(filepath.Join(o.Dir, "projects", "*", h.ID+".jsonl"))
 	var receipt Receipt
-	if len(existing) > 0 {
+	have := o.Dir // where the id already is, for the collision message
+	// A transfer whose answer was lost after the commit may be retried into
+	// another account (the retry chooses again): the receipt says where the
+	// session went, and finding it there unchanged makes this the same
+	// transfer, finished, rather than a second copy.
+	if rc, ok := loadReceipt(o.ReceivedDir, h.ID); ok && rc.Dir != "" && filepath.Clean(rc.Dir) != o.Dir {
+		if there, _ := filepath.Glob(filepath.Join(rc.Dir, "projects", "*", h.ID+".jsonl")); len(there) > 0 {
+			if sum, err := fileSHA256(there[0]); err == nil && sum == rc.TranscriptSHA256 {
+				receipt, rv.dryRun = rc, true
+				res.Dir, have = rc.Dir, rc.Dir
+			}
+		}
+	}
+	existing, _ := filepath.Glob(filepath.Join(o.Dir, "projects", "*", h.ID+".jsonl"))
+	if !rv.dryRun && len(existing) > 0 {
 		// The id is here: a retry after an answer lost following the
 		// commit, when a receipt of this pack says so (checked once the
 		// manifest is in), else a collision.
@@ -454,6 +509,7 @@ func Unpack(r io.Reader, o UnpackOptions) (UnpackResult, error) {
 			return res, &refusal{ErrCollision, fmt.Sprintf("this machine already has a session with id %s in %s; resume it here, or remove it first", h.ID, o.Dir)}
 		}
 		receipt, rv.dryRun = rc, true
+		res.Dir = o.Dir
 	}
 	if !rv.dryRun {
 		if rv.dstFolder, err = projectFolderFor(o.Dir, o.Cwd); err != nil {
@@ -468,19 +524,18 @@ func Unpack(r io.Reader, o UnpackOptions) (UnpackResult, error) {
 		defer rv.trap.stop()
 	}
 
-	manifest, mraw, err := rv.read(br)
+	manifest, err := rv.read(br)
 	if err == nil {
 		err = rv.check(manifest)
 	}
 	if err != nil {
 		return res, rv.fail(err)
 	}
-	sum := sha256.Sum256(mraw)
-	msha := hex.EncodeToString(sum[:])
+	msha := Fingerprint(manifest, h.Source.MemoryFolder)
 	res.ManifestSHA256 = msha
 	if rv.dryRun {
 		if msha != receipt.ManifestSHA256 {
-			return res, &refusal{ErrCollision, fmt.Sprintf("this machine already has a session with id %s in %s; resume it here, or remove it first", h.ID, o.Dir)}
+			return res, &refusal{ErrCollision, fmt.Sprintf("this machine already has a session with id %s in %s; resume it here, or remove it first", h.ID, have)}
 		}
 		res.Already = true
 		return res, nil
@@ -503,7 +558,8 @@ func Unpack(r io.Reader, o UnpackOptions) (UnpackResult, error) {
 	if err != nil {
 		return res, rv.fail(err)
 	}
-	if err := saveReceipt(o.ReceivedDir, h.ID, Receipt{ManifestSHA256: msha, TranscriptSHA256: tsum, From: o.From, At: o.Now.UTC()}); err != nil {
+	res.Dir = o.Dir
+	if err := saveReceipt(o.ReceivedDir, h.ID, Receipt{ManifestSHA256: msha, Dir: o.Dir, TranscriptSHA256: tsum, From: o.From, At: o.Now.UTC()}); err != nil {
 		res.Warnings = append(res.Warnings, fmt.Sprintf("could not write the receipt (%v); a retry after a lost connection will report a collision", err))
 	}
 	res.Committed = true
@@ -565,7 +621,7 @@ func (rv *receiver) destination(rel string) (root, dst string, memory bool, err 
 
 // read consumes the archive: every entry validated, then written (or, in
 // dryRun, only hashed); the manifest must be the last entry.
-func (rv *receiver) read(br *bufio.Reader) (Manifest, []byte, error) {
+func (rv *receiver) read(br *bufio.Reader) (Manifest, error) {
 	var m Manifest
 	var in io.Reader = br
 	if rv.trap != nil {
@@ -573,7 +629,7 @@ func (rv *receiver) read(br *bufio.Reader) (Manifest, []byte, error) {
 	}
 	gz, err := gzip.NewReader(in)
 	if err != nil {
-		return m, nil, invalid("the archive is not gzip: %v", err)
+		return m, invalid("the archive is not gzip: %v", err)
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
@@ -585,34 +641,34 @@ func (rv *receiver) read(br *bufio.Reader) (Manifest, []byte, error) {
 			break
 		}
 		if err != nil {
-			return m, nil, fmt.Errorf("the archive ended early (%v): the connection may have dropped", err)
+			return m, fmt.Errorf("the archive ended early (%v): the connection may have dropped", err)
 		}
 		if mraw != nil {
-			return m, nil, invalid("the archive has entries after its manifest")
+			return m, invalid("the archive has entries after its manifest")
 		}
 		if count++; count > maxEntries {
-			return m, nil, invalid("the archive has more than %d entries", maxEntries)
+			return m, invalid("the archive has more than %d entries", maxEntries)
 		}
 		if hdr.Name == ManifestName {
 			if hdr.Typeflag != tar.TypeReg || hdr.Size > maxManifest {
-				return m, nil, invalid("the manifest is not a regular file under %d bytes", maxManifest)
+				return m, invalid("the manifest is not a regular file under %d bytes", maxManifest)
 			}
 			if mraw, err = io.ReadAll(io.LimitReader(tr, hdr.Size)); err != nil {
-				return m, nil, fmt.Errorf("read the manifest: %w", err)
+				return m, fmt.Errorf("read the manifest: %w", err)
 			}
 			continue
 		}
 		if err := rv.entry(hdr, tr); err != nil {
-			return m, nil, err
+			return m, err
 		}
 	}
 	if mraw == nil {
-		return m, nil, fmt.Errorf("the archive has no manifest: the connection may have dropped")
+		return m, fmt.Errorf("the archive has no manifest: the connection may have dropped")
 	}
 	if err := json.Unmarshal(mraw, &m); err != nil {
-		return m, nil, invalid("the manifest is not JSON: %v", err)
+		return m, invalid("the manifest is not JSON: %v", err)
 	}
-	return m, mraw, nil
+	return m, nil
 }
 
 func (rv *receiver) entry(hdr *tar.Header, tr *tar.Reader) error {
@@ -1151,26 +1207,40 @@ func pruneReceipts(dir string, now time.Time) {
 // --- release ---
 
 // Release deletes the source items of s after the destination committed
-// (SPEC step 3): only when a fresh pack of it has the manifest the
-// destination received (so the transcript and its side files are unchanged
-// since they were sent) and it is not open; otherwise both copies stay
-// (ErrChanged). Project memory stays: it was merged, never moved. The
+// (SPEC step 3): only when they are unchanged since they were sent (a fresh
+// Fingerprint of them equals the one the destination received) and the
+// session is not open; otherwise both copies stay (ErrChanged). Project
+// memory stays: it was merged, never moved, and it is left out of the
+// fingerprint, since another session of the project may write it. The
 // returned warnings are items that could not be deleted.
-func Release(s Session, src PackSource, manifestSHA string) ([]string, error) {
-	_, sum, err := Pack(s, src, io.Discard)
-	if err != nil {
-		if errors.Is(err, ErrLive) || errors.Is(err, ErrMaybeOpen) || errors.Is(err, ErrChanged) {
-			return nil, &refusal{ErrChanged, fmt.Sprintf("%q is open or changed on this machine while it was being sent; both copies are kept (%v)", s.Label(), err)}
-		}
-		return nil, err
-	}
-	if sum != manifestSHA {
-		return nil, &refusal{ErrChanged, fmt.Sprintf("%q changed on this machine while it was being sent; both copies are kept", s.Label())}
-	}
+func Release(s Session, fingerprint string) ([]string, error) {
 	srcRoot := filepath.Clean(s.ConfigDir)
-	items, err := collectItems(s, srcRoot, srcRoot, filepath.Join("projects", s.ProjectDir, s.ID+".jsonl"))
+	jsonlRel := filepath.Join("projects", s.ProjectDir, s.ID+".jsonl")
+	fi, err := os.Lstat(filepath.Join(srcRoot, jsonlRel))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, &refusal{ErrGone, fmt.Sprintf("session %s is no longer in %s", s.ShortID(), s.ConfigName)}
+	}
 	if err != nil {
 		return nil, err
+	}
+	if err := refuseIfOpenHere(s, srcRoot, fi.ModTime()); err != nil {
+		return nil, &refusal{ErrChanged, fmt.Sprintf("%q is open on this machine; both copies are kept (%v)", s.Label(), err)}
+	}
+	items, err := collectItems(s, srcRoot, srcRoot, jsonlRel)
+	if err != nil {
+		return nil, err
+	}
+	m := Manifest{ID: s.ID}
+	for _, it := range items {
+		if err := packTree(nil, it.src, filepath.ToSlash(it.rel), &m); err != nil {
+			if errors.Is(err, ErrChanged) {
+				return nil, &refusal{ErrChanged, fmt.Sprintf("%q changed on this machine while it was being sent; both copies are kept", s.Label())}
+			}
+			return nil, err
+		}
+	}
+	if Fingerprint(m, "") != fingerprint {
+		return nil, &refusal{ErrChanged, fmt.Sprintf("%q changed on this machine while it was being sent; both copies are kept", s.Label())}
 	}
 	var warnings []string
 	for _, it := range items {

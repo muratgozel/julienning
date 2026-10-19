@@ -133,3 +133,25 @@ func TestScriptAndExitCodes(t *testing.T) {
 		t.Fatalf("%q %d %v", out, code, err)
 	}
 }
+
+// ssh splits an -o value at whitespace: a state dir with a space is quoted.
+func TestArgsQuoteASocketPathWithSpaces(t *testing.T) {
+	got := Args("/Users/John Smith/.julienning", box, false, "x")
+	if !slices.Contains(got, `ControlPath="/Users/John Smith/.julienning/ssh/%C"`) {
+		t.Fatalf("%q", got)
+	}
+	if got := Args(`/tmp/a"b`, box, false, "x"); slices.Contains(got, "ControlMaster=auto") {
+		t.Fatalf("a double quote cannot be quoted for ssh: %q", got)
+	}
+}
+
+// Ctrl-C (a cancelled parent context) is not a timeout.
+func TestCancelIsNotATimeout(t *testing.T) {
+	fakeSSH(t, `sleep 5`)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
+	_, err := Call{Target: box, Command: "x"}.Run(ctx)
+	if !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("got %v", err)
+	}
+}

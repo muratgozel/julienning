@@ -249,8 +249,6 @@ var (
 
 const workerTimeout = 10 * time.Second
 
-var devRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
-
 // checkWorker proves url and token from this machine: /healthz, then an
 // authenticated /accounts, whose listing is the allowlist.
 func checkWorker(url, token, dev string) (*remote.Listing, error) {
@@ -278,7 +276,7 @@ func agentBootstrap(req hosts.BootstrapRequest) (hosts.BootstrapResult, error) {
 	var res hosts.BootstrapResult
 	req.WorkerURL = strings.TrimRight(strings.TrimSpace(req.WorkerURL), "/")
 	switch {
-	case !devRe.MatchString(req.Dev):
+	case !config.ValidDevName(req.Dev):
 		return res, hosts.Errorf(hosts.CodeInvalid, "invalid dev name %q", req.Dev)
 	case !strings.HasPrefix(req.WorkerURL, "https://") && !strings.HasPrefix(req.WorkerURL, "http://"):
 		return res, hosts.Errorf(hosts.CodeInvalid, "invalid Worker URL %q", req.WorkerURL)
@@ -309,6 +307,23 @@ func agentBootstrap(req hosts.BootstrapRequest) (hosts.BootstrapResult, error) {
 		return res, err
 	}
 
+	if cfg.Remote.URL == "" {
+		// Set up without a Worker (setup --yes without --remote-url): take
+		// this one, as a fresh machine would.
+		listing, err := checkWorker(req.WorkerURL, req.Token, cfg.Dev)
+		if err != nil {
+			return res, unreachable(err)
+		}
+		cfg.Remote = config.Remote{URL: req.WorkerURL, Token: req.Token}
+		if err := cfg.Save(); err != nil {
+			return res, err
+		}
+		if _, err := sharedcache.FromListing(listing, agentNow()); err != nil {
+			return res, fmt.Errorf("saved the Worker, but not its allowlist: %w", err)
+		}
+		res.WorkerReplaced = true
+		return res, nil
+	}
 	if strings.TrimRight(cfg.Remote.URL, "/") != req.WorkerURL {
 		if !req.ReplaceWorker {
 			return res, hosts.Errorf(hosts.CodeWorkerMismatch, "set up for another Worker (%s)", cfg.Remote.URL)
@@ -422,7 +437,12 @@ func agentRun(env cli.Env, arg string) error {
 	switch {
 	case err == nil:
 		own = cfg.MachineID
-	case !errors.Is(err, config.ErrNotSetup):
+	case errors.Is(err, config.ErrNotSetup):
+	case notSetUpOK[req.Argv[0]]:
+		// A config.json that does not load must not block the commands that
+		// repair or remove the setup; hello reported no machine id for it.
+		cfg = nil
+	default:
 		return fail("%v", err)
 	}
 	if req.MachineID != own {
@@ -480,15 +500,6 @@ func agentRun(env cli.Env, arg string) error {
 // first on PATH (ssh's non-interactive PATH lacks ~/.local/bin), PWD for the
 // directory it runs in, the controller's zone and NO_COLOR.
 func runEnv(environ []string, req hosts.RunRequest, dir string) []string {
-	p, _ := ownPaths()
-	var first []string
-	for _, tool := range []*string{&p.Julienning, p.Claude, p.Tmux} {
-		if tool != nil && *tool != "" {
-			if d := filepath.Dir(*tool); !containsStr(first, d) {
-				first = append(first, d)
-			}
-		}
-	}
 	// The controller's zone replaces this machine's only when it names a
 	// zone the embedded tzdata knows.
 	tz := ""
@@ -498,7 +509,7 @@ func runEnv(environ []string, req hosts.RunRequest, dir string) []string {
 		}
 	}
 	out := make([]string, 0, len(environ)+4)
-	path := os.Getenv("PATH")
+	path := toolPath(os.Getenv("PATH"))
 	for _, kv := range environ {
 		switch {
 		case strings.HasPrefix(kv, "PATH="), strings.HasPrefix(kv, "PWD="):
@@ -508,9 +519,6 @@ func runEnv(environ []string, req hosts.RunRequest, dir string) []string {
 			out = append(out, kv)
 		}
 	}
-	if len(first) > 0 {
-		path = strings.Join(first, string(os.PathListSeparator)) + string(os.PathListSeparator) + path
-	}
 	out = append(out, "PATH="+path, "PWD="+dir)
 	if tz != "" {
 		out = append(out, "TZ="+tz)
@@ -519,6 +527,24 @@ func runEnv(environ []string, req hosts.RunRequest, dir string) []string {
 		out = append(out, "NO_COLOR=1")
 	}
 	return out
+}
+
+// toolPath is path with the dirs of this machine's julienning, claude and
+// tmux first: ssh's non-interactive PATH usually lacks ~/.local/bin.
+func toolPath(path string) string {
+	p, _ := ownPaths()
+	var first []string
+	for _, tool := range []*string{&p.Julienning, p.Claude, p.Tmux} {
+		if tool != nil && *tool != "" {
+			if d := filepath.Dir(*tool); !containsStr(first, d) {
+				first = append(first, d)
+			}
+		}
+	}
+	if len(first) == 0 {
+		return path
+	}
+	return strings.Join(first, string(os.PathListSeparator)) + string(os.PathListSeparator) + path
 }
 
 // controllerPath renders the controller's directory in its own terms.

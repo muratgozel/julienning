@@ -13,6 +13,7 @@ import (
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/hosts"
 	"github.com/muratgozel/julienning/internal/selfupdate"
+	"github.com/muratgozel/julienning/internal/shell"
 	"github.com/muratgozel/julienning/internal/sshx"
 )
 
@@ -39,7 +40,7 @@ type scriptResult struct {
 func (r scriptResult) last() string { return lastLine(append(append([]byte{}, r.out...), r.errOut...)) }
 
 // shq single-quotes s for a POSIX shell.
-func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+var shq = shell.SingleQuote
 
 // probe runs hosts.ProbeScript on t and asks the login shell for the tools
 // the plain probe did not find (bounded to 5 s: not every host has a
@@ -56,9 +57,11 @@ func probe(ctx context.Context, t sshx.Target) (hosts.Probe, error) {
 	if err != nil {
 		return hosts.Probe{}, fmt.Errorf("%s: %v", t.Name, err)
 	}
+	// sha256sum and shasum stand in for each other: only one is needed,
+	// and most machines have just one of them.
 	var missing []string
 	for _, tool := range hosts.ProbeTools {
-		if p.Paths[tool] == "" {
+		if p.Paths[tool] == "" && !(tool == "sha256sum" && p.Paths["shasum"] != "") && !(tool == "shasum" && p.Paths["sha256sum"] != "") {
 			missing = append(missing, tool)
 		}
 	}
@@ -102,11 +105,15 @@ func installOnHost(ctx context.Context, env cli.Env, t sshx.Target, p hosts.Prob
 	if hasTools {
 		r, err := runScript(ctx, t, installerScript(p, tag), installTimeout)
 		if err == nil && r.code == 0 {
-			again, err := probe(ctx, t)
-			if err == nil && again.Paths["julienning"] != "" {
-				return again.Paths["julienning"], nil
+			// The installer's link, never a PATH lookup: an older julienning
+			// earlier on the non-interactive PATH would win that.
+			link := filepath.Join(p.Home, ".local", "bin", "julienning")
+			t.Julienning = link
+			var hello hosts.Hello
+			if err := agentCall(ctx, t, "hello", nil, &hello); err == nil {
+				return link, nil
 			}
-			why = "the installer finished, but julienning was not found afterwards"
+			why = "the installer finished, but julienning did not answer at " + link
 		} else if err != nil {
 			return "", err
 		} else {

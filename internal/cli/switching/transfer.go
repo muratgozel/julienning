@@ -166,6 +166,11 @@ func TransferSessions(cwd string, all bool, limit int) (list []sessions.Session,
 		cache = loadCache(quiet)
 		warnings = append(warnings, "using the cached shared-account list")
 	}
+	if cache == nil {
+		// Unreadable: nothing is known to be shared, so nothing is listed
+		// (a personal session must never be offered).
+		return nil, nil, append(warnings, "the shared-account list cannot be read, so no session is offered; run julienning accounts to refresh it"), nil
+	}
 	logins := loginsByDir(cfg)
 	var dirs []config.ConfigDir
 	for _, cd := range cfg.Configs {

@@ -1220,7 +1220,9 @@ The source keeps the session until the destination has a verified copy.
 A transfer cut off before that leaves nothing on the destination. When the
 answer is lost after the destination committed (`cannot reach box (…)`),
 both machines hold it; running the same transfer again finishes it
-(`box already had "Fix flaky clock tests" from a transfer that lost its connection; finished it.`).
+(`box already had "Fix flaky clock tests" from a transfer that lost its connection; finished it.`;
+when the retry picked another account there, it names where the session
+is, `(in ~/.claude-a)`, and resumes it there).
 When the session changed on the source while it travelled, both copies
 stay (`"…" changed on this machine while it was being sent; both copies are kept (box has it as it was before the change)`).
 Between two hosts (`--host box --to gpu`) this machine relays; the two never

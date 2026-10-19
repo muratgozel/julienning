@@ -61,7 +61,13 @@ func TargetOf(h hosts.Host) Target {
 // the control socket makes a command's several calls cost one handshake.
 func Args(stateDir string, t Target, tty bool, command string) []string {
 	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}
-	if sock := filepath.Join(stateDir, SocketDir, "%C"); len(sock)-2+hashLen+tempSuffix <= maxSocketPath {
+	sock := filepath.Join(stateDir, SocketDir, "%C")
+	// ssh splits an -o value at whitespace unless it is double-quoted, and
+	// cannot take a path with a double quote at all.
+	if len(sock)-2+hashLen+tempSuffix <= maxSocketPath && !strings.Contains(sock, `"`) {
+		if strings.ContainsAny(sock, " \t") {
+			sock = `"` + sock + `"`
+		}
 		args = append(args, "-o", "ControlMaster=auto", "-o", "ControlPath="+sock, "-o", "ControlPersist=60")
 	}
 	if tty {
@@ -89,6 +95,9 @@ const ShellCommand = "exec /bin/sh -s"
 
 // Binary is the ssh executable (a var for tests).
 var Binary = "ssh"
+
+// ErrInterrupted is a call ended from this side (Ctrl-C).
+var ErrInterrupted = errors.New("interrupted")
 
 // UnreachableError is ssh's own failure (exit 255; julienning never exits
 // 255).
@@ -158,8 +167,10 @@ func (c Call) Run(ctx context.Context) (int, error) {
 	switch {
 	case err == nil:
 		return 0, nil
-	case ctx.Err() != nil:
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return 0, fmt.Errorf("%s did not answer in time (%v); check with: ssh %s", c.Target.Name, ctx.Err(), c.Target.SSH)
+	case ctx.Err() != nil:
+		return 0, ErrInterrupted
 	case errors.As(err, &ee):
 		code := ee.ExitCode()
 		if code == 255 {
@@ -295,6 +306,9 @@ func Close(t Target) {
 		return
 	}
 	sock := filepath.Join(state, SocketDir, "%C")
+	if strings.ContainsAny(sock, " \t") {
+		sock = `"` + sock + `"`
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, Binary, "-o", "ControlPath="+sock, "-O", "exit", "--", t.SSH)

@@ -249,3 +249,22 @@ esac
 		t.Errorf("missing tmux:\n%s", out)
 	}
 }
+
+// A host's agent runs with ssh's minimal PATH: claude in ~/.local/bin must
+// still be found (transfer's resume goes through Exec).
+func TestClaudePathLooksOutsidePATH(t *testing.T) {
+	root := t.TempDir()
+	extra := filepath.Join(root, "local-bin")
+	writeExe(t, filepath.Join(extra, "claude"), "#!/bin/sh\n")
+	prev := tmuxDirs
+	tmuxDirs = func() []string { return []string{extra} }
+	t.Cleanup(func() { tmuxDirs = prev })
+	t.Setenv("PATH", filepath.Join(root, "empty"))
+	if p, err := ClaudePath(); err != nil || p != filepath.Join(extra, "claude") {
+		t.Fatalf("got %q %v", p, err)
+	}
+	tmuxDirs = func() []string { return nil }
+	if _, err := ClaudePath(); !errors.Is(err, ErrClaudeNotFound) {
+		t.Fatalf("nowhere: %v", err)
+	}
+}

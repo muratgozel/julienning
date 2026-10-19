@@ -81,8 +81,9 @@ first run byte for byte), the session hooks with a fake live session (a `sleep` 
 `sessions/<pid>.json`) and a `dev` rename moving its claim, the status line and its detached usage report,
 hosts (a second throwaway home `$T/host` behind a fake `ssh` in `fakebin/`
 that drops the options and destination and runs the command with `/bin/sh
--c` under that home, PATH `$T/host/.local/bin:/usr/bin:/bin`, so a real
-claude or tmux elsewhere on the machine is never used; its rc file ends with
+-c` under that home, PATH `$T/hostpath:/usr/bin:/bin`: no `~/.local/bin`, as
+on a real host, and `$T/hostpath` holds only the fake tmux, so a real tmux
+is never found; its rc file ends with
 a provisioning `claude()` function: `host add` with the real installer from
 the fake releases host, `--host` forwarding with the picker on the
 pseudo-terminal, a launch into the host's fake tmux, a minor-version update
