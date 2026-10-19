@@ -278,12 +278,14 @@ everyone. Setup asks `Nickname for claude4@example.com [claude4]:`; Enter takes
 the email's local part, lowercased, with any other character turned into `-`
 (`john+team@x.io` → `john-team`). `new-config` asks
 `Nickname for this account [the email's name]:` before you sign in, so Enter
-there means the same default, taken once the email is known.
+there means the same default, taken once the email is known. A nickname a team
+account already has names that account: new-config signs it in to the new dir
+(see `new-config` in [Other commands](#other-commands)).
 
 - 1–32 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a letter or
   digit, and unique in the team. A taken one is refused with the account that
   holds it (`nickname "alpha" is already used by claude1@example.com`), and
-  setup asks again.
+  setup asks again (new-config takes it as that account instead).
 - `julienning share EMAIL --nick NAME` picks it from the command line, and
   `setup --nick EMAIL=NAME` (repeatable) without a terminal; otherwise the
   default is used.
@@ -302,11 +304,11 @@ give a nickname, an email or a config name, and a nickname wins over a config
 name spelled the same. A nickname or email is resolved when the command runs,
 to the registered dir that is logged into that account right now (the selected
 one first), so moving a login to another dir needs no re-run of setup. When no
-dir here is logged into it, `use`, `login` and `claude-<nickname>` say how to
-sign in:
+dir here is logged into it, `use` and `claude-<nickname>` say how to sign in,
+and `login` signs it in (see `login` in [Other commands](#other-commands)):
 
 ```
-julienning: beta (claude2@example.com) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config`
+julienning: beta (claude2@example.com) is shared but not logged in on this machine; sign it in here with: julienning login beta
 ```
 
 When Claude Code signed a dir out and cleared its login, julienning still
@@ -957,9 +959,9 @@ is put back in the copy), then patches the copy like any other.
 
 A new dir is for a team account, so the account you sign in with is shared
 with the team automatically. Before creating anything new-config asks for its
-[nickname](#nicknames) (Enter leaves it to the part before `@`; a nickname
-the cached allowlist shows as taken is refused and asked again), then starts
-claude in the new dir so you can sign in:
+[nickname](#nicknames) (Enter leaves it to the part before `@`; an invalid
+one is explained and asked again), then starts claude in the new dir so you
+can sign in:
 
 ```
 Nickname for this account [the email's name]: delta
@@ -1000,20 +1002,54 @@ Until its account is shared and named, the new dir is reached by its config
 name; once it is logged into an account that is already shared, its nickname
 works right away.
 
+A nickname the cached allowlist shows a team account holding (typed at the
+question or passed with `--nick`) names that account: you are signing it in
+on this machine, typically a second one. new-config creates the dir and signs
+it in the way `login` does, pre-filled and checked, with nothing to share:
+
+```
+Nickname for this account [the email's name]: beta
+Created ~/.claude-julienning3 (config "julienning3").
+beta (claude2@example.com) is already shared with the team; signing it in here.
+Signed in: beta (claude2@example.com) in ~/.claude-julienning3.
+```
+
+A dir here that holds the account already is not doubled
+(`beta (claude2@example.com) is already signed in on this machine, in ~/.claude-work; use it with: julienning use beta`),
+nor one Claude Code signed out of it (`login` signs in there again, sessions
+and all); nothing is created then. If the sign-in does not finish, or with
+`--no-login`, the dir stays registered and unused and
+`julienning login beta` signs in there. Should the browser sign in another
+account, that account is not shared.
+
 **`julienning login TARGET [-- claude args...]`** signs the dir TARGET
 resolves to (see [Nicknames](#nicknames)) into its account with
 `claude auth login`, right in this terminal, then checks which account it
 got. For a nickname or email the login page is pre-filled with that account.
 A fresh dir nobody is signed into has only its config name
 (`julienning login julienning3`). When no dir here is logged into the
-account because Claude Code signed it out, `login` signs in again in the dir
-that held it last (its sessions are still there), but only when Claude Code
-confirms nobody is signed in there:
+account, `login` picks one:
 
-```
-julienning: note: ~/.claude-sixtynine held beta (claude2@example.com) last and has no login now; signing in there again (its sessions are still there)
-Signed in: beta (claude2@example.com) in ~/.claude-sixtynine.
-```
+1. the dir that held it last, when Claude Code signed it out (its sessions
+   are still there):
+
+   ```
+   julienning: note: ~/.claude-sixtynine held beta (claude2@example.com) last and has no login now; signing in there again (its sessions are still there)
+   Signed in: beta (claude2@example.com) in ~/.claude-sixtynine.
+   ```
+
+2. else a registered dir nobody ever used: never signed in, no sessions, and
+   not one new-config made for a new account under its own nickname (an
+   aborted sign-in, `new-config --no-login`):
+   `julienning: note: nobody has used ~/.claude-julienning3 yet; signing beta (claude2@example.com) in there`;
+3. else a new dir, created and registered like new-config's (on a second
+   machine this is the usual case):
+   `julienning: note: no dir here holds beta (claude2@example.com); created ~/.claude-julienning3 (config "julienning3") for it`.
+
+A dir is reused only when Claude Code confirms nobody is signed in there, so
+a working login is never signed over. Only a team account gets an unused or a
+new dir; for any other email `login` says to use `julienning new-config`,
+which decides whether it is shared.
 
 If the browser was signed into another account, the dir ends up on that one
 and `login` says so (exit 1):
@@ -1741,15 +1777,16 @@ Common messages:
 - **`cannot rank accounts (...)`**: the Worker is unreachable; check
   `curl <worker>/healthz`, then pick an account yourself with
   `julienning use <nickname>`.
-- **`none of the N shared accounts is logged in on this machine ...`**: sign a
-  registered dir into a shared account (`julienning new-config` or
-  `julienning login <config>`); an account nobody shared yet also needs
-  `julienning setup` or `julienning share EMAIL`.
-- **`… is shared but not logged in on this machine; sign in with …`** (`use`,
-  `login`, `claude-<nickname>`): no registered dir here is logged into that
-  account right now. Sign one in (`julienning new-config`, or
-  `julienning login <config>` for an existing dir); a dir julienning does not
-  know yet also needs `julienning setup` or `julienning adopt DIR`.
+- **`none of the N shared accounts is logged in on this machine ...`**: run
+  the `julienning login NICKNAME` it ends with (the best-ranked account); an
+  account nobody shared yet needs `julienning setup` or
+  `julienning share EMAIL` instead.
+- **`… is shared but not logged in on this machine; sign it in here with …`**
+  (`use`, `claude-<nickname>`): no registered dir here is logged into that
+  account right now. The `julienning login NICKNAME` it names signs it in, in
+  a new dir when no dir here can take it; when a dir julienning does not know
+  yet is signed into it already, run `julienning setup` or
+  `julienning adopt DIR` instead.
 - **`no Claude config dir on this machine is logged in as …`** (`use EMAIL`,
   `pin`): that personal account is not signed in in any dir julienning looks
   at. Run the `command claude` line the message shows, sign in, and try again;

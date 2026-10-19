@@ -490,15 +490,6 @@ func TestLoginResolvesNicknameEmailAndConfig(t *testing.T) {
 		t.Errorf("the new login must be recorded: %+v", cd)
 	}
 
-	h.logins = nil
-	err := h.run(runLogin, "far")
-	if err == nil || !strings.Contains(err.Error(), "far (far@team.io) is not logged in on this machine, and no signed-out dir here held it last") ||
-		!strings.Contains(err.Error(), "julienning new-config") {
-		t.Fatalf("got %v", err)
-	}
-	if len(h.logins) != 0 {
-		t.Fatalf("signed in despite the error: %+v", h.logins)
-	}
 }
 
 func TestLoginSignsTheLastDirInAgain(t *testing.T) {
@@ -522,15 +513,18 @@ func TestLoginSignsTheLastDirInAgain(t *testing.T) {
 	}
 }
 
+// A dir that held the account but still has credentials (the account file
+// says nobody) is never signed over: login takes a new dir instead.
 func TestLoginNeverSignsOverAWorkingLogin(t *testing.T) {
 	h := newHarness(t)
 	gone := h.mkdir(".claude-sixtynine")
 	h.initConfig(false, config.ConfigDir{Name: "julienning3", Dir: gone, LastEmail: "c2@team.io"})
 	h.cacheNicks("c2@team.io=claude2")
-	h.signedIn = map[string]bool{gone: true} // credentials are there, the account file says nobody
-	err := h.run(runLogin, "claude2")
-	if err == nil || !strings.Contains(err.Error(), "no signed-out dir here held it last") || len(h.logins) != 0 {
-		t.Fatalf("err %v logins %+v", err, h.logins)
+	h.signedIn = map[string]bool{gone: true}
+	h.loginAs = "c2@team.io"
+	h.mustRun(runLogin, "claude2")
+	if want := []loginCall{{filepath.Join(h.home, ".claude-julienning1"), "c2@team.io"}}; !reflect.DeepEqual(h.logins, want) {
+		t.Fatalf("logins = %+v, want %+v", h.logins, want)
 	}
 }
 

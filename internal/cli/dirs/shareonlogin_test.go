@@ -92,7 +92,6 @@ func TestNewConfigNickFlagErrors(t *testing.T) {
 	}{
 		{[]string{"--nick", "Bad Name"}, true, `invalid nickname "Bad Name"`},
 		{[]string{"--nick", "delta", "--no-share"}, true, "cannot be combined with --no-share"},
-		{[]string{"--nick", "alpha"}, false, `nickname "alpha" is already used by claude1@team.io; pick another --nick, or leave it out to use the email's local part`},
 	}
 	for _, c := range cases {
 		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
@@ -114,24 +113,22 @@ func TestNewConfigNickFlagErrors(t *testing.T) {
 	}
 }
 
-// In a terminal the nickname is asked before anything is created; invalid
-// answers and nicknames the cached allowlist says are taken are explained
-// and asked again.
+// In a terminal the nickname is asked before anything is created; an
+// invalid answer is explained and asked again.
 func TestNewConfigAsksForTheNickname(t *testing.T) {
 	h := newHarness(t)
 	h.initConfig(false)
 	h.cacheNicks("claude1@team.io=alpha")
 	h.interactive = true
-	h.stdin = strings.NewReader("Bad Name\nAlpha\n Delta \n")
+	h.stdin = strings.NewReader("Bad Name\n Delta \n")
 	out := h.mustRun(runNewConfig)
 	const q = "Nickname for this account [the email's name]: "
 	if !strings.HasPrefix(out, q) {
 		t.Fatalf("does not start with the question:\n%s", out)
 	}
 	contains(t, out, q+`invalid nickname "Bad Name": 1-32 characters`)
-	contains(t, out, "\n"+q+`nickname "alpha" is already used by claude1@team.io; choose another (or press Enter for the email's name)`+"\n"+q)
-	if n := strings.Count(out, q); n != 3 {
-		t.Fatalf("asked %d times, want 3:\n%s", n, out)
+	if n := strings.Count(out, q); n != 2 {
+		t.Fatalf("asked %d times, want 2:\n%s", n, out)
 	}
 	contains(t, out, "The account you sign in with will be shared with the team as delta;")
 	if got := h.pendingOf("julienning1"); !reflect.DeepEqual(got, marked("delta")) {

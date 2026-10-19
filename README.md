@@ -33,7 +33,9 @@ afterwards. It is safe to re-run.
 
 For another account later, `julienning new-config` creates a config dir and
 starts claude in it so you can sign in; the account is shared when your first
-session starts (`--no-share` keeps it personal).
+session starts (`--no-share` keeps it personal). On another machine,
+`julienning login <nickname>` signs a team account in there, in a new dir
+when none can take it.
 
 ## Daily use
 
@@ -46,7 +48,7 @@ claude-<nickname>            # claude on that account; the selection stays
 julienning use <email>       # a personal (not shared) account; the selection stays
 julienning pin <target>      # plain claude in this directory and below opens that account
 julienning sync              # the same Claude Code settings and CLAUDE.md on every shared account
-julienning login <nickname>  # sign a dir in again after Claude Code signed it out
+julienning login <nickname>  # sign that account in here (a new dir, or again after a sign-out)
 ```
 
 ```

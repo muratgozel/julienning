@@ -53,11 +53,10 @@ func (e *NotLocalError) Error() string {
 		return fmt.Sprintf("%s is signed out on this machine (%s held it last and has no login now); sign in again with: julienning login %s",
 			label, shortHome(e.SignedOut[0].Dir), who)
 	}
-	const hint = "sign in with `julienning login <config>` or `julienning new-config`"
 	if e.Nickname != "" {
-		return fmt.Sprintf("%s (%s) is shared but not logged in on this machine; %s", e.Nickname, e.Email, hint)
+		return fmt.Sprintf("%s (%s) is shared but not logged in on this machine; sign it in here with: julienning login %s", e.Nickname, e.Email, e.Nickname)
 	}
-	return fmt.Sprintf("no registered config dir on this machine is logged in as %s; %s", e.Email, hint)
+	return fmt.Sprintf("no registered config dir on this machine is logged in as %s; sign it in here with: julienning login %s", e.Email, e.Email)
 }
 
 // Dirs returns the registered dirs currently logged into email, the current

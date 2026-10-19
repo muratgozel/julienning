@@ -13,6 +13,7 @@ import (
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/launch"
 	"github.com/muratgozel/julienning/internal/resolve"
+	"github.com/muratgozel/julienning/internal/sessions"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 	"github.com/muratgozel/julienning/internal/usageprobe"
 )
@@ -62,11 +63,10 @@ var (
 
 // runLogin signs a dir in with `claude auth login` and then reads back which
 // account it got. A nickname or email resolves to the dir logged into it;
-// when none is (Claude Code signed it out and cleared the login), to the dir
-// that held it last (config.ConfigDir.LastEmail), but only when Claude Code
-// confirms nothing is signed in there. A config name is that dir (a fresh dir
-// nobody is signed into has only its config name). With claude args after
-// `--`, plain `claude` starts with them instead, as before, unchecked.
+// when none is, to the dir dirToSignIn picks (one that held it last, an
+// unused one, or a new one). A config name is that dir (a fresh dir nobody
+// is signed into has only its config name). With claude args after `--`,
+// plain `claude` starts with them instead, as before, unchecked.
 func runLogin(env cli.Env) error {
 	target, extra, err := splitLoginArgs(env.Args)
 	if err != nil {
@@ -81,13 +81,11 @@ func runLogin(env cli.Env) error {
 	var nl *resolve.NotLocalError
 	switch {
 	case errors.As(err, &nl):
-		cd, err := reusableDir(nl)
+		cd, err := dirToSignIn(env, cfg, cache, nl)
 		if err != nil {
 			return err
 		}
 		m = resolve.Match{Dir: cd, Email: nl.Email, Nickname: nl.Nickname, Via: resolve.ViaEmail}
-		notef(env, "%s held %s last and has no login now; signing in there again (its sessions are still there)",
-			shortenHome(cd.Dir), accountLabel(nl.Nickname, nl.Email))
 	case err != nil:
 		return err
 	}
@@ -106,25 +104,87 @@ func runLogin(env cli.Env) error {
 	return verifyLogin(env, cache, m.Dir, want, before)
 }
 
-// reusableDir picks the dir to sign an account back into when no dir is
-// logged into it: the first (by name) that held it last, has no login in its
-// account file, and that Claude Code itself says nobody is signed into. A
-// dir with a working login is never signed over.
-func reusableDir(nl *resolve.NotLocalError) (config.ConfigDir, error) {
-	for _, cd := range nl.SignedOut {
+// dirToSignIn picks the dir to sign an account into when no registered dir
+// is logged into it: the first (by name) that held it last, else, for a
+// team account, the first that was never used (unusedDirs), else a new dir
+// like new-config's. A dir with a working login is never signed over:
+// every reused dir has no login in its account file, and Claude Code itself
+// must say nobody is signed in there. An email that is not a team account
+// gets no unused or new dir; new-config asks whether to share it.
+func dirToSignIn(env cli.Env, cfg *config.Config, cache *sharedcache.Cache, nl *resolve.NotLocalError) (config.ConfigDir, error) {
+	who := accountLabel(nl.Nickname, nl.Email)
+	cd, ok, err := firstSignedOut(nl.SignedOut)
+	if err != nil {
+		return config.ConfigDir{}, err
+	}
+	if ok {
+		notef(env, "%s held %s last and has no login now; signing in there again (its sessions are still there)", shortenHome(cd.Dir), who)
+		return cd, nil
+	}
+	if resolve.IsPersonal(cfg, cache, nl.Email) {
+		return config.ConfigDir{}, fmt.Errorf("%s is not shared with the team and not logged in on this machine; "+
+			"sign it into a new dir with `julienning new-config` (shares it; `--no-share` keeps it personal), or into an existing one with `julienning login CONFIG` (see `julienning configs`)",
+			nl.Email)
+	}
+	if cd, ok, err = firstSignedOut(unusedDirs(cfg)); err != nil {
+		return config.ConfigDir{}, err
+	} else if ok {
+		notef(env, "nobody has used %s yet; signing %s in there", shortenHome(cd.Dir), who)
+		return cd, nil
+	}
+	home, err := homeDir()
+	if err != nil {
+		return config.ConfigDir{}, err
+	}
+	name, dir, err := newDirName(cfg, home, "")
+	if err != nil {
+		return config.ConfigDir{}, err
+	}
+	if cd, err = createDir(env, name, dir, nil, nil); err != nil {
+		return config.ConfigDir{}, err
+	}
+	notef(env, "no dir here holds %s; created %s (config %q) for it", who, shortenHome(cd.Dir), cd.Name)
+	return cd, nil
+}
+
+// unusedDirs are the registered dirs, by name, that were never signed in
+// and hold no sessions: one new-config or login created and whose sign-in
+// was aborted, or `new-config --no-login`. A dir marked to share its first
+// login under a nickname is left alone; it was made for a new account.
+// Another account's sessions are never put under this one: a dir with any
+// session, or one that cannot be counted, is not unused.
+func unusedDirs(cfg *config.Config) []config.ConfigDir {
+	var out []config.ConfigDir
+	for _, cd := range cfg.Configs {
+		if cd.LastEmail != "" || (cd.ShareOnLogin != nil && cd.ShareOnLogin.Nickname != "") {
+			continue
+		}
+		if _, err := claudecfg.ReadEmail(cd.Dir); !errors.Is(err, claudecfg.ErrNotLoggedIn) {
+			continue
+		}
+		if n, err := sessions.Count([]config.ConfigDir{cd}); err != nil || n > 0 {
+			continue
+		}
+		out = append(out, cd)
+	}
+	return out
+}
+
+// firstSignedOut returns the first of dirs that Claude Code says nobody is
+// signed into. Failing to ask is an error: guessing could sign over a login.
+func firstSignedOut(dirs []config.ConfigDir) (config.ConfigDir, bool, error) {
+	for _, cd := range dirs {
 		ctx, cancel := context.WithTimeout(context.Background(), usageprobe.Timeout)
 		in, err := checkSignedIn(ctx, cd.Dir)
 		cancel()
 		if err != nil {
-			return config.ConfigDir{}, fmt.Errorf("cannot tell whether %s is still signed in (%v); sign in there yourself with: julienning login %s", shortenHome(cd.Dir), err, cd.Name)
+			return config.ConfigDir{}, false, fmt.Errorf("cannot tell whether %s is still signed in (%v); sign in there yourself with: julienning login %s", shortenHome(cd.Dir), err, cd.Name)
 		}
 		if !in {
-			return cd, nil
+			return cd, true, nil
 		}
 	}
-	return config.ConfigDir{}, fmt.Errorf("%s is not logged in on this machine, and no signed-out dir here held it last; "+
-		"sign it into a new dir with `julienning new-config`, or into an existing one with `julienning login CONFIG` (see `julienning configs`)",
-		accountLabel(nl.Nickname, nl.Email))
+	return config.ConfigDir{}, false, nil
 }
 
 // verifyLogin reads the dir's login after `claude auth login` and says what

@@ -267,7 +267,7 @@ func TestNextErrors(t *testing.T) {
 		f.fake.Listing = listing(acct(email1, 1, 1))
 		got := f.run("next")
 		assertCode(t, got, cli.ExitError)
-		if !strings.Contains(got.stderr, email1) || !strings.Contains(got.stderr, "julienning login NICKNAME") {
+		if !strings.Contains(got.stderr, "(best ranked: "+email1+"); sign it in here with: julienning login "+email1) {
 			t.Errorf("stderr = %q", got.stderr)
 		}
 	})

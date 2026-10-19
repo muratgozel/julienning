@@ -70,9 +70,10 @@ team-wide: it is stored with the allowlist entry in the Worker
   `julienning share EMAIL [--nick NAME]` the flag or the default.
   `new-config` asks before the login, when the email is not known yet:
   `Nickname for this account [the email's name]: ` (Enter = the default,
-  decided at share time; an invalid answer or one the cached allowlist shows
-  as taken is explained and asked again), or takes `--nick NICK`; the share
-  itself happens on login (see new-config). Sharing an
+  decided at share time; an invalid answer is explained and asked again), or
+  takes `--nick NICK`; the share itself happens on login (see new-config). A
+  nickname the cached allowlist shows held by a team account names that
+  account instead: new-config signs it in (see new-config). Sharing an
   email that is already shared never changes its nickname (the Worker ignores
   the body's nickname); `share` then prints
   `claude1@x.io was already shared as alpha (rename with: julienning nick alpha NEW).`
@@ -119,9 +120,9 @@ logins (accounts move between dirs), using the cached allowlist:
    currently logged into it (`resolve.Dirs`: the current selection first,
    then by config name; an unreadable account file counts as not logged in);
    the first wins. None → `*resolve.NotLocalError`:
-   ``alpha (claude1@x.io) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config` ``
+   `alpha (claude1@x.io) is shared but not logged in on this machine; sign it in here with: julienning login alpha`
    (without a nickname:
-   `no registered config dir on this machine is logged in as x@y; sign in with …`);
+   `no registered config dir on this machine is logged in as x@y; sign it in here with: julienning login x@y`);
    when a registered dir without a login held it last (`last_email`), the
    error says so instead:
    `alpha (claude1@x.io) is signed out on this machine (~/.claude-x held it last and has no login now); sign in again with: julienning login alpha`;
@@ -815,6 +816,20 @@ tmux is found, claude runs in a window of that session instead of in place
   local part). The share happens on login, in claim reconciliation step 0
   (Claims from sessions), and `setup` offers the dir with that nickname.
   `--no-share` registers the dir without a mark (setup offers it as usual).
+- **A team account's nickname signs that account in.** When the nickname
+  (`--nick` or the answer) is one the cached allowlist shows a team account
+  holding, new-config is signing that account in on this machine: no mark
+  (a wrong account signed in by mistake stays personal). Before creating
+  anything it refuses when a registered dir here is logged into the account
+  (`alpha (claude1@x.io) is already signed in on this machine, in ~/.claude-x; use it with: julienning use alpha`)
+  or held it last and has no login (the `NotLocalError` signed-out message,
+  pointing at `login`). Otherwise, after `Created …`, it prints
+  `alpha (claude1@x.io) is already shared with the team; signing it in here.`
+  and runs login's sign-in against the new dir: `claude auth login --email`
+  and the same read-back and messages (`verifyLogin`). A failed sign-in ends
+  `; ~/.claude-julienning3 is created, sign in later with: julienning login alpha`;
+  `--no-login` prints `Sign in: julienning login alpha` after `Created …`.
+  Either way login's unused-dir rule reuses the dir.
 - `adopt DIR [--name NAME]`: as v1 (register + patch); the name follows
   Config names unless `--name` is given.
 - `new-config` prints `Created ~/.claude-julienning3 (config
@@ -834,14 +849,24 @@ tmux is found, claude runs in a window of that session instead of in place
   are named after nicknames, settings.json never names the config). Prints
   `Renamed "julienning1" to "work" (~/.claude-julienning1).`
 - `login NICKNAME|EMAIL|CONFIG [-- args]`: `resolve.Target` (a fresh dir has
-  only its config name). A shared account no dir is logged into
-  (`NotLocalError`) goes to the first dir by name whose `last_email` is that
-  account and that has no login, but only when `claude auth status` there
-  says not logged in (a dir with a working login is never signed over;
-  failing to ask is an error naming the dir); the note
-  `~/.claude-x held alpha (claude1@x.io) last and has no login now; signing in there again (its sessions are still there)`
-  says so. No such dir:
-  ``alpha (claude1@x.io) is not logged in on this machine, and no signed-out dir here held it last; sign it into a new dir with `julienning new-config`, or into an existing one with `julienning login CONFIG` (see `julienning configs`) ``.
+  only its config name). An account no registered dir is logged into
+  (`NotLocalError`) goes to the first of, each only when `claude auth status`
+  there says not logged in (a dir with a working login is never signed over;
+  failing to ask is an error naming the dir):
+  1. the first dir by name whose `last_email` is that account and that has no
+     login; note
+     `~/.claude-x held alpha (claude1@x.io) last and has no login now; signing in there again (its sessions are still there)`;
+  2. for a team account (`resolve.IsPersonal` false), the first unused
+     registered dir by name: no `last_email`, no login, no sessions
+     (`sessions.Count`; an error counts as used), and no `share_on_login`
+     with a nickname (made for a new account); note
+     `nobody has used ~/.claude-x yet; signing alpha (claude1@x.io) in there`;
+  3. for a team account, a new dir created, patched and registered like
+     new-config's (`<prefix><N>`, no mark: the account is shared); note
+     `no dir here holds alpha (claude1@x.io); created ~/.claude-julienning3 (config "julienning3") for it`.
+
+  Any other email:
+  ``x@y is not shared with the team and not logged in on this machine; sign it into a new dir with `julienning new-config` (shares it; `--no-share` keeps it personal), or into an existing one with `julienning login CONFIG` (see `julienning configs`) ``.
   With claude args after `--`, `launch.Exec` starts plain claude with them,
   unchecked, as before. Otherwise `claude auth login` runs in this terminal
   (never in tmux) against the dir, with `--email <account>` for a nickname

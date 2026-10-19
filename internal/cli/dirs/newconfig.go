@@ -13,6 +13,7 @@ import (
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/launch"
+	"github.com/muratgozel/julienning/internal/resolve"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 )
 
@@ -37,7 +38,7 @@ func runNewConfig(env cli.Env) error {
 	fs := cli.NewFlagSet("new-config", env)
 	nameFlag := fs.String("name", "", "config name or dir basename (e.g. foo or .claude-foo; default: <prefix><N> in ~/.claude-<prefix><N>)")
 	copyFrom := fs.String("copy-settings-from", "", "registered config whose settings.json to copy")
-	nickFlag := fs.String("nick", "", "team nickname for the account you sign in with (default: ask in a terminal, else the email's local part)")
+	nickFlag := fs.String("nick", "", "team nickname for the account you sign in with, or a team account's nickname to sign that account in (default: ask in a terminal, else the email's local part)")
 	noShare := fs.Bool("no-share", false, "keep the account personal: do not share it with the team on first login")
 	noLogin := fs.Bool("no-login", false, "only create and register the dir (scripts); print the sign-in command instead of starting claude")
 	// Signing in used to be opt-in; --login stays accepted (and does
@@ -69,12 +70,9 @@ func runNewConfig(env cli.Env) error {
 	if err != nil {
 		return err
 	}
-	name, dir, err := resolveNewName(cfg, home, *nameFlag)
+	name, dir, err := newDirName(cfg, home, *nameFlag)
 	if err != nil {
 		return err
-	}
-	if _, taken := cfg.Find(name); taken {
-		return fmt.Errorf("config %q already registered (pick another --name)", name)
 	}
 
 	// The copy leaves out julienning's own statusLine and hooks (restoring the
@@ -91,67 +89,38 @@ func runNewConfig(env cli.Env) error {
 			return fmt.Errorf("copy settings from %q: %w", *copyFrom, err)
 		}
 	}
+	// A nickname a team account already holds names that account: the user
+	// is signing it in on this machine (typically a second one), so there is
+	// nothing to share and the new dir gets no ShareOnLogin mark. Without the
+	// mark a wrong account signed in by mistake stays personal.
 	var share *config.ShareOnLogin
+	account := ""
+	var cache *sharedcache.Cache
 	if !*noShare {
-		cache := loadCache(env)
+		cache = loadCache(env)
 		switch {
 		case nick != "":
-			if holder, taken := cache.ByNickname(nick); taken {
-				return fmt.Errorf("nickname %q is already used by %s; pick another --nick, or leave it out to use the email's local part", nick, holder)
-			}
+			account, _ = cache.ByNickname(nick)
 		case isInteractive(env):
-			nick = askNewNickname(env, cache)
+			nick, account = askNewNickname(env, cache)
 		}
-		share = &config.ShareOnLogin{Nickname: nick}
+		if account != "" {
+			if err := signedInHere(cfg, cache, account); err != nil {
+				return err
+			}
+		} else {
+			share = &config.ShareOnLogin{Nickname: nick}
+		}
 	}
-	exe, err := patchCommand(env)
+
+	cd, err := createDir(env, name, dir, settings, share)
 	if err != nil {
 		return err
 	}
-
-	// os.Mkdir, not MkdirAll: MkdirAll succeeds on an existing dir, so two
-	// concurrent runs would both "create" the same config and the second Save
-	// would drop the first registration. EEXIST is the exclusion.
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%s already exists (run `julienning adopt %s` to register it)", shortenHome(dir), shortenHome(dir))
-		}
-		return fmt.Errorf("create %s: %w", dir, err)
+	fmt.Fprintf(env.Stdout, "Created %s (config %q).\n", shortenHome(cd.Dir), cd.Name)
+	if account != "" {
+		return signInNewDir(env, cache, cd, account, *noLogin)
 	}
-	// Until registration succeeds the dir is ours alone; undo on failure so a
-	// retry with the same name works.
-	registered := false
-	defer func() {
-		if !registered {
-			_, _ = claudecfg.Unpatch(dir)
-			_ = os.Remove(claudecfg.SettingsPath(dir))
-			_ = os.Remove(dir)
-		}
-	}()
-	if settings != nil {
-		if err := claudecfg.WriteSettings(dir, settings); err != nil {
-			return err
-		}
-	}
-	if _, err := claudecfg.Patch(dir, exe); err != nil {
-		return err
-	}
-	// Re-read config.json right before registering: Save rewrites the whole
-	// file, so a concurrent run that registered between our Load and here would
-	// otherwise be lost.
-	if cfg, err = loadConfig(); err != nil {
-		return err
-	}
-	cd := config.ConfigDir{Name: name, Dir: dir, ShareOnLogin: share}
-	if err := cfg.Add(cd); err != nil {
-		return err
-	}
-	if err := cfg.Save(); err != nil {
-		return err
-	}
-	registered = true
-
-	fmt.Fprintf(env.Stdout, "Created %s (config %q).\n", shortenHome(dir), name)
 	if *noLogin {
 		fmt.Fprintf(env.Stdout, "Sign in: julienning login %s\n", name)
 	} else {
@@ -177,18 +146,113 @@ func runNewConfig(env cli.Env) error {
 	return nil
 }
 
+// signInNewDir signs the team account email into cd, the dir new-config just
+// created for it, the way login does: `claude auth login` pre-filled with the
+// email, then the check of what it got. A failed or aborted sign-in leaves
+// the dir registered and unused, and `login` reuses such a dir, so the hint
+// names the account rather than the config.
+func signInNewDir(env cli.Env, cache *sharedcache.Cache, cd config.ConfigDir, email string, noLogin bool) error {
+	nick := cache.Nickname(email)
+	again := email
+	if nick != "" {
+		again = nick
+	}
+	if noLogin {
+		fmt.Fprintf(env.Stdout, "Sign in: julienning login %s\n", again)
+		return nil
+	}
+	fmt.Fprintf(env.Stdout, "%s is already shared with the team; signing it in here.\n", accountLabel(nick, email))
+	if err := authLogin(env, cd.Dir, email); err != nil {
+		return fmt.Errorf("%w; %s is created, sign in later with: julienning login %s", err, shortenHome(cd.Dir), again)
+	}
+	return verifyLogin(env, cache, cd, email, "")
+}
+
+// signedInHere refuses a new dir for a team account a registered dir here
+// already holds (it is ready to use), or held last and lost to a sign-out
+// (signing in there again keeps its sessions with the account).
+func signedInHere(cfg *config.Config, cache *sharedcache.Cache, email string) error {
+	nick := cache.Nickname(email)
+	who := email
+	if nick != "" {
+		who = nick
+	}
+	if dirs := resolve.Dirs(cfg, email, nil); len(dirs) > 0 {
+		return fmt.Errorf("%s is already signed in on this machine, in %s; use it with: julienning use %s",
+			accountLabel(nick, email), shortenHome(dirs[0].Dir), who)
+	}
+	if out := resolve.SignedOutDirs(cfg, email); len(out) > 0 {
+		return &resolve.NotLocalError{Nickname: nick, Email: email, SignedOut: out}
+	}
+	return nil
+}
+
+// createDir creates, patches and registers a new config dir (see
+// newDirName for name and dir). It refuses an existing dir and undoes its
+// work on failure, so a retry with the same name works.
+func createDir(env cli.Env, name, dir string, settings []byte, share *config.ShareOnLogin) (config.ConfigDir, error) {
+	exe, err := patchCommand(env)
+	if err != nil {
+		return config.ConfigDir{}, err
+	}
+	// os.Mkdir, not MkdirAll: MkdirAll succeeds on an existing dir, so two
+	// concurrent runs would both "create" the same config and the second Save
+	// would drop the first registration. EEXIST is the exclusion.
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return config.ConfigDir{}, fmt.Errorf("%s already exists (run `julienning adopt %s` to register it)", shortenHome(dir), shortenHome(dir))
+		}
+		return config.ConfigDir{}, fmt.Errorf("create %s: %w", dir, err)
+	}
+	// Until registration succeeds the dir is ours alone; undo on failure so a
+	// retry with the same name works.
+	registered := false
+	defer func() {
+		if !registered {
+			_, _ = claudecfg.Unpatch(dir)
+			_ = os.Remove(claudecfg.SettingsPath(dir))
+			_ = os.Remove(dir)
+		}
+	}()
+	if settings != nil {
+		if err := claudecfg.WriteSettings(dir, settings); err != nil {
+			return config.ConfigDir{}, err
+		}
+	}
+	if _, err := claudecfg.Patch(dir, exe); err != nil {
+		return config.ConfigDir{}, err
+	}
+	// Re-read config.json right before registering: Save rewrites the whole
+	// file, so a concurrent run that registered between our Load and here would
+	// otherwise be lost.
+	cfg, err := loadConfig()
+	if err != nil {
+		return config.ConfigDir{}, err
+	}
+	cd := config.ConfigDir{Name: name, Dir: dir, ShareOnLogin: share}
+	if err := cfg.Add(cd); err != nil {
+		return config.ConfigDir{}, err
+	}
+	if err := cfg.Save(); err != nil {
+		return config.ConfigDir{}, err
+	}
+	registered = true
+	return cd, nil
+}
+
 // askNewNickname asks for the team nickname of the account the new dir will
 // be signed into. The email is not known yet, so Enter (or the end of
 // input) returns "", which the share on login turns into the email's local
-// part. An invalid answer, or one the cached allowlist says another account
-// holds, is explained and asked again: the share itself happens later in
-// the background, where a taken nickname can no longer be asked about.
-func askNewNickname(env cli.Env, cache *sharedcache.Cache) string {
+// part. An invalid answer is explained and asked again: the share itself
+// happens later in the background, where it can no longer be asked about.
+// A nickname the cached allowlist shows a team account holding names that
+// account instead, returned as account (nick is then "").
+func askNewNickname(env cli.Env, cache *sharedcache.Cache) (nick, account string) {
 	in := bufio.NewReader(env.Stdin)
 	for {
 		answer, ok := ask(env.Stdout, in, "Nickname for this account [the email's name]: ")
 		if !ok || answer == "" {
-			return ""
+			return "", ""
 		}
 		n, err := normalizeNickname(answer)
 		if err != nil {
@@ -196,11 +260,23 @@ func askNewNickname(env cli.Env, cache *sharedcache.Cache) string {
 			continue
 		}
 		if holder, taken := cache.ByNickname(n); taken {
-			fmt.Fprintf(env.Stdout, "nickname %q is already used by %s; choose another (or press Enter for the email's name)\n", n, holder)
-			continue
+			return "", holder
 		}
-		return n
+		return n, ""
 	}
+}
+
+// newDirName is resolveNewName that also refuses a config name that is
+// registered already.
+func newDirName(cfg *config.Config, home, flagValue string) (string, string, error) {
+	name, dir, err := resolveNewName(cfg, home, flagValue)
+	if err != nil {
+		return "", "", err
+	}
+	if _, taken := cfg.Find(name); taken {
+		return "", "", fmt.Errorf("config %q already registered (pick another --name)", name)
+	}
+	return name, dir, nil
 }
 
 // resolveNewName turns --name into a (name, dir) pair, or picks the smallest

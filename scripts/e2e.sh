@@ -780,6 +780,19 @@ ok "forget --keep keeps the dir"
 run julienning accounts
 expect_contains "the account stays shared for the team" "bravo" "$out"
 
+# --- signing a team account in where no dir holds it (as on a second machine) ---------------
+# No registered dir holds bravo now: login creates one and signs it in,
+# pre-filled; new-config then refuses to make a second.
+run julienning login bravo
+expect_contains "login creates a dir for a team account no dir here holds" "no dir here holds bravo (beta@example.com); created ~/.claude-" "$out"
+newdir="$(printf '%s\n' "$out" | sed -n 's|.*created ~/\(\.claude-[^ ]*\) (config.*|\1|p')"
+if [ -z "$newdir" ] || [ ! -f "$HOME/$newdir/settings.json" ]; then fail "login's new dir is missing or not patched:" "$out"; fi
+ok "login's new dir is created and patched"
+expect_contains "the new dir's login page was pre-filled" "login $HOME/$newdir|auth login --email beta@example.com" "$(cat "$T/probes.log")"
+expect_contains "login reports the account it got" "Signed in: bravo (beta@example.com) in ~/$newdir." "$out"
+run_fail julienning new-config --nick bravo --no-login
+expect_contains "new-config does not double a team account signed in here" "bravo (beta@example.com) is already signed in on this machine, in ~/$newdir; use it with: julienning use bravo" "$out"
+
 # --- self-update ----------------------------------------------------------------------------
 printf 'v9.0.1\n' >"$T/releases/LATEST"
 run julienning update

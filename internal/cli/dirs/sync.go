@@ -201,7 +201,7 @@ func syncTargets(env cli.Env, cfg *config.Config, cache *sharedcache.Cache) ([]*
 		if len(targets) == 1 {
 			what = "only " + targets[0].label + " is"
 		}
-		return nil, fmt.Errorf("sync needs at least two shared accounts logged in here, and %s (`julienning configs` lists the registered dirs; sign one in with `julienning login <config>` or `julienning new-config`)", what)
+		return nil, fmt.Errorf("sync needs at least two shared accounts logged in here, and %s (`julienning accounts` lists the team's accounts; sign one in here with `julienning login NICKNAME`)", what)
 	}
 	for _, t := range targets {
 		if t.settingsErr != nil {
