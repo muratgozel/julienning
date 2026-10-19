@@ -49,6 +49,32 @@ export interface UsageRecord {
   reporter: Reporter;
 }
 
+/**
+ * A window as a usage probe read it (the CLI runs Claude Code's `/usage`).
+ * `resets_at` null means the window is not running: nothing was used since it
+ * last reset, so `used` is 0 (validate.ts enforces that).
+ */
+export interface ProbeWindow {
+  used: number;
+  resets_at: string | null;
+}
+
+/**
+ * Metadata of `probe:<email>`: the latest usage probe, read from Claude's
+ * usage endpoint by a CLI with a local login, whoever used the account. It is
+ * never activity: probing is not using the account, so it makes nobody busy
+ * and refreshes no claim.
+ */
+export interface ProbeRecord {
+  session: ProbeWindow;
+  week: ProbeWindow;
+  collected_at: string;
+  reporter: Reporter;
+}
+
+/** Which record a listed account's numbers come from (the newer one). */
+export type UsageSource = "statusline" | "probe";
+
 /** Metadata of `claim:<email>:<dev>:<machine_id>`; the holder is in the key. */
 export interface ClaimRecord {
   at: string;
@@ -70,12 +96,13 @@ export interface ExhaustedRecord {
 export interface ExhaustedReport extends Identity, ExhaustedRecord {}
 
 /**
- * The logical account assembled from its `share:`, `usage:`, `claim:` and
- * `exhausted:` keys (see src/store.ts). `session`/`week`/`collected_at`/
- * `reporter` are absent until the first valid report; `added_by`/`added_at`
- * are optional only so ranking and formatting can be exercised without a share
- * record. `exhausted` is always set by the store; absent reads as none, so
- * fixtures need not spell it out.
+ * The logical account assembled from its `share:`, `usage:`, `probe:`,
+ * `claim:` and `exhausted:` keys (see src/store.ts). `session`/`week`/
+ * `collected_at`/`reporter` are the status line's `usage:` record, absent
+ * until its first valid report; `probe` is the `probe:` record, absent until
+ * the first probe. `added_by`/`added_at` are optional only so ranking and
+ * formatting can be exercised without a share record. `exhausted` is always
+ * set by the store; absent reads as none, so fixtures need not spell it out.
  */
 export interface StoredAccount {
   email: string;
@@ -86,13 +113,22 @@ export interface StoredAccount {
   week?: UsageWindow;
   collected_at?: string;
   reporter?: Reporter;
+  probe?: ProbeRecord;
   claims: Claim[];
   exhausted?: ExhaustedReport[];
 }
 
-export interface RankedWindow extends UsageWindow {
+/** `resets_at` null: the window is not running (only probes say so). */
+export interface RankedWindow {
+  used: number;
+  resets_at: string | null;
   effective: number;
   reset_passed: boolean;
+}
+
+/** The latest status line report: who was on the account and when. */
+export interface Activity extends Identity {
+  at: string;
 }
 
 /** `exhausted` wins over the others: an account at 100% cannot take work, busy or not. */
@@ -105,10 +141,21 @@ export interface RankedAccount {
   nickname: string | null;
   added_by?: Identity;
   added_at?: string;
+  /**
+   * The newer of the status line report and the probe: `session`/`week` are
+   * its numbers, `collected_at` when they were read and `reporter` who sent
+   * them, `source` which record it was (absent with neither).
+   */
   session?: RankedWindow;
   week?: RankedWindow;
   collected_at?: string;
   reporter?: Reporter;
+  source?: UsageSource;
+  /**
+   * The latest status line report, which alone means someone is on the
+   * account (`in_use` and its age). Absent before the first report.
+   */
+  last_activity?: Activity;
   /** Fresh holders only (expired ones are dropped), the querying dev included. */
   claims: Claim[];
   state: AccountState;
@@ -137,4 +184,10 @@ export interface AccountsResponse {
   generated_at: string;
   tz: string;
   accounts: RankedAccount[];
+}
+
+/** POST /probes answer: the listing with the batch merged in. */
+export interface ProbesResponse extends AccountsResponse {
+  /** Reported emails that are not on the allowlist; nothing was stored for them. */
+  not_shared: string[];
 }

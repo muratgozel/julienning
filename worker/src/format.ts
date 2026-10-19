@@ -64,9 +64,11 @@ function percent(n: number): string {
   return `${Number.isInteger(n) ? n : n.toFixed(1)}%`;
 }
 
+/** `0%` alone: a probe found the window not running, so there is no reset to show. */
 function windowCell(w: RankedWindow | undefined, tz: string, now: Date): string {
   if (!w) return "-";
   if (w.reset_passed) return "0% → reset";
+  if (w.resets_at === null) return percent(w.effective);
   return `${percent(w.effective)} → ${formatResetTime(w.resets_at, tz, now)}`;
 }
 
@@ -93,8 +95,8 @@ function ago(iso: string | undefined, now: Date): string {
  * `exhausted (week)` when the reset is unknown (a refusal report without one).
  * Who is on an exhausted account is left to the JSON `busy_by`.
  * `in use by ali, can (12m)`: every other dev on it, with the age of the last
- * report (the in_use signal). Claims carry no age: with several holders there
- * is no single meaningful one.
+ * status line report (the in_use signal; a newer probe does not reset it).
+ * Claims carry no age: with several holders there is no single meaningful one.
  */
 function stateCell(a: RankedAccount, tz: string, now: Date): string {
   if (a.state === "exhausted") {
@@ -106,7 +108,7 @@ function stateCell(a: RankedAccount, tz: string, now: Date): string {
   if (a.state === "free" || a.busy_by.length === 0) return "free";
   const who = a.busy_by.join(", ");
   if (a.state === "in_use")
-    return `in use by ${who} (${duration(now.getTime() - Date.parse(a.collected_at ?? ""))})`;
+    return `in use by ${who} (${duration(now.getTime() - Date.parse(a.last_activity?.at ?? a.collected_at ?? ""))})`;
   return `claimed by ${who}`;
 }
 

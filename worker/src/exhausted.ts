@@ -1,4 +1,4 @@
-import type { ExhaustedReport, UsageRecord, UsageWindow, WindowName } from "./types";
+import type { ExhaustedReport, ProbeWindow, UsageRecord, WindowName } from "./types";
 
 /**
  * Refusal reports (PUT /accounts/:email/exhausted): Claude Code refused a
@@ -80,14 +80,16 @@ function latestReset(r: ExhaustedReport): number {
  */
 export function liveExhausted(
   reports: readonly ExhaustedReport[],
-  usage: { session?: UsageWindow | undefined; week?: UsageWindow | undefined },
+  usage: { session?: ProbeWindow | undefined; week?: ProbeWindow | undefined },
   nowMs: number,
 ): ExhaustedReport[] {
   return reports.filter((r) => {
     const end = latestReset(r);
     if (!Number.isFinite(end) || end <= nowMs) return false;
     const current = usage[r.window];
-    if (current === undefined) return true;
+    // A probe saying the window is not running is not taken as a new
+    // window either: the record still lapses at its own reset.
+    if (current === undefined || current.resets_at === null) return true;
     return !(Date.parse(current.resets_at) > end + RESET_TOLERANCE_SEC * 1000);
   });
 }

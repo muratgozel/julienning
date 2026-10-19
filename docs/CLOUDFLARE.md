@@ -234,7 +234,8 @@ workflows triggered from forks, so a fork's pull request cannot deploy.
 ## 14. KV limits
 
 Each writer owns its own key (`share:<email>`, `usage:<email>`,
-`claim:<email>:<dev>:<machine_id>`, `exhausted:<email>:<dev>:<machine_id>`;
+`probe:<email>`, `claim:<email>:<dev>:<machine_id>`,
+`exhausted:<email>:<dev>:<machine_id>`;
 see "Worker" in `docs/SPEC.md`), so concurrent requests never overwrite each
 other's data. All data lives in KV metadata, which keeps the account listing
 to a single list operation (`GET /accounts/:email` and unshare use two, one
@@ -265,6 +266,13 @@ Writes happen on:
   (`send_min_interval_sec`) while a session is active, except that a new
   rate-limit window (changed reset time) is reported immediately. A report
   older than the stored one writes nothing;
+- `POST /probes`: one write to `probe:<email>` per account in the batch whose
+  probe is newer than the stored one (two reads each, and one list for the
+  answer). A CLI probes an account only when its numbers are older than 15
+  minutes (`accounts`, `next`, `use`) or an hour (the background round, at
+  most every 10 minutes per machine), and never the same login twice within
+  5 minutes, so an account is probed about once an hour while nobody uses
+  it and not at all while a status line keeps it fresh;
 - `PUT claim`: one write to that holder's own key, on session start plus a
   refresh at most hourly;
 - `PUT exhausted`: one write to that reporter's own key, once per refused
@@ -281,10 +289,11 @@ actively working developers.
 Deletes have their own 1,000/day quota: one per `DELETE claim` (session end),
 and on unshare one each for the share key, the usage key and every claim key.
 Reads (100,000/day) are not a concern. List operations (1,000/day) cost one
-per `GET /accounts` (one page holds 1,000 keys, and each shared account uses
-two plus one per active holder), one per `GET /accounts/:email`, one per
+per `GET /accounts` and per `POST /probes` (one page holds 1,000 keys, and
+each shared account uses up to three plus one per active holder), one per
+`GET /accounts/:email`, one per
 unshare, and one per new share or rename (the nickname uniqueness check lists
-the `share:` keys). The CLI lists when you run `accounts`, `next`, `use` or `current`, and
+the `share:` keys). The CLI lists when you run `accounts`, `next`, `use` or `current` (`accounts`, `next` and `use` once more, through `POST /probes`, when they probed something), and
 when a machine refreshes its cached allowlist (at most hourly).
 
 When the account is over the daily write limit, KV writes throw inside the

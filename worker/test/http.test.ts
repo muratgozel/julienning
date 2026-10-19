@@ -784,10 +784,12 @@ describe("response formats", () => {
       "exhausted",
       "exhausted_until",
       "exhausted_window",
+      "last_activity",
       "nickname",
       "rank",
       "reporter",
       "session",
+      "source",
       "state",
       "week",
     ]);

@@ -3,6 +3,8 @@ import type {
   ClaimRecord,
   ExhaustedRecord,
   Identity,
+  ProbeRecord,
+  ProbeWindow,
   Reporter,
   ShareRecord,
   UsageRecord,
@@ -22,6 +24,9 @@ export class ValidationError extends Error {
 }
 
 export const MAX_BODY_BYTES = 4096;
+/** POST /probes carries one report per account (about 200 bytes each). */
+export const PROBES_MAX_BODY_BYTES = 16384;
+export const MAX_PROBE_REPORTS = 32;
 
 /** Used when the matching wrangler var is missing or unusable. */
 export const FALLBACK_TZ = "UTC";
@@ -204,6 +209,66 @@ export function validateUsageBody(body: unknown): UsageRecord {
   };
 }
 
+/**
+ * A probe window may have no reset: the window is not running, which only
+ * makes sense with nothing used. A null reset with usage is rejected rather
+ * than guessed at, so a shape Claude Code changed fails loudly in the CLI's
+ * log instead of ranking an account as fresh.
+ */
+function validateProbeWindow(raw: unknown, field: string): ProbeWindow {
+  if (!isRecord(raw))
+    throw new ValidationError(field, `${field} must be an object`);
+  const used = validateUsed(raw.used, `${field}.used`);
+  if (raw.resets_at === null) {
+    if (used !== 0)
+      throw new ValidationError(`${field}.resets_at`, `${field}.resets_at may be null only when ${field}.used is 0`);
+    return { used, resets_at: null };
+  }
+  return { used, resets_at: validateTimestamp(raw.resets_at, `${field}.resets_at`) };
+}
+
+export interface ProbeReport {
+  email: string;
+  record: ProbeRecord;
+}
+
+/**
+ * POST /probes body: `{reporter, reports: [{email, session, week,
+ * collected_at}]}`, one report per account (duplicates are a 400, so a
+ * client bug cannot write the same key twice in one request).
+ */
+export function validateProbesBody(body: unknown): ProbeReport[] {
+  if (!isRecord(body))
+    throw new ValidationError("body", "body must be a JSON object");
+  const reporter = validateReporter(body.reporter);
+  const raw = body.reports;
+  if (!Array.isArray(raw) || raw.length === 0)
+    throw new ValidationError("reports", "reports must be a non-empty array");
+  if (raw.length > MAX_PROBE_REPORTS)
+    throw new ValidationError("reports", `reports must hold at most ${MAX_PROBE_REPORTS} entries`);
+  const seen = new Set<string>();
+  return raw.map((r, i) => {
+    const field = `reports[${i}]`;
+    if (!isRecord(r))
+      throw new ValidationError(field, `${field} must be an object`);
+    if (typeof r.email !== "string")
+      throw new ValidationError(`${field}.email`, "email is required");
+    const email = validateEmail(r.email, `${field}.email`);
+    if (seen.has(email))
+      throw new ValidationError(`${field}.email`, `${field}.email repeats an earlier report`);
+    seen.add(email);
+    return {
+      email,
+      record: {
+        session: validateProbeWindow(r.session, `${field}.session`),
+        week: validateProbeWindow(r.week, `${field}.week`),
+        collected_at: validateTimestamp(r.collected_at, `${field}.collected_at`),
+        reporter,
+      },
+    };
+  });
+}
+
 export function validateWindowName(raw: unknown, field = "window"): WindowName {
   if (raw !== "session" && raw !== "week")
     throw new ValidationError(field, `${field} must be 'session' or 'week'`);
@@ -289,10 +354,10 @@ export function validateHolderQuery(params: URLSearchParams): Identity {
   };
 }
 
-function bodyTooLarge(): never {
+function bodyTooLarge(maxBytes: number): never {
   throw new ValidationError(
     "body",
-    `body must be at most ${MAX_BODY_BYTES} bytes`,
+    `body must be at most ${maxBytes} bytes`,
   );
 }
 
@@ -301,9 +366,9 @@ function bodyTooLarge(): never {
  * carries no Content-Length, so buffering first would let a multi-MB (or
  * endless) stream into memory before the size check could reject it.
  */
-async function readLimitedBody(request: Request): Promise<Uint8Array> {
+async function readLimitedBody(request: Request, maxBytes: number): Promise<Uint8Array> {
   const declared = request.headers.get("content-length");
-  if (declared !== null && Number(declared) > MAX_BODY_BYTES) bodyTooLarge();
+  if (declared !== null && Number(declared) > maxBytes) bodyTooLarge(maxBytes);
 
   const body = request.body;
   if (body === null) return new Uint8Array(0);
@@ -316,10 +381,10 @@ async function readLimitedBody(request: Request): Promise<Uint8Array> {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > MAX_BODY_BYTES) {
+      if (total > maxBytes) {
         // Tell the client to stop sending before unwinding.
         await reader.cancel();
-        bodyTooLarge();
+        bodyTooLarge(maxBytes);
       }
       chunks.push(value);
     }
@@ -337,8 +402,8 @@ async function readLimitedBody(request: Request): Promise<Uint8Array> {
 }
 
 /** Guards against oversized payloads before any parsing work happens. */
-export async function readJsonBody(request: Request): Promise<unknown> {
-  const buf = await readLimitedBody(request);
+export async function readJsonBody(request: Request, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
+  const buf = await readLimitedBody(request, maxBytes);
   if (buf.byteLength === 0)
     throw new ValidationError("body", "body is required");
   try {
@@ -442,6 +507,15 @@ export function storedNicknameDropped(raw: unknown, parsed: ShareRecord): boolea
 
 export function parseUsageRecord(raw: unknown): UsageRecord | null {
   return parseRecord(raw, validateUsageBody);
+}
+
+export function parseProbeRecord(raw: unknown): ProbeRecord | null {
+  return parseRecord(raw, (v) => ({
+    session: validateProbeWindow(v.session, "session"),
+    week: validateProbeWindow(v.week, "week"),
+    collected_at: validateTimestamp(v.collected_at, "collected_at"),
+    reporter: validateReporter(v.reporter),
+  }));
 }
 
 export function parseClaimRecord(raw: unknown): ClaimRecord | null {

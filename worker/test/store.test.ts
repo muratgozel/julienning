@@ -37,6 +37,7 @@ import {
   shared,
   shareKey,
   usageBody,
+  probeKey,
   usageKey,
   usageOf,
   viaKv,
@@ -147,6 +148,7 @@ describe("GET /accounts reads", () => {
     const kv = new ControlledKV(env.USAGE);
     expect((await call(`/accounts/${A}`, {}, viaKv(kv))).status).toBe(200);
     expect(kv.calls.map((c) => `${c.op} ${c.key}`).sort()).toEqual([
+      `getWithMetadata ${probeKey(A)}`,
       `getWithMetadata ${shareKey(A)}`,
       `getWithMetadata ${usageKey(A)}`,
       `list claim:${A}:`,

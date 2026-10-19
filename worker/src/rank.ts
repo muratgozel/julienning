@@ -3,10 +3,12 @@ import { liveExhausted } from "./exhausted";
 import type {
   AccountState,
   ExhaustedReport,
+  ProbeWindow,
   RankedAccount,
   RankedWindow,
+  Reporter,
   StoredAccount,
-  UsageWindow,
+  UsageSource,
   WindowName,
 } from "./types";
 
@@ -18,15 +20,46 @@ export interface RankOptions {
   activityTtlMin: number;
 }
 
-function rankWindow(w: UsageWindow | undefined, nowMs: number): RankedWindow | undefined {
+/** A window that is not running (null reset) has nothing used and nothing to pass. */
+function rankWindow(w: ProbeWindow | undefined, nowMs: number): RankedWindow | undefined {
   if (!w) return undefined;
-  const reset_passed = Date.parse(w.resets_at) <= nowMs;
+  const reset_passed = w.resets_at !== null && Date.parse(w.resets_at) <= nowMs;
   return {
     used: w.used,
     effective: reset_passed ? 0 : w.used,
     resets_at: w.resets_at,
     reset_passed,
   };
+}
+
+/** Milliseconds of a reset for sorting and comparing; a window not running sorts like an unknown one. */
+function resetMs(w: RankedWindow | undefined): number {
+  return w !== undefined && w.resets_at !== null ? Date.parse(w.resets_at) : Number.POSITIVE_INFINITY;
+}
+
+interface Numbers {
+  session: ProbeWindow;
+  week: ProbeWindow;
+  collected_at: string;
+  reporter: Reporter;
+  source: UsageSource;
+}
+
+/**
+ * The account's numbers: the newer of the status line's `usage:` record and
+ * the `probe:` record, the probe on a tie (it is the server's own answer, the
+ * status line can lag after a refusal). Both `collected_at` are clamped to
+ * the Worker's clock when written, so neither can win by sitting in the
+ * future.
+ */
+function numbers(a: StoredAccount): Numbers | undefined {
+  const status: Numbers | undefined =
+    a.session !== undefined && a.week !== undefined && a.collected_at !== undefined && a.reporter !== undefined
+      ? { session: a.session, week: a.week, collected_at: a.collected_at, reporter: a.reporter, source: "statusline" }
+      : undefined;
+  const probe: Numbers | undefined = a.probe !== undefined ? { ...a.probe, source: "probe" } : undefined;
+  if (status === undefined || probe === undefined) return status ?? probe;
+  return Date.parse(probe.collected_at) >= Date.parse(status.collected_at) ? probe : status;
 }
 
 /**
@@ -55,8 +88,9 @@ function blockingWindow(
     ["session", session],
     ["week", week],
   ] as const) {
-    if (!w || w.effective < EXHAUSTED_AT) continue;
-    if (!blocking || Date.parse(w.resets_at) >= Date.parse(blocking.window.resets_at))
+    // A window that is not running has nothing used, so it never blocks.
+    if (!w || w.resets_at === null || w.effective < EXHAUSTED_AT) continue;
+    if (!blocking || resetMs(w) >= resetMs(blocking.window))
       blocking = { name, window: w };
   }
   return blocking;
@@ -80,7 +114,7 @@ function exhaustion(
   refusals: readonly ExhaustedReport[],
 ): Exhaustion | undefined {
   const known: { window: WindowName; until: string }[] = [];
-  if (blocking) known.push({ window: blocking.name, until: blocking.window.resets_at });
+  if (blocking?.window.resets_at) known.push({ window: blocking.name, until: blocking.window.resets_at });
   for (const r of refusals) if (r.resets_at !== null) known.push({ window: r.window, until: r.resets_at });
 
   let latest: { window: WindowName; until: string; ms: number } | undefined;
@@ -119,9 +153,12 @@ interface Scored {
 export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccount[] {
   const nowMs = opts.now.getTime();
   const scored: Scored[] = accounts.map((a) => {
-    const session = rankWindow(a.session, nowMs);
-    const week = rankWindow(a.week, nowMs);
+    const nums = numbers(a);
+    const session = rankWindow(nums?.session, nowMs);
+    const week = rankWindow(nums?.week, nowMs);
 
+    // Activity is the status line's alone: a probe is not someone using
+    // the account, whoever ran it.
     const reporterDev = a.reporter?.dev;
     const activeDev =
       reporterDev !== undefined &&
@@ -136,7 +173,7 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
     const busy_by = [...new Set([...(activeDev ? [activeDev] : []), ...claimingDevs])].sort();
     const exhausted = exhaustion(
       blockingWindow(session, week),
-      liveExhausted(a.exhausted ?? [], a, nowMs),
+      liveExhausted(a.exhausted ?? [], { session: nums?.session, week: nums?.week }, nowMs),
     );
     // Exhaustion beats everything: nobody can use it, whoever is on it. busy_by
     // stays populated so clients still see who is. Activity beats a claim:
@@ -157,8 +194,12 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
       ...(a.added_at !== undefined ? { added_at: a.added_at } : {}),
       ...(session ? { session } : {}),
       ...(week ? { week } : {}),
-      ...(a.collected_at !== undefined ? { collected_at: a.collected_at } : {}),
-      ...(a.reporter !== undefined ? { reporter: a.reporter } : {}),
+      ...(nums !== undefined
+        ? { collected_at: nums.collected_at, reporter: nums.reporter, source: nums.source }
+        : {}),
+      ...(a.reporter !== undefined && a.collected_at !== undefined
+        ? { last_activity: { ...a.reporter, at: a.collected_at } }
+        : {}),
       claims,
       state,
       busy_by,
@@ -178,7 +219,7 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
       known: session !== undefined || week !== undefined,
       session: session?.effective ?? Number.POSITIVE_INFINITY,
       week: week?.effective ?? Number.POSITIVE_INFINITY,
-      resets: session ? Date.parse(session.resets_at) : Number.POSITIVE_INFINITY,
+      resets: resetMs(session),
     };
   });
 

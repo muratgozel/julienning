@@ -2,13 +2,14 @@ import { resolveExhaustedResetsAt } from "./exhausted";
 import { formatText } from "./format";
 import { rank, type RankOptions } from "./rank";
 import { claimTtlSec, exhaustedTtlSec, Store } from "./store";
-import type { AccountsResponse, Env } from "./types";
+import type { AccountsResponse, Env, ProbeRecord, ProbesResponse } from "./types";
 import {
   clampToNow,
   DEFAULT_ACTIVITY_TTL_MIN,
   DEFAULT_CLAIM_TTL_MIN,
   defaultTz,
   nowStamp,
+  PROBES_MAX_BODY_BYTES,
   readJsonBody,
   ttlMinutes,
   validateClaimBody,
@@ -18,6 +19,7 @@ import {
   validateHolderQuery,
   validateNicknameBody,
   validateOptionalDev,
+  validateProbesBody,
   validateShareBody,
   validateTz,
   validateUsageBody,
@@ -237,6 +239,47 @@ async function handleDeleteClaim(ctx: RouteContext): Promise<Response> {
 }
 
 /**
+ * Probes: usage the CLI read through Claude Code's own `/usage` for accounts
+ * logged in on its machine, one report per account. Each writes only
+ * `probe:<email>`, when newer than the stored probe (an equal one is a
+ * resend, written once already). A probe is never activity: it refreshes no
+ * claim and makes nobody busy. Answers the ranked listing (`?dev`, `?tz`)
+ * with the batch merged in, because KV listings lag writes by up to a minute
+ * and the CLI ranks `next` on this answer at once.
+ */
+async function handleProbes(ctx: RouteContext): Promise<Response> {
+  const tz = validateTz(ctx.url.searchParams.get("tz"), defaultTz(ctx.env.DEFAULT_TZ));
+  const reports = validateProbesBody(await readJsonBody(ctx.request, PROBES_MAX_BODY_BYTES));
+  const dev = validateOptionalDev(ctx.url.searchParams.get("dev")) ?? reports[0]!.record.reporter.dev;
+  const results = await Promise.all(
+    reports.map(async ({ email, record }) => {
+      const report: ProbeRecord = { ...record, collected_at: clampToNow(record.collected_at, ctx.now) };
+      const [share, current] = await Promise.all([ctx.store.getShare(email), ctx.store.getProbe(email)]);
+      if (share === null) return { email, report, shared: false };
+      if (current === null ||
+          Date.parse(clampToNow(current.collected_at, ctx.now)) < Date.parse(report.collected_at))
+        await ctx.store.putProbe(email, report);
+      return { email, report, shared: true };
+    }),
+  );
+  const listed = await ctx.store.listAccounts();
+  for (const r of results) {
+    if (!r.shared) continue;
+    const a = listed.find((x) => x.email === r.email);
+    if (a !== undefined && (a.probe === undefined ||
+        Date.parse(a.probe.collected_at) < Date.parse(r.report.collected_at)))
+      a.probe = r.report;
+  }
+  const res: ProbesResponse = {
+    generated_at: nowStamp(ctx.now),
+    tz,
+    accounts: rank(listed, { now: ctx.now, dev, ...ttls(ctx.env) }),
+    not_shared: results.filter((r) => !r.shared).map((r) => r.email),
+  };
+  return json(res);
+}
+
+/**
  * Exhausted: Claude Code refused this reporter a request for a limit (the
  * CLI's StopFailure hook, matcher `rate_limit`). Writes only the reporter's
  * own `exhausted:` key; the usage record is read, never written, to fill in an
@@ -272,6 +315,7 @@ async function handlePutExhausted(ctx: RouteContext): Promise<Response> {
  *   PUT    /accounts/:email/claim       claim {dev, machine_id}: 204, 404 not shared
  *   DELETE /accounts/:email/claim       release ?dev=&machine_id= (idempotent, no share check)
  *   PUT    /accounts/:email/exhausted   refusal {window, resets_at?, reporter}: 204, 404 not shared
+ *   POST   /probes                      usage probes {reporter, reports[]}: 200 ranked listing + not_shared (?dev, ?tz)
  *
  * Bodies are validated before the share check, so a bad body is a 400 even
  * for an email that is not shared.
@@ -296,6 +340,12 @@ async function route(request: Request, url: URL, env: Env): Promise<Response> {
 
   if (!isAuthorized(request, url, env))
     return errorResponse("unauthorized", 401);
+
+  if (segments.length === 1 && segments[0] === "probes") {
+    if (request.method !== "POST") return methodNotAllowed(["POST"]);
+    const store = new Store(env.USAGE, { claimTtlSec: claimTtlSec(ttls(env).claimTtlMin) });
+    return handleProbes({ request, url, env, store, now: new Date(), email: "" });
+  }
 
   if (segments[0] !== "accounts") return errorResponse("not found", 404);
 

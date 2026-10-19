@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { rank } from "../src/rank";
-import type { Claim, ExhaustedReport, StoredAccount, WindowName } from "../src/types";
+import type { Claim, ExhaustedReport, ProbeRecord, StoredAccount, WindowName } from "../src/types";
 
 const NOW = new Date("2026-09-16T12:00:00Z");
 const BASE = { now: NOW, claimTtlMin: 720, activityTtlMin: 15 };
@@ -505,5 +505,72 @@ describe("exhaustion from refusal records", () => {
       "late@x.io",
       "unknown-reset@x.io",
     ]);
+  });
+});
+
+describe("probe records", () => {
+  function probed(
+    _email: string,
+    session: number,
+    week: number,
+    opts: { agoMin?: number; sessionResets?: number | null; weekResets?: number | null; dev?: string } = {},
+  ): ProbeRecord {
+    const reset = (r: number | null | undefined, fallback: number): string | null =>
+      r === null ? null : at(r ?? fallback);
+    return {
+      session: { used: session, resets_at: reset(opts.sessionResets, 300) },
+      week: { used: week, resets_at: reset(opts.weekResets, 4000) },
+      collected_at: at(-(opts.agoMin ?? 5)),
+      reporter: { dev: opts.dev ?? "murat", machine_id: "3fa9c2d1e07b" },
+    };
+  }
+
+  it("takes the numbers from the newer record, the probe on a tie", () => {
+    const newerProbe = { ...reported("a@x.io", 80, 80, { agoMin: 30 }), probe: probed("a@x.io", 10, 20, { agoMin: 5 }) };
+    const newerStatus = { ...reported("b@x.io", 80, 80, { agoMin: 5 }), probe: probed("b@x.io", 10, 20, { agoMin: 30 }) };
+    const tie = { ...reported("c@x.io", 80, 80, { agoMin: 5 }), probe: probed("c@x.io", 10, 20, { agoMin: 5 }) };
+    const byMail = new Map(rank([newerProbe, newerStatus, tie], BASE).map((a) => [a.email, a]));
+    expect(byMail.get("a@x.io")).toMatchObject({ source: "probe", session: { used: 10 }, collected_at: at(-5) });
+    expect(byMail.get("b@x.io")).toMatchObject({ source: "statusline", session: { used: 80 }, collected_at: at(-5) });
+    expect(byMail.get("c@x.io")).toMatchObject({ source: "probe", session: { used: 10 } });
+  });
+
+  it("ranks on the probe's numbers", () => {
+    const stale = { ...reported("a@x.io", 5, 5, { agoMin: 600 }), probe: probed("a@x.io", 90, 90) };
+    const other = reported("b@x.io", 50, 50, { agoMin: 600 });
+    expect(rank([stale, other], BASE).map((a) => a.email)).toEqual(["b@x.io", "a@x.io"]);
+  });
+
+  it("works with only a probe: known usage, no activity, no last_activity", () => {
+    const [a] = rank([account("a@x.io", { probe: probed("a@x.io", 3, 4, { dev: "ali" }) })], { ...BASE, dev: "murat" });
+    expect(a).toMatchObject({ source: "probe", state: "free", busy_by: [], reporter: { dev: "ali" } });
+    expect(a!.last_activity).toBeUndefined();
+    const unknown = account("b@x.io");
+    expect(rank([unknown, account("a@x.io", { probe: probed("a@x.io", 3, 4) })], BASE).map((x) => x.email))
+      .toEqual(["a@x.io", "b@x.io"]);
+  });
+
+  it("keeps activity and last_activity from the status line under a newer probe", () => {
+    const a = { ...reported("a@x.io", 50, 50, { agoMin: 3, dev: "ali" }), probe: probed("a@x.io", 60, 60, { agoMin: 1 }) };
+    const [r] = rank([a], { ...BASE, dev: "murat" });
+    expect(r).toMatchObject({ state: "in_use", busy_by: ["ali"], source: "probe", reporter: { dev: "murat" } });
+    expect(r!.last_activity).toEqual({ dev: "ali", machine_id: "aabbccddeeff", at: at(-3) });
+  });
+
+  it("treats a window that is not running as 0% with no reset: never passed, never blocking, sorted after real resets", () => {
+    const idle = account("a@x.io", { probe: probed("a@x.io", 0, 0, { sessionResets: null, weekResets: null }) });
+    const used = account("b@x.io", { probe: probed("b@x.io", 0, 0, { sessionResets: 60 }) });
+    const ranked = rank([idle, used], BASE);
+    expect(ranked.map((a) => a.email)).toEqual(["b@x.io", "a@x.io"]);
+    expect(ranked[1]!.session).toEqual({ used: 0, effective: 0, resets_at: null, reset_passed: false });
+    expect(ranked[1]!.exhausted).toBe(false);
+  });
+
+  it("is not superseded as a refusal by a window that is not running", () => {
+    const a = account("a@x.io", {
+      probe: probed("a@x.io", 0, 0, { weekResets: null }),
+      exhausted: [refusal("week", 600)],
+    });
+    expect(rank([a], BASE)[0]).toMatchObject({ exhausted: true, exhausted_window: "week" });
   });
 });

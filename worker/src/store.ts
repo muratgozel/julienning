@@ -4,6 +4,7 @@ import type {
   ExhaustedRecord,
   ExhaustedReport,
   Identity,
+  ProbeRecord,
   ShareRecord,
   StoredAccount,
   UsageRecord,
@@ -14,6 +15,7 @@ import {
   canonicalHolder,
   parseClaimRecord,
   parseExhaustedRecord,
+  parseProbeRecord,
   parseShareRecord,
   parseUsageRecord,
   storedNicknameDropped,
@@ -27,14 +29,15 @@ import {
  *
  *   share:<email>                         share / rename / unshare {added_by, added_at, nickname}
  *   usage:<email>                         PUT usage                {session, week, collected_at, reporter}, 8-day TTL
+ *   probe:<email>                         POST /probes             {session, week, collected_at, reporter}, 8-day TTL
  *   claim:<email>:<dev>:<machine_id>      that holder's claim PUT/DELETE, and its own usage refresh   {at}, claim TTL
  *   exhausted:<email>:<dev>:<machine_id>  that reporter's PUT exhausted   {window, resets_at, at}, TTL until resets_at
  *                                         (min 60 s), or one window length (5 h / 7 d) when resets_at is null
  *
  * All data lives in KV *metadata* (the value is a constant) because `list()`
  * returns metadata: GET /accounts is one paginated list with no per-key reads.
- * An email is shared iff its `share:` key exists and is valid. `usage:`/`claim:`/
- * `exhausted:` keys without one (left by a request that raced an unshare) are
+ * An email is shared iff its `share:` key exists and is valid. `usage:`/`probe:`/
+ * `claim:`/`exhausted:` keys without one (left by a request that raced an unshare) are
  * ignored and expire on their own. Emails, devs and machine ids never contain
  * ':', so key names split unambiguously. `nickname` is missing on share records
  * written before nicknames existed; such accounts list with `nickname: null`.
@@ -53,6 +56,7 @@ export const MAX_KEY_BYTES = 512;
 
 const SHARE = "share:";
 const USAGE = "usage:";
+const PROBE = "probe:";
 const CLAIM = "claim:";
 const EXHAUSTED = "exhausted:";
 const MARKER = "1";
@@ -60,6 +64,7 @@ const MARKER = "1";
 export const keys = {
   share: (email: string): string => SHARE + email,
   usage: (email: string): string => USAGE + email,
+  probe: (email: string): string => PROBE + email,
   claimPrefix: (email: string): string => `${CLAIM}${email}:`,
   claim: (email: string, holder: Identity): string =>
     `${CLAIM}${email}:${holder.dev}:${holder.machine_id}`,
@@ -71,6 +76,7 @@ export const keys = {
 export type ParsedKey =
   | { kind: "share"; email: string }
   | { kind: "usage"; email: string }
+  | { kind: "probe"; email: string }
   | { kind: "claim"; email: string; holder: Identity }
   | { kind: "exhausted"; email: string; holder: Identity };
 
@@ -93,6 +99,10 @@ export function parseKey(name: string): ParsedKey | null {
     const email = canonicalEmail(name.slice(USAGE.length));
     return email === null ? null : { kind: "usage", email };
   }
+  if (name.startsWith(PROBE)) {
+    const email = canonicalEmail(name.slice(PROBE.length));
+    return email === null ? null : { kind: "probe", email };
+  }
   if (name.startsWith(CLAIM)) {
     const parsed = parseHolderKey(name.slice(CLAIM.length));
     return parsed === null ? null : { kind: "claim", ...parsed };
@@ -105,7 +115,7 @@ export function parseKey(name: string): ParsedKey | null {
 }
 
 function hasOwnPrefix(name: string): boolean {
-  return [SHARE, USAGE, CLAIM, EXHAUSTED].some((p) => name.startsWith(p));
+  return [SHARE, USAGE, PROBE, CLAIM, EXHAUSTED].some((p) => name.startsWith(p));
 }
 
 export function claimTtlSec(claimTtlMin: number): number {
@@ -147,10 +157,11 @@ function assemble(
   email: string,
   share: ShareRecord,
   usage: UsageRecord | null,
+  probe: ProbeRecord | null,
   claims: Claim[],
   exhausted: ExhaustedReport[],
 ): StoredAccount {
-  return { email, ...share, ...(usage ?? {}), claims, exhausted };
+  return { email, ...share, ...(usage ?? {}), ...(probe !== null ? { probe } : {}), claims, exhausted };
 }
 
 /** Appends `item` to the list under `email`, creating it. */
@@ -218,6 +229,18 @@ export class Store {
     await this.write(keys.usage(email), record, USAGE_TTL_SEC);
   }
 
+  /** Null when nothing probed the account yet or the stored probe is invalid (the next probe replaces it). */
+  async getProbe(email: string): Promise<ProbeRecord | null> {
+    const key = keys.probe(email);
+    const { value, metadata } = await this.kv.getWithMetadata<unknown>(key);
+    if (value === null) return null;
+    return parseProbeRecord(metadata) ?? skipInvalid(key);
+  }
+
+  async putProbe(email: string, record: ProbeRecord): Promise<void> {
+    await this.write(keys.probe(email), record, USAGE_TTL_SEC);
+  }
+
   /** The holder's claim time, or null when it holds no (valid) claim. */
   async claimAt(email: string, holder: Identity): Promise<string | null> {
     const { value, metadata } = await this.kv.getWithMetadata(keys.claim(email, holder));
@@ -276,25 +299,31 @@ export class Store {
     ).flat();
     await Promise.all([
       this.kv.delete(keys.usage(email)),
+      this.kv.delete(keys.probe(email)),
       ...holderKeys.map((k) => this.kv.delete(k)),
     ]);
   }
 
   async getAccount(email: string): Promise<StoredAccount | null> {
-    const [share, usage] = await Promise.all([this.getShare(email), this.getUsage(email)]);
+    const [share, usage, probe] = await Promise.all([
+      this.getShare(email),
+      this.getUsage(email),
+      this.getProbe(email),
+    ]);
     // Checked before listing: list operations share a small daily quota.
     if (share === null) return null;
     const [claims, exhausted] = await Promise.all([
       this.listClaims(email),
       this.listExhausted(email),
     ]);
-    return assemble(email, share, usage, claims, exhausted);
+    return assemble(email, share, usage, probe, claims, exhausted);
   }
 
   /** Every shared account, from one paginated list and no per-key reads. */
   async listAccounts(): Promise<StoredAccount[]> {
     const shares = new Map<string, ShareRecord>();
     const usage = new Map<string, UsageRecord>();
+    const probes = new Map<string, ProbeRecord>();
     const claims = new Map<string, Claim[]>();
     const exhausted = new Map<string, ExhaustedReport[]>();
 
@@ -316,6 +345,12 @@ export class Store {
           else usage.set(parsed.email, record);
           break;
         }
+        case "probe": {
+          const record = parseProbeRecord(k.metadata);
+          if (record === null) skipInvalid(k.name);
+          else probes.set(parsed.email, record);
+          break;
+        }
         case "claim": {
           const claim = this.claimFrom(k);
           if (claim !== null) push(claims, claim.email, claim.claim);
@@ -334,6 +369,7 @@ export class Store {
         email,
         share,
         usage.get(email) ?? null,
+        probes.get(email) ?? null,
         claims.get(email) ?? [],
         exhausted.get(email) ?? [],
       ),

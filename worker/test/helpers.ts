@@ -5,6 +5,8 @@ import type {
   AccountsResponse,
   Claim,
   ExhaustedRecord,
+  ProbeRecord,
+  ProbesResponse,
   RankedAccount,
   ShareRecord,
   UsageRecord,
@@ -189,6 +191,52 @@ export async function putWindows(
   expect(res.status).toBe(204);
 }
 
+/** One probe report as the CLI sends it in POST /probes. */
+export interface ProbeReportBody {
+  email: string;
+  session: { used: number; resets_at: string | null };
+  week: { used: number; resets_at: string | null };
+  collected_at: string;
+}
+
+export function probeReport(
+  email: string,
+  session = 30,
+  week = 40,
+  collectedAt = iso(0),
+  resets: { session?: string | null; week?: string | null } = {},
+): ProbeReportBody {
+  return {
+    email,
+    session: { used: session, resets_at: resets.session === undefined ? iso(120) : resets.session },
+    week: { used: week, resets_at: resets.week === undefined ? iso(4000) : resets.week },
+    collected_at: collectedAt,
+  };
+}
+
+export function sendProbes(
+  reports: unknown[],
+  who: Who = MURAT,
+  query = "",
+  via: Via = viaSelf,
+): Promise<Response> {
+  return call(`/probes${query}`, { method: "POST", body: JSON.stringify({ reporter: who, reports }) }, via);
+}
+
+export async function postProbes(
+  reports: unknown[],
+  who: Who = MURAT,
+  query = "",
+): Promise<ProbesResponse> {
+  const res = await sendProbes(reports, who, query);
+  expect(res.status).toBe(200);
+  return (await res.json()) as ProbesResponse;
+}
+
+export function probeOf(email: string): Promise<ProbeRecord | null> {
+  return metaOf<ProbeRecord>(probeKey(email));
+}
+
 export async function listJson(query = ""): Promise<AccountsResponse> {
   const res = await call(`/accounts?format=json${query}`);
   expect(res.status).toBe(200);
@@ -217,6 +265,7 @@ export function holders(claims: readonly Who[]): string[] {
 
 export const shareKey = (email: string): string => `share:${email}`;
 export const usageKey = (email: string): string => `usage:${email}`;
+export const probeKey = (email: string): string => `probe:${email}`;
 export const claimKey = (email: string, who: Who): string =>
   `claim:${email}:${who.dev}:${who.machine_id}`;
 export const exhaustedKey = (email: string, who: Who): string =>
