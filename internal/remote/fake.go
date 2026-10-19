@@ -14,6 +14,7 @@ type Call struct {
 	Usage     *UsageReport
 	Exhausted *ExhaustedReport
 	Probes    []ProbeReport
+	Listing   bool // PostProbes: whether the listing was asked for
 	Identity  *Identity
 }
 
@@ -127,11 +128,14 @@ func (f *Fake) PutExhausted(_ context.Context, email string, r ExhaustedReport) 
 	return f.record(Call{Op: "exhausted", Email: email, Dev: id.Dev, Exhausted: &r, Identity: &id}, f.PutExhaustedErr)
 }
 
-func (f *Fake) PostProbes(_ context.Context, reporter Identity, dev string, reports []ProbeReport) (*ProbeResult, error) {
+func (f *Fake) PostProbes(_ context.Context, reporter Identity, dev string, reports []ProbeReport, listing bool) (*ProbeResult, error) {
 	id := reporter
 	rs := append([]ProbeReport(nil), reports...)
-	if err := f.record(Call{Op: "probes", Dev: dev, Probes: rs, Identity: &id}, f.ProbesErr); err != nil {
+	if err := f.record(Call{Op: "probes", Dev: dev, Probes: rs, Listing: listing, Identity: &id}, f.ProbesErr); err != nil {
 		return nil, err
+	}
+	if !listing {
+		return &ProbeResult{NotShared: f.ProbesNotShared}, nil
 	}
 	l := f.ProbesListing
 	if l == nil {

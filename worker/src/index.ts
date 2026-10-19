@@ -1,8 +1,8 @@
 import { resolveExhaustedResetsAt } from "./exhausted";
 import { formatText } from "./format";
-import { rank, type RankOptions } from "./rank";
+import { numbers, rank, type RankOptions } from "./rank";
 import { claimTtlSec, exhaustedTtlSec, Store } from "./store";
-import type { AccountsResponse, Env, ProbeRecord, ProbesResponse } from "./types";
+import type { AccountsResponse, Env, ProbeRecord, ProbesAck, ProbesResponse } from "./types";
 import {
   clampToNow,
   DEFAULT_ACTIVITY_TTL_MIN,
@@ -113,6 +113,7 @@ async function handleAccounts(ctx: RouteContext): Promise<Response> {
   const res: AccountsResponse = {
     generated_at: nowStamp(ctx.now),
     tz,
+    probes: true,
     accounts,
   };
   if (format === "json") return json(res);
@@ -245,7 +246,9 @@ async function handleDeleteClaim(ctx: RouteContext): Promise<Response> {
  * resend, written once already). A probe is never activity: it refreshes no
  * claim and makes nobody busy. Answers the ranked listing (`?dev`, `?tz`)
  * with the batch merged in, because KV listings lag writes by up to a minute
- * and the CLI ranks `next` on this answer at once.
+ * and the CLI ranks `next` on this answer at once. `?listing=0` (the CLI's
+ * background round, which ranks nothing) answers only `not_shared`, saving
+ * the list operation, which KV's free tier allows 1,000 of a day.
  */
 async function handleProbes(ctx: RouteContext): Promise<Response> {
   const tz = validateTz(ctx.url.searchParams.get("tz"), defaultTz(ctx.env.DEFAULT_TZ));
@@ -262,6 +265,11 @@ async function handleProbes(ctx: RouteContext): Promise<Response> {
       return { email, report, shared: true };
     }),
   );
+  const notShared = results.filter((r) => !r.shared).map((r) => r.email);
+  if (ctx.url.searchParams.get("listing") === "0") {
+    const res: ProbesAck = { probes: true, not_shared: notShared };
+    return json(res);
+  }
   const listed = await ctx.store.listAccounts();
   for (const r of results) {
     if (!r.shared) continue;
@@ -273,8 +281,9 @@ async function handleProbes(ctx: RouteContext): Promise<Response> {
   const res: ProbesResponse = {
     generated_at: nowStamp(ctx.now),
     tz,
+    probes: true,
     accounts: rank(listed, { now: ctx.now, dev, ...ttls(ctx.env) }),
-    not_shared: results.filter((r) => !r.shared).map((r) => r.email),
+    not_shared: notShared,
   };
   return json(res);
 }
@@ -282,18 +291,20 @@ async function handleProbes(ctx: RouteContext): Promise<Response> {
 /**
  * Exhausted: Claude Code refused this reporter a request for a limit (the
  * CLI's StopFailure hook, matcher `rate_limit`). Writes only the reporter's
- * own `exhausted:` key; the usage record is read, never written, to fill in an
- * unknown reset (see src/exhausted.ts for how the reset is resolved and how
- * long the record counts).
+ * own `exhausted:` key; the usage and probe records are read, never written,
+ * to fill in an unknown reset from the newer of them (see src/exhausted.ts
+ * for how the reset is resolved and how long the record counts).
  */
 async function handlePutExhausted(ctx: RouteContext): Promise<Response> {
   const body = validateExhaustedBody(await readJsonBody(ctx.request));
-  const [share, usage] = await Promise.all([
+  const [share, usage, probe] = await Promise.all([
     ctx.store.getShare(ctx.email),
     ctx.store.getUsage(ctx.email),
+    ctx.store.getProbe(ctx.email),
   ]);
   if (share === null) return notShared();
-  const resets_at = resolveExhaustedResetsAt(body.window, body.resets_at, usage, ctx.now);
+  const current = numbers({ email: ctx.email, claims: [], ...(usage ?? {}), ...(probe !== null ? { probe } : {}) }) ?? null;
+  const resets_at = resolveExhaustedResetsAt(body.window, body.resets_at, current, ctx.now);
   await ctx.store.putExhausted(
     ctx.email,
     body.reporter,
@@ -315,7 +326,7 @@ async function handlePutExhausted(ctx: RouteContext): Promise<Response> {
  *   PUT    /accounts/:email/claim       claim {dev, machine_id}: 204, 404 not shared
  *   DELETE /accounts/:email/claim       release ?dev=&machine_id= (idempotent, no share check)
  *   PUT    /accounts/:email/exhausted   refusal {window, resets_at?, reporter}: 204, 404 not shared
- *   POST   /probes                      usage probes {reporter, reports[]}: 200 ranked listing + not_shared (?dev, ?tz)
+ *   POST   /probes                      usage probes {reporter, reports[]}: 200 ranked listing + not_shared (?dev, ?tz; ?listing=0: not_shared only)
  *
  * Bodies are validated before the share check, so a bad body is a 400 even
  * for an email that is not shared.

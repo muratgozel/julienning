@@ -1537,12 +1537,23 @@ request, no quota, no 5-hour window started.
   no numbers, a window whose reset has passed, numbers older than 15
   minutes (`accounts`, `next`, `use`; `usageprobe.InteractiveStale`) or an
   hour (the background round), or when the dir is marked signed out. Each
-  result is saved in `probes/`. The newest `ok` per account, when newer
-  than the listing's `collected_at`, goes in one `POST /probes`, whose
-  answer replaces the listing. An old Worker (404 `not found`) or any other
-  failure keeps the listing and is reported. The interactive budget is 45
-  s; a probe still running then is killed, so nothing arrives after the
+  result is saved in `probes/`. One dir per account is probed (the first
+  by config name; a dir marked signed out is asked again all the same). A
+  listing without `"probes": true` (an older Worker) probes nothing and
+  says the Worker needs a redeploy. The newest `ok` per account goes in
+  one `POST /probes`, whose answer replaces the listing: a fresh one when
+  newer than the listing's `numbers_at`, a cached one (a resend) only when
+  the listing neither shows its numbers from a probe nor has numbers at
+  least as new, so a machine whose clock runs ahead never resends forever.
+  A 404 `not found` or any other failure keeps the listing and is
+  reported. The interactive budget is 45 s; a probe still running then is
+  killed, and one not started by then is skipped and reported (`the time
+  for usage probes ran out`), neither cached, so nothing arrives after the
   command decided.
+- **Exit status**: a missing `usage_report` is checked with `claude auth
+  status` whatever `claude -p` exited with (a claude without a login may
+  exit 1); without even an init line, `claude --version` decides whether
+  Claude Code is too old (an old one rejects `--safe-mode` and exits 1).
 - **Messages** (stderr, `julienning: warning:` unless noted):
   `alpha (claude1@x.io) is signed out in ~/.claude-x; sign in again with: julienning login alpha`;
   `could not refresh the usage of alpha (claude1@x.io) in ~/.claude-x (claude did not answer within 10s); its numbers are from 3h ago`
@@ -1558,9 +1569,11 @@ request, no quota, no 5-hour window started.
   `login` drops the mark.
 - **Background round**: claim-sync and the send-usage child, after the
   claim-sync lock is released, run a refresh with the hour threshold on the
-  listing their `shared.json` refresh fetched, so it costs no list of its
-  own and runs at most hourly per machine, only while Claude is used there.
-  Problems go to errors.log (throttled per dir, no emails): `PROBE_FAILED`,
+  listing their `shared.json` refresh fetched and post with `listing=0`, so
+  it costs no list operation of its own and runs at most hourly per
+  machine, only while Claude is used there. It records no logins (a
+  change is told by the next interactive command). Problems go to
+  errors.log (throttled per dir, no emails): `PROBE_FAILED`,
   `PROBE_INVALID` (with the shape), `SIGNED_OUT`.
 
 ## Hosts
@@ -2339,25 +2352,26 @@ Logical account view (as returned):
   "added_at": "2026-09-29T10:00:00Z",
   "session": { "used": 50, "resets_at": "…" },
   "week": { "used": 28, "resets_at": "…" },
+  "numbers_at": "…",
+  "source": "statusline",
   "collected_at": "…",
   "reporter": { "dev": "murat", "machine_id": "…" },
-  "source": "statusline",
-  "last_activity": { "dev": "murat", "machine_id": "…", "at": "…" },
   "claims": [ { "dev": "murat", "machine_id": "…", "at": "…" } ]
 }
 ```
 
-`session`/`week`/`collected_at`/`reporter` are the account's numbers, when
-they were read and who sent them: the newer of the `usage:` record (status
-line) and the `probe:` record (the probe on a tie), `source` saying which
-(`statusline` or `probe`; absent with neither). `last_activity` is the
-`usage:` record's reporter and `collected_at` (absent before its first
-report): only a status line report means someone is on the account, so it,
-not a probe, drives `in_use` and its age. Both fields are new and optional;
-a CLI that predates them reads `collected_at` as the age of the numbers,
-which it still is. A window with `resets_at` null comes only from a probe:
-the window is not running, `used` and `effective` are 0 and `reset_passed`
-is false.
+`session`/`week` are the newer of the `usage:` record (status line) and the
+`probe:` record (the probe on a tie), `numbers_at` when they were read and
+`source` which record it was (`statusline` or `probe`; both absent with
+neither). `collected_at`/`reporter` keep their meaning: the latest status
+line report (absent before the first), the only sign that someone is on the
+account, so they, never a probe, drive `in_use`, its age and a CLI's "in use
+by you". A CLI that predates probes shows UPDATED from `collected_at`
+(older than the numbers when a probe is newer, never newer). A window with
+`resets_at` null comes only from a probe: the window is not running, `used`
+and `effective` are 0 and `reset_passed` is false. Every listing (and the
+POST /probes answer) carries `"probes": true`, the CLI's sign that this
+Worker takes probes.
 
 Routes:
 
@@ -2373,7 +2387,7 @@ Routes:
 | PUT | `/accounts/:email/claim` | `{dev, machine_id}` | 204 upsert own holder; 404 when not shared |
 | DELETE | `/accounts/:email/claim` | `?dev=&machine_id=` (both required) | 204 remove own holder (idempotent) |
 | PUT | `/accounts/:email/exhausted` | `{window: "session"\|"week", resets_at?: ISO\|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first |
-| POST | `/probes` | `{reporter, reports: [{email, session: {used, resets_at}, week: {used, resets_at}, collected_at}]}` (1–32 reports, one per email; body up to 16 KiB); `dev`, `tz` | 200: the GET /accounts JSON document ranked for `dev` (default the reporter's dev) with the batch merged in, plus `not_shared` (reported emails not on the allowlist, nothing stored for them); 400 on a bad body (a `resets_at` null with `used` above 0 included); Bearer only. Each shared report writes `probe:<email>` when its clamped `collected_at` is newer than the stored probe's. The batch is merged over the listing before ranking because listings lag writes |
+| POST | `/probes` | `{reporter, reports: [{email, session: {used, resets_at}, week: {used, resets_at}, collected_at}]}` (1–32 reports, one per email; body up to 16 KiB); `dev`, `tz`, `listing` | 200: the GET /accounts JSON document ranked for `dev` (default the reporter's dev) with the batch merged in, plus `not_shared` (reported emails not on the allowlist, nothing stored for them); with `listing=0` only `{"probes": true, "not_shared": […]}`, without the list operation; 400 on a bad body (a `resets_at` null with `used` above 0 included); Bearer only. Each shared report writes `probe:<email>` when its clamped `collected_at` is newer than the stored probe's (an equal one is a resend). The batch is merged over the listing before ranking because listings lag writes |
 
 Ranking and state: the windows are the account's numbers above (the newer of
 the `usage:` and `probe:` records). Holders with `at` older than
@@ -2384,8 +2398,9 @@ and never refresh a claim.
 `exhausted`: any present window with effective usage ≥ 100 (Claude refuses
 work until it resets), or an `exhausted:` record that still counts
 (`worker/src/exhausted.ts`). A record's stored `resets_at` is the reported
-one when believable, else the usage record's reset for the same window when
-believable, else null; believable means in the future and at most one window
+one when believable, else the reset of the same window in the account's
+numbers (the newer of the usage and probe records) when believable, else
+null; believable means in the future and at most one window
 length plus an hour away (a misparsed far-future date must not pin an
 account). A record counts until its `resets_at`, or until `at` plus one
 window length (5 h / 7 d) when the reset is unknown, and is superseded
@@ -2397,8 +2412,10 @@ pre-refusal numbers after a refusal. `exhausted_until` =
 the latest known reset among the windows at 100% and the valid records (null
 when none is known); `exhausted_window` = `session`/`week` of that reset, or
 of the records when no reset is known (`week` when both), null when not
-exhausted. A window that is not running never blocks and never supersedes a
-record, and sorts like an unknown session reset. `state`: `exhausted` first, else `in_use`
+exhausted. A window that is not running never blocks, and sorts like an
+unknown session reset; numbers read after a record (a probe) that show its
+window not running end the record (nothing in that window can be refused),
+earlier ones do not. `state`: `exhausted` first, else `in_use`
 when another dev reported within the activity TTL, `claimed` when only fresh
 claims by others exist, else `free`; `busy_by` is populated in every state.
 Sort: not exhausted first → not busy first → known usage before unknown →

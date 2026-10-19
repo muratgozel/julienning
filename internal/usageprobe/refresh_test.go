@@ -61,13 +61,13 @@ func TestRefreshProbesOnlyStaleSharedLogins(t *testing.T) {
 	}
 	passed := account("reset@x.io", time.Minute, now)
 	passed.Session.ResetPassed = true
-	listing := &remote.Listing{Accounts: []remote.Account{
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{
 		account("stale@x.io", 20*time.Minute, now),
 		account("fresh@x.io", 2*time.Minute, now),
 		passed,
 		{Email: "never@x.io"},
 	}}
-	answer := &remote.Listing{Accounts: []remote.Account{{Email: "stale@x.io", Source: "probe"}}}
+	answer := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "stale@x.io", Source: "probe"}}}
 	fake := &remote.Fake{ProbesListing: answer}
 
 	rep := refreshWith(t, fake, listing, now, "", InteractiveStale)
@@ -77,7 +77,7 @@ func TestRefreshProbesOnlyStaleSharedLogins(t *testing.T) {
 			t.Errorf("%s probed=%v, want %v", filepath.Base(d), got, want)
 		}
 	}
-	if rep.Probed != 3 || len(rep.Problems) != 0 || rep.Listing != answer {
+	if len(rep.Problems) != 0 || rep.Listing != answer {
 		t.Fatalf("report: %+v", rep)
 	}
 	calls := fake.CallsFor("probes")
@@ -103,7 +103,7 @@ func TestRefreshCacheWindowResendsInsteadOfProbing(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
 	h.write(d, "out.jsonl", okOut(5, 6))
-	listing := &remote.Listing{Accounts: []remote.Account{account("a@x.io", time.Hour, probeNow)}}
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{account("a@x.io", time.Hour, probeNow)}}
 	fake := &remote.Fake{}
 	refreshWith(t, fake, listing, probeNow, "", InteractiveStale)
 	os.Remove(filepath.Join(d, "probe.log"))
@@ -111,8 +111,8 @@ func TestRefreshCacheWindowResendsInsteadOfProbing(t *testing.T) {
 	// Four minutes later the listing still lags (it shows the old numbers):
 	// no second probe, but the cached result goes out again.
 	fake.Reset()
-	rep := refreshWith(t, fake, listing, probeNow.Add(4*time.Minute), "", InteractiveStale)
-	if probed(h.log(d)) || rep.Probed != 0 {
+	refreshWith(t, fake, listing, probeNow.Add(4*time.Minute), "", InteractiveStale)
+	if probed(h.log(d)) {
 		t.Fatal("a login probed less than CacheWindow ago must not be probed again")
 	}
 	calls := fake.CallsFor("probes")
@@ -123,7 +123,7 @@ func TestRefreshCacheWindowResendsInsteadOfProbing(t *testing.T) {
 	// Once the listing shows it, nothing is sent at all.
 	shown := account("a@x.io", 0, probeNow)
 	fake.Reset()
-	refreshWith(t, fake, &remote.Listing{Accounts: []remote.Account{shown}}, probeNow.Add(4*time.Minute), "", InteractiveStale)
+	refreshWith(t, fake, &remote.Listing{Probes: true, Accounts: []remote.Account{shown}}, probeNow.Add(4*time.Minute), "", InteractiveStale)
 	if len(fake.CallsFor("probes")) != 0 {
 		t.Fatal("nothing newer than the listing: nothing to send")
 	}
@@ -139,7 +139,7 @@ func TestRefreshBackgroundIsLessEager(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
 	h.write(d, "out.jsonl", okOut(5, 6))
-	listing := &remote.Listing{Accounts: []remote.Account{account("a@x.io", 30*time.Minute, probeNow)}}
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{account("a@x.io", 30*time.Minute, probeNow)}}
 	refreshWith(t, &remote.Fake{}, listing, probeNow, "", BackgroundStale)
 	if probed(h.log(d)) {
 		t.Fatal("30-minute-old numbers are fresh enough for the background round")
@@ -153,7 +153,7 @@ func TestRefreshOnly(t *testing.T) {
 	for _, d := range []string{a, b} {
 		h.write(d, "out.jsonl", okOut(5, 6))
 	}
-	listing := &remote.Listing{Accounts: []remote.Account{{Email: "a@x.io"}, {Email: "b@x.io"}}}
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}, {Email: "b@x.io"}}}
 	refreshWith(t, &remote.Fake{}, listing, probeNow, "b@x.io", InteractiveStale)
 	if probed(h.log(a)) || !probed(h.log(b)) {
 		t.Fatal("Only limits the refresh to one account")
@@ -165,7 +165,7 @@ func TestRefreshSignedOutDirs(t *testing.T) {
 	d := h.dir("j2", "claude2@x.io")
 	h.write(d, "out.jsonl", initLine+"\n")
 	h.write(d, "auth", "out")
-	listing := &remote.Listing{Accounts: []remote.Account{{Email: "claude2@x.io"}}}
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "claude2@x.io"}}}
 	fake := &remote.Fake{}
 
 	rep := refreshWith(t, fake, listing, probeNow, "", InteractiveStale)
@@ -185,7 +185,7 @@ func TestRefreshSignedOutDirs(t *testing.T) {
 	// in again with plain claude.
 	h.write(d, "out.jsonl", okOut(1, 2))
 	os.Remove(filepath.Join(d, "probe.log"))
-	freshListing := &remote.Listing{Accounts: []remote.Account{account("claude2@x.io", time.Minute, probeNow)}}
+	freshListing := &remote.Listing{Probes: true, Accounts: []remote.Account{account("claude2@x.io", time.Minute, probeNow)}}
 	refreshWith(t, fake, freshListing, probeNow.Add(6*time.Minute), "", InteractiveStale)
 	if !probed(h.log(d)) || IsSignedOut(d, "claude2@x.io") {
 		t.Fatal("a signed-out dir is probed again, and a working login clears the mark")
@@ -211,7 +211,7 @@ func TestSignedOutDirsFromLastEmail(t *testing.T) {
 func TestRefreshRecordsLoginChanges(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("julienning3", "claude2@x.io")
-	listing := &remote.Listing{}
+	listing := &remote.Listing{Probes: true}
 	refreshWith(t, &remote.Fake{}, listing, probeNow, "", InteractiveStale)
 	if cd, _ := mustLoad(t).Find("julienning3"); cd.LastEmail != "claude2@x.io" {
 		t.Fatalf("last_email: %q", cd.LastEmail)
@@ -230,7 +230,7 @@ func TestRefreshPostFailures(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
 	h.write(d, "out.jsonl", okOut(5, 6))
-	listing := &remote.Listing{Accounts: []remote.Account{{Email: "a@x.io"}}}
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}
 
 	old := &remote.Fake{ProbesErr: &remote.Error{Status: 404, Message: "not found"}}
 	rep := refreshWith(t, old, listing, probeNow, "", InteractiveStale)
@@ -250,7 +250,7 @@ func TestRefreshReportsProblems(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
 	h.write(d, "mode", "exit3")
-	rep := refreshWith(t, &remote.Fake{}, &remote.Listing{Accounts: []remote.Account{{Email: "a@x.io"}}}, probeNow, "", InteractiveStale)
+	rep := refreshWith(t, &remote.Fake{}, &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}, probeNow, "", InteractiveStale)
 	if len(rep.Problems) != 1 || rep.Problems[0].Dir.Name != "j1" || !strings.Contains(rep.Problems[0].Err.Error(), "status 3") {
 		t.Fatalf("%+v", rep)
 	}
@@ -296,4 +296,91 @@ func mustLoad(t *testing.T) *config.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+func TestRefreshSkipsAnOldWorker(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	h.write(d, "out.jsonl", okOut(5, 6))
+	fake := &remote.Fake{}
+	rep := refreshWith(t, fake, &remote.Listing{Accounts: []remote.Account{{Email: "a@x.io"}}}, probeNow, "", InteractiveStale)
+	if !rep.OldWorker || probed(h.log(d)) || len(fake.Calls) != 0 {
+		t.Fatalf("a Worker without probes: nothing to probe for (%+v)", rep)
+	}
+	if cd, _ := mustLoad(t).Find("j1"); cd.LastEmail != "a@x.io" {
+		t.Fatal("logins are still recorded")
+	}
+}
+
+func TestRefreshProbesOneDirPerAccount(t *testing.T) {
+	h := newHarness(t)
+	a := h.dir("j1", "a@x.io")
+	b := h.dir("j2", "a@x.io")
+	gone := h.dir("j3", "a@x.io")
+	for _, d := range []string{a, b, gone} {
+		h.write(d, "out.jsonl", okOut(5, 6))
+	}
+	if err := SaveState(State{Dir: gone, Email: "a@x.io", Outcome: SignedOut, ProbedAt: probeNow.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	refreshWith(t, &remote.Fake{}, &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}, probeNow, "", InteractiveStale)
+	if !probed(h.log(a)) || probed(h.log(b)) {
+		t.Fatal("one probe per account")
+	}
+	if !probed(h.log(gone)) {
+		t.Fatal("a dir marked signed out is still asked again")
+	}
+}
+
+func TestRefreshDoesNotCacheProbesThatDidNotRun(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	h.write(d, "out.jsonl", okOut(5, 6))
+	cfg := mustLoad(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rep := Refresh(ctx, Options{Config: cfg, Client: &remote.Fake{}, Now: probeNow, StaleAfter: InteractiveStale,
+		Listing: &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}})
+	if len(rep.Problems) != 1 || !errors.Is(rep.Problems[0].Err, ErrNoTime) || LoadState(d) != nil {
+		t.Fatalf("a probe past the budget is reported, not cached: %+v, state %+v", rep, LoadState(d))
+	}
+}
+
+func TestRefreshDoesNotResendWhatTheListingShows(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	h.write(d, "out.jsonl", okOut(5, 6))
+	stale := &remote.Listing{Probes: true, Accounts: []remote.Account{account("a@x.io", time.Hour, probeNow)}}
+	refreshWith(t, &remote.Fake{}, stale, probeNow, "", InteractiveStale)
+
+	// The listing shows the probe already, stamped earlier than this
+	// machine's clock (it runs ahead; the Worker clamped it): no resend.
+	st := LoadState(d)
+	shown := account("a@x.io", 3*time.Minute, probeNow)
+	shown.Source = "probe"
+	shown.NumbersAt = shown.CollectedAt
+	shown.Session = &remote.Window{Used: st.Session.Used, ResetsAt: st.Session.ResetsAt}
+	shown.Week = &remote.Window{Used: st.Week.Used, ResetsAt: st.Week.ResetsAt}
+	fake := &remote.Fake{}
+	refreshWith(t, fake, &remote.Listing{Probes: true, Accounts: []remote.Account{shown}}, probeNow.Add(time.Minute), "", InteractiveStale)
+	if len(fake.CallsFor("probes")) != 0 {
+		t.Fatalf("numbers the listing shows are not sent again: %+v", fake.Calls)
+	}
+}
+
+func TestRefreshInTheBackground(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	h.write(d, "out.jsonl", okOut(5, 6))
+	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}
+	fake := &remote.Fake{}
+	rep := Refresh(context.Background(), Options{Config: mustLoad(t), Client: fake, Listing: listing, Now: probeNow,
+		StaleAfter: BackgroundStale, Background: true})
+	calls := fake.CallsFor("probes")
+	if len(calls) != 1 || calls[0].Listing || rep.Listing != listing {
+		t.Fatalf("the background asks for no listing: %+v", calls)
+	}
+	if cd, _ := mustLoad(t).Find("j1"); cd.LastEmail != "" {
+		t.Fatal("the background records no logins: their changes are told at a terminal")
+	}
 }

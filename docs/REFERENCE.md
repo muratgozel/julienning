@@ -912,7 +912,8 @@ refreshes the usage of stale accounts logged in here through Claude Code
   of `{"email", "nickname", "local_configs", "signed_out_configs"}` for the
   syncing accounts, which never appear under `accounts`. The Worker document
   says where the numbers came from (`source`: `statusline` or `probe`) and
-  carries the latest status line report as `last_activity`.
+  when they were read (`numbers_at`); `collected_at` and `reporter` stay the
+  latest status line report.
 
 **`julienning current [--json]`** prints `none`, or:
 

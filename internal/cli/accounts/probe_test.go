@@ -135,7 +135,7 @@ func TestSendUsageProbesIdleAccountsOnItsHourlyRefresh(t *testing.T) {
 	calls := stubRefresh(t, func(o usageprobe.Options) usageprobe.Report { return usageprobe.Report{Listing: o.Listing} })
 
 	assertCode(t, f.run("", sendArgs()...), 0)
-	if len(*calls) != 1 || (*calls)[0].StaleAfter != usageprobe.BackgroundStale || (*calls)[0].Listing != f.fake.Listing {
+	if len(*calls) != 1 || (*calls)[0].StaleAfter != usageprobe.BackgroundStale || (*calls)[0].Listing != f.fake.Listing || !(*calls)[0].Background {
 		t.Fatalf("the background round must reuse the hourly listing: %+v", *calls)
 	}
 	if f.ops() != "usage,list" {
@@ -194,5 +194,16 @@ func TestSendUsageClearsItsDirsSignedOutMark(t *testing.T) {
 	assertCode(t, f.run("", sendArgs()...), 0)
 	if usageprobe.IsSignedOut(cd.Dir, email1) {
 		t.Fatal("a status line report proves the login works")
+	}
+}
+
+func TestWindowNotRunningShowsJustThePercent(t *testing.T) {
+	n := time.Unix(nowEpoch, 0)
+	if got := window(&remote.Window{Used: 0}, n, location()); got != "0%" {
+		t.Fatalf("a window a probe found not running: %q", got)
+	}
+	reset := n.Add(time.Hour)
+	if got := window(&remote.Window{Used: 5, ResetsAt: &reset}, n, location()); got != "5% → 18:30" {
+		t.Fatalf("got %q", got)
 	}
 }

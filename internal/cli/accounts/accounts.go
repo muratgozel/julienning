@@ -424,11 +424,14 @@ func busy(what string, who []string, since *time.Time, n time.Time) string {
 	return b.String()
 }
 
+// updated is the age of the numbers shown, from a status line report or a
+// usage probe, whichever the Worker shows.
 func updated(a *remote.Account, n time.Time) string {
-	if a.CollectedAt == nil {
+	at := a.UsageAt()
+	if at == nil {
 		return "never"
 	}
-	return usage.Ago(n.Sub(*a.CollectedAt))
+	return usage.Ago(n.Sub(*at))
 }
 
 // accountsJSON passes the Worker document through (nickname included, null or

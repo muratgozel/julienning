@@ -214,7 +214,7 @@ func (u upkeep) probeIdle(l *remote.Listing) {
 	defer cancel()
 	rep := refreshUsage(ctx, usageprobe.Options{
 		Config: u.cfg, Client: u.client, Listing: l, Now: u.now,
-		StaleAfter: usageprobe.BackgroundStale,
+		StaleAfter: usageprobe.BackgroundStale, Background: true,
 	})
 	rep.Log(u.logger)
 }

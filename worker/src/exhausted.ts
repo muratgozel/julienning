@@ -1,4 +1,4 @@
-import type { ExhaustedReport, ProbeWindow, UsageRecord, WindowName } from "./types";
+import type { ExhaustedReport, ProbeWindow, WindowName } from "./types";
 
 /**
  * Refusal reports (PUT /accounts/:email/exhausted): Claude Code refused a
@@ -43,14 +43,14 @@ function believableReset(ts: string | null, window: WindowName, nowMs: number): 
 
 /**
  * The reset stored with a new report: the reported one if believable, else the
- * account's usage record's reset for the same window if believable (a reset
- * still ahead means that window is the one running, so the one refused), else
- * null (unknown).
+ * account's current numbers' reset for the same window if believable (the
+ * newer of the status line report and the probe; a reset still ahead means
+ * that window is the one running, so the one refused), else null (unknown).
  */
 export function resolveExhaustedResetsAt(
   window: WindowName,
   reported: string | null,
-  usage: UsageRecord | null,
+  usage: { session: ProbeWindow; week: ProbeWindow } | null,
   now: Date,
 ): string | null {
   const nowMs = now.getTime();
@@ -73,23 +73,25 @@ function latestReset(r: ExhaustedReport): number {
 /**
  * Records that still block the account. A record lapses when its window has
  * reset (an unknown reset counts as one window length after `at`, matching the
- * key's expiration; KV expiry is not instant, so this filters too), or when the
+ * key's expiration; KV expiry is not instant, so this filters too), when the
  * usage window of the same name resets later than the refused window can
- * (beyond tolerance): a new window has started since the refusal. Usage
- * percentages are deliberately ignored, see the top of this file.
+ * (beyond tolerance): a new window has started since the refusal, or when
+ * numbers read after the refusal (`usage.at`, a probe) say that window is not
+ * running at all, so nothing in it can be refused. Usage percentages are
+ * deliberately ignored, see the top of this file.
  */
 export function liveExhausted(
   reports: readonly ExhaustedReport[],
-  usage: { session?: ProbeWindow | undefined; week?: ProbeWindow | undefined },
+  usage: { session?: ProbeWindow | undefined; week?: ProbeWindow | undefined; at?: string | undefined },
   nowMs: number,
 ): ExhaustedReport[] {
   return reports.filter((r) => {
     const end = latestReset(r);
     if (!Number.isFinite(end) || end <= nowMs) return false;
     const current = usage[r.window];
-    // A probe saying the window is not running is not taken as a new
-    // window either: the record still lapses at its own reset.
-    if (current === undefined || current.resets_at === null) return true;
+    if (current === undefined) return true;
+    if (current.resets_at === null)
+      return usage.at === undefined || !(Date.parse(usage.at) > Date.parse(r.at));
     return !(Date.parse(current.resets_at) > end + RESET_TOLERANCE_SEC * 1000);
   });
 }

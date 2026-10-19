@@ -146,6 +146,17 @@ func RunAll(ctx context.Context, dirs []string, now time.Time) []Result {
 	return out
 }
 
+// ErrNoTime marks a probe that did not run, or was cut short, because the
+// caller's time budget ran out (not claude's own timeout). It is not cached:
+// nothing was learned about the dir.
+var ErrNoTime = errors.New("the time for usage probes ran out")
+
+// timeoutError is claude's own Timeout. A dir that hangs is not asked again
+// within the same probe (auth status would hang the same way).
+type timeoutError struct{ after time.Duration }
+
+func (e timeoutError) Error() string { return fmt.Sprintf("claude did not answer within %s", e.after) }
+
 // Run probes one config dir. now is when the numbers are taken to be read.
 func Run(ctx context.Context, dir string, now time.Time) Result {
 	r := Result{Dir: dir, At: now.UTC().Truncate(time.Second)}
@@ -153,30 +164,47 @@ func Run(ctx context.Context, dir string, now time.Time) Result {
 		r.Outcome, r.Err = Failed, err
 		return r
 	}
+	if ctx.Err() != nil {
+		return fail(ErrNoTime)
+	}
 	path, err := findClaude()
 	if err != nil {
 		return fail(err)
 	}
 	out, err := runClaude(ctx, path, dir, Args)
 	ans := parseStream(out)
-	if err != nil && ans.report == nil {
+	var te timeoutError
+	if errors.Is(err, ErrNoTime) || errors.As(err, &te) {
 		return fail(err)
 	}
-	if ans.version != "" && !newEnough(ans.version) {
+	version := ans.version
+	if version == "" && ans.report == nil {
+		// No init line: a claude too old for one of the flags exits before
+		// printing anything. Its version says so better than its exit code.
+		version = claudeVersion(ctx, path, dir)
+	}
+	if version != "" && !newEnough(version) {
 		return fail(fmt.Errorf("Claude Code %s cannot report usage; julienning needs %d.%d.%d or newer (run: claude update)",
-			ans.version, MinVersion[0], MinVersion[1], MinVersion[2]))
+			version, MinVersion[0], MinVersion[1], MinVersion[2]))
 	}
 	if ans.report == nil {
-		// No report at all: either nobody is signed in here, or the login
-		// is not a Claude subscription. Only Claude Code can tell, and an
-		// account wrongly called signed out would vanish from `next`.
-		in, err := signedIn(ctx, path, dir)
+		// No report at all, whatever the exit status: either nobody is
+		// signed in here, or the login is not a Claude subscription. Only
+		// Claude Code can tell, and an account wrongly called signed out
+		// would vanish from `next`.
+		in, aerr := signedIn(ctx, path, dir)
 		switch {
-		case err != nil:
-			return fail(fmt.Errorf("Claude Code reported no usage, and its login could not be checked (%v)", err))
+		case errors.Is(aerr, ErrNoTime):
+			return fail(aerr)
+		case aerr != nil && err != nil:
+			return fail(err)
+		case aerr != nil:
+			return fail(fmt.Errorf("Claude Code reported no usage, and its login could not be checked (%v)", aerr))
 		case !in:
 			r.Outcome = SignedOut
 			return r
+		case err != nil:
+			return fail(err)
 		default:
 			return fail(errors.New("Claude Code is signed in but reported no plan usage (not a Claude subscription login?)"))
 		}
@@ -193,8 +221,8 @@ func Run(ctx context.Context, dir string, now time.Time) Result {
 // runClaude runs claude with args against dir and returns its stdout. The
 // process gets its own process group, killed whole on timeout, and stdin
 // from /dev/null; stderr is discarded (it can quote the user's setup).
-func runClaude(ctx context.Context, path, dir string, args []string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func runClaude(parent context.Context, path, dir string, args []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = Env(os.Environ(), dir)
@@ -206,8 +234,11 @@ func runClaude(ctx context.Context, path, dir string, args []string) ([]byte, er
 	stdout.max = maxOutput
 	cmd.Stdout = &stdout
 	err := cmd.Run()
+	if parent.Err() != nil {
+		return stdout.Bytes(), ErrNoTime
+	}
 	if ctx.Err() != nil {
-		return stdout.Bytes(), fmt.Errorf("claude did not answer within %s", timeout)
+		return stdout.Bytes(), timeoutError{timeout}
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -263,6 +294,19 @@ func signedIn(ctx context.Context, path, dir string) (bool, error) {
 		return false, errors.New("unexpected answer from claude auth status")
 	}
 	return *doc.LoggedIn, nil
+}
+
+// claudeVersion is `claude --version`'s version ("2.1.303"), or "" when it
+// cannot be told.
+func claudeVersion(ctx context.Context, path, dir string) string {
+	out, err := runClaude(ctx, path, dir, []string{"--version"})
+	if err != nil {
+		return ""
+	}
+	if m := versionRe.FindStringSubmatch(strings.TrimSpace(string(out))); m != nil {
+		return m[0]
+	}
+	return ""
 }
 
 // answer is what the probe needs from claude's stream-json output.

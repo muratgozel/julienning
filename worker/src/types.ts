@@ -126,10 +126,6 @@ export interface RankedWindow {
   reset_passed: boolean;
 }
 
-/** The latest status line report: who was on the account and when. */
-export interface Activity extends Identity {
-  at: string;
-}
 
 /** `exhausted` wins over the others: an account at 100% cannot take work, busy or not. */
 export type AccountState = "free" | "in_use" | "claimed" | "exhausted";
@@ -142,20 +138,21 @@ export interface RankedAccount {
   added_by?: Identity;
   added_at?: string;
   /**
-   * The newer of the status line report and the probe: `session`/`week` are
-   * its numbers, `collected_at` when they were read and `reporter` who sent
-   * them, `source` which record it was (absent with neither).
+   * `session`/`week` are the newer of the status line report and the probe,
+   * `numbers_at` when they were read and `source` which record it was (all
+   * absent with neither).
    */
   session?: RankedWindow;
   week?: RankedWindow;
-  collected_at?: string;
-  reporter?: Reporter;
+  numbers_at?: string;
   source?: UsageSource;
   /**
-   * The latest status line report, which alone means someone is on the
-   * account (`in_use` and its age). Absent before the first report.
+   * The latest status line report: when, and who sent it. These keep their
+   * meaning from before probes (only a status line report means someone is
+   * on the account), so a probe never shows up here.
    */
-  last_activity?: Activity;
+  collected_at?: string;
+  reporter?: Reporter;
   /** Fresh holders only (expired ones are dropped), the querying dev included. */
   claims: Claim[];
   state: AccountState;
@@ -183,11 +180,22 @@ export interface RankedAccount {
 export interface AccountsResponse {
   generated_at: string;
   tz: string;
+  /**
+   * This Worker takes POST /probes; every handler sets it (a CLI skips
+   * probing when a listing lacks it: an older Worker).
+   */
+  probes?: true;
   accounts: RankedAccount[];
 }
 
 /** POST /probes answer: the listing with the batch merged in. */
 export interface ProbesResponse extends AccountsResponse {
   /** Reported emails that are not on the allowlist; nothing was stored for them. */
+  not_shared: string[];
+}
+
+/** POST /probes?listing=0 answer: no listing, so no list operation. */
+export interface ProbesAck {
+  probes: true;
   not_shared: string[];
 }

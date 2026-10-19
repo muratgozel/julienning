@@ -751,12 +751,11 @@ func TestExhaustedWindow(t *testing.T) {
 func TestPostProbes(t *testing.T) {
 	c, got := newServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","not_shared":["gone@x.io"],
-		  "accounts":[{"rank":1,"email":"a@x.io","source":"probe",
+		io.WriteString(w, `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","probes":true,"not_shared":["gone@x.io"],
+		  "accounts":[{"rank":1,"email":"a@x.io","source":"probe","numbers_at":"2026-09-16T12:19:00Z",
 		    "session":{"used":0,"effective":0,"resets_at":null,"reset_passed":false},
 		    "week":{"used":40,"effective":40,"resets_at":"2026-09-20T10:00:00Z","reset_passed":false},
-		    "collected_at":"2026-09-16T12:19:00Z","reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"},
-		    "last_activity":{"dev":"ali","machine_id":"aaaaaaaaaaaa","at":"2026-09-16T15:10:00+03:00"},
+		    "collected_at":"2026-09-16T15:10:00+03:00","reporter":{"dev":"ali","machine_id":"aaaaaaaaaaaa"},
 		    "claims":[],"state":"in_use","busy_by":["ali"]}]}`)
 	})
 	ist := time.FixedZone("IST", 3*3600)
@@ -766,7 +765,7 @@ func TestPostProbes(t *testing.T) {
 		Session:     ProbeWindow{Used: 0},
 		Week:        ProbeWindow{Used: 40, ResetsAt: &reset},
 		CollectedAt: time.Date(2026, 9, 16, 15, 19, 0, 900000000, ist),
-	}})
+	}}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,12 +782,28 @@ func TestPostProbes(t *testing.T) {
 		t.Fatalf("not_shared: %v", res.NotShared)
 	}
 	a := res.Listing.Accounts[0]
-	if a.Source != "probe" || a.Session.ResetsAt != nil || a.Week.ResetsAt == nil || len(a.Raw) == 0 {
+	if a.Source != "probe" || a.Session.ResetsAt != nil || a.Week.ResetsAt == nil || len(a.Raw) == 0 || !res.Listing.Probes {
 		t.Fatalf("account: %+v", a)
+	}
+	if !a.UsageAt().Equal(time.Date(2026, 9, 16, 12, 19, 0, 0, time.UTC)) {
+		t.Fatalf("usage at: %v", a.UsageAt())
 	}
 	dev, _, at, ok := a.Activity()
 	if !ok || dev != "ali" || !at.Equal(time.Date(2026, 9, 16, 12, 10, 0, 0, time.UTC)) || at.Location() != time.UTC {
 		t.Fatalf("activity: %v %v %v", dev, at, ok)
+	}
+	if strings.Contains(string(res.Listing.Raw), "not_shared") || !strings.Contains(string(res.Listing.Raw), `"probes":true`) {
+		t.Fatalf("the listing's raw document must be GET /accounts' shape: %s", res.Listing.Raw)
+	}
+}
+
+func TestPostProbesWithoutListing(t *testing.T) {
+	c, got := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"probes":true,"not_shared":[]}`)
+	})
+	res, err := c.PostProbes(context.Background(), Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}, "murat", []ProbeReport{{Email: "a@x.io"}}, false)
+	if err != nil || res.Listing != nil || got.rawQ != "dev=murat&listing=0" {
+		t.Fatalf("res %+v err %v query %q", res, err, got.rawQ)
 	}
 }
 
@@ -797,7 +812,7 @@ func TestIsUnknownRoute(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		io.WriteString(w, `{"error":"not found"}`)
 	})
-	_, err := c.PostProbes(context.Background(), Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}, "", []ProbeReport{{Email: "a@x.io"}})
+	_, err := c.PostProbes(context.Background(), Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}, "", []ProbeReport{{Email: "a@x.io"}}, true)
 	if !IsUnknownRoute(err) || IsNotShared(err) {
 		t.Fatalf("an old Worker's 404 must read as an unknown route: %v", err)
 	}
@@ -806,15 +821,18 @@ func TestIsUnknownRoute(t *testing.T) {
 	}
 }
 
-func TestAccountActivityFallback(t *testing.T) {
+func TestAccountActivityAndUsageAt(t *testing.T) {
 	at := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
-	old := Account{Reporter: &Identity{Dev: "ali", MachineID: "aaaaaaaaaaaa"}, CollectedAt: &at}
-	if dev, _, got, ok := old.Activity(); !ok || dev != "ali" || !got.Equal(at) {
-		t.Fatalf("a Worker without last_activity: the reporter is the activity (%v %v %v)", dev, got, ok)
+	later := at.Add(time.Hour)
+	a := Account{Reporter: &Identity{Dev: "ali", MachineID: "aaaaaaaaaaaa"}, CollectedAt: &at}
+	if dev, _, got, ok := a.Activity(); !ok || dev != "ali" || !got.Equal(at) || !a.UsageAt().Equal(at) {
+		t.Fatalf("a Worker without probes: %v %v %v", dev, got, ok)
 	}
-	probed := old
-	probed.Source = "probe"
-	if _, _, _, ok := probed.Activity(); ok {
-		t.Fatal("a probe's reporter is never activity")
+	a.Source, a.NumbersAt = "probe", &later
+	if _, _, got, _ := a.Activity(); !got.Equal(at) || !a.UsageAt().Equal(later) {
+		t.Fatal("a probe dates the numbers, never the activity")
+	}
+	if _, _, _, ok := (&Account{Source: "probe", NumbersAt: &later}).Activity(); ok {
+		t.Fatal("only probes: no activity")
 	}
 }

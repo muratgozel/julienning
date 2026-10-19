@@ -37,7 +37,7 @@ function resetMs(w: RankedWindow | undefined): number {
   return w !== undefined && w.resets_at !== null ? Date.parse(w.resets_at) : Number.POSITIVE_INFINITY;
 }
 
-interface Numbers {
+export interface Numbers {
   session: ProbeWindow;
   week: ProbeWindow;
   collected_at: string;
@@ -52,7 +52,7 @@ interface Numbers {
  * the Worker's clock when written, so neither can win by sitting in the
  * future.
  */
-function numbers(a: StoredAccount): Numbers | undefined {
+export function numbers(a: StoredAccount): Numbers | undefined {
   const status: Numbers | undefined =
     a.session !== undefined && a.week !== undefined && a.collected_at !== undefined && a.reporter !== undefined
       ? { session: a.session, week: a.week, collected_at: a.collected_at, reporter: a.reporter, source: "statusline" }
@@ -173,7 +173,7 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
     const busy_by = [...new Set([...(activeDev ? [activeDev] : []), ...claimingDevs])].sort();
     const exhausted = exhaustion(
       blockingWindow(session, week),
-      liveExhausted(a.exhausted ?? [], { session: nums?.session, week: nums?.week }, nowMs),
+      liveExhausted(a.exhausted ?? [], { session: nums?.session, week: nums?.week, at: nums?.collected_at }, nowMs),
     );
     // Exhaustion beats everything: nobody can use it, whoever is on it. busy_by
     // stays populated so clients still see who is. Activity beats a claim:
@@ -194,12 +194,9 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
       ...(a.added_at !== undefined ? { added_at: a.added_at } : {}),
       ...(session ? { session } : {}),
       ...(week ? { week } : {}),
-      ...(nums !== undefined
-        ? { collected_at: nums.collected_at, reporter: nums.reporter, source: nums.source }
-        : {}),
-      ...(a.reporter !== undefined && a.collected_at !== undefined
-        ? { last_activity: { ...a.reporter, at: a.collected_at } }
-        : {}),
+      ...(nums !== undefined ? { numbers_at: nums.collected_at, source: nums.source } : {}),
+      ...(a.collected_at !== undefined ? { collected_at: a.collected_at } : {}),
+      ...(a.reporter !== undefined ? { reporter: a.reporter } : {}),
       claims,
       state,
       busy_by,

@@ -95,7 +95,7 @@ function ago(iso: string | undefined, now: Date): string {
  * `exhausted (week)` when the reset is unknown (a refusal report without one).
  * Who is on an exhausted account is left to the JSON `busy_by`.
  * `in use by ali, can (12m)`: every other dev on it, with the age of the last
- * status line report (the in_use signal; a newer probe does not reset it).
+ * status line report (`collected_at`, the in_use signal; a probe never is).
  * Claims carry no age: with several holders there is no single meaningful one.
  */
 function stateCell(a: RankedAccount, tz: string, now: Date): string {
@@ -108,7 +108,7 @@ function stateCell(a: RankedAccount, tz: string, now: Date): string {
   if (a.state === "free" || a.busy_by.length === 0) return "free";
   const who = a.busy_by.join(", ");
   if (a.state === "in_use")
-    return `in use by ${who} (${duration(now.getTime() - Date.parse(a.last_activity?.at ?? a.collected_at ?? ""))})`;
+    return `in use by ${who} (${duration(now.getTime() - Date.parse(a.collected_at ?? ""))})`;
   return `claimed by ${who}`;
 }
 
@@ -128,7 +128,7 @@ export function formatText(res: AccountsResponse, now: Date): string {
     windowCell(a.session, res.tz, now),
     windowCell(a.week, res.tz, now),
     stateCell(a, res.tz, now),
-    ago(a.collected_at, now),
+    ago(a.numbers_at ?? a.collected_at, now),
   ]);
 
   const widths = HEADERS.map((h, i) =>

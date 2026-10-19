@@ -41,7 +41,10 @@ var (
 			args = append(args, "--email", email)
 		}
 		cmd := exec.Command(path, args...)
-		cmd.Env = launch.Env(os.Environ(), dir)
+		// The probe's environment: no inherited Claude Code session
+		// variables, no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY that
+		// would sign in something else than the dir's account.
+		cmd.Env = usageprobe.Env(os.Environ(), dir)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = env.Stdin, env.Stdout, env.Stderr
 		err = cmd.Run()
 		var exit *exec.ExitError
@@ -74,7 +77,7 @@ func runLogin(env cli.Env) error {
 		return err
 	}
 	cache := loadCache(env)
-	m, err := resolveTarget(env, cfg, target)
+	m, err := resolveTargetWith(cfg, cache, target)
 	var nl *resolve.NotLocalError
 	switch {
 	case errors.As(err, &nl):

@@ -323,6 +323,11 @@ func loadCache(env cli.Env) *sharedcache.Cache {
 // resolveTarget maps a nickname, email or config name to a registered dir
 // (resolve.Target), preferring the current selection on ties.
 func resolveTarget(env cli.Env, cfg *config.Config, arg string) (resolve.Match, error) {
+	return resolveTargetWith(cfg, loadCache(env), arg)
+}
+
+// resolveTargetWith is resolveTarget with a cache the caller loaded already.
+func resolveTargetWith(cfg *config.Config, cache *sharedcache.Cache, arg string) (resolve.Match, error) {
 	current, ok, err := cfg.Current()
 	if err != nil {
 		return resolve.Match{}, err
@@ -331,7 +336,7 @@ func resolveTarget(env cli.Env, cfg *config.Config, arg string) (resolve.Match, 
 	if ok {
 		cur = &current
 	}
-	return resolve.Target(cfg, loadCache(env), arg, cur)
+	return resolve.Target(cfg, cache, arg, cur)
 }
 
 // accountByTarget maps a nickname, an email or a config name (the dir's

@@ -3,6 +3,7 @@ package usageprobe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +16,15 @@ import (
 
 // fakeClaude is a stand-in for the claude binary. It logs its argv, working
 // directory, stdin and environment to <config dir>/probe.log, answers
-// `auth status` from <dir>/auth ("out" = logged out), and for anything else
-// prints <dir>/out.jsonl, after sleeping when <dir>/mode says "sleep" or
-// exiting 3 when it says "exit3". The config dir is CLAUDE_CONFIG_DIR, or
-// $HOME/.claude when unset, as for the real claude.
+// `--version` from <dir>/version, `auth status` from <dir>/auth ("out" =
+// logged out), and for anything else prints <dir>/out.jsonl, after sleeping
+// when <dir>/mode says "sleep", or exits 3 ("exit3") or 1 without output
+// ("exit1", as a claude without a login or too old for a flag may). The
+// config dir is CLAUDE_CONFIG_DIR, or $HOME/.claude when unset, as for the
+// real claude.
 const fakeClaude = `#!/bin/sh
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+if [ "$1" = --version ]; then cat "$dir/version" 2>/dev/null || echo "2.1.303 (Claude Code)"; exit 0; fi
 {
   printf 'argv:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'
   printf 'pwd: %s\n' "$(pwd -P)"
@@ -38,6 +42,7 @@ fi
 case "$(cat "$dir/mode" 2>/dev/null)" in
   sleep) sleep 30 & wait ;;
   exit3) exit 3 ;;
+  exit1) exit 1 ;;
 esac
 cat "$dir/out.jsonl" 2>/dev/null
 exit 0
@@ -295,6 +300,43 @@ func TestRunFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestRunSignedOutDespiteAnExitStatus(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j2", "claude2@x.io")
+	h.write(d, "mode", "exit1")
+	h.write(d, "auth", "out")
+	if r := Run(context.Background(), d, probeNow); r.Outcome != SignedOut {
+		t.Fatalf("a claude that exits 1 without a login is signed out: %+v", r)
+	}
+	h.write(d, "auth", "in")
+	if r := Run(context.Background(), d, probeNow); r.Outcome != Failed || r.Err.Error() != "claude exited with status 1" {
+		t.Fatalf("signed in, the exit status is the problem: %+v", r)
+	}
+}
+
+func TestRunOldClaudeThatRejectsAFlag(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	h.write(d, "mode", "exit1") // `error: unknown option '--safe-mode'`, nothing on stdout
+	h.write(d, "version", "2.0.77 (Claude Code)")
+	r := Run(context.Background(), d, probeNow)
+	if r.Outcome != Failed || !strings.Contains(r.Err.Error(), "Claude Code 2.0.77 cannot report usage") {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestRunWithNoTimeLeft(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if r := Run(ctx, d, probeNow); !errors.Is(r.Err, ErrNoTime) || probedLog(h.log(d)) {
+		t.Fatalf("a probe past the budget does not run: %+v", r)
+	}
+}
+
+func probedLog(log string) bool { return strings.Contains(log, "argv: -p /usage") }
 
 func TestRunRowMissingHasASignature(t *testing.T) {
 	h := newHarness(t)

@@ -530,8 +530,8 @@ describe("probe records", () => {
     const newerStatus = { ...reported("b@x.io", 80, 80, { agoMin: 5 }), probe: probed("b@x.io", 10, 20, { agoMin: 30 }) };
     const tie = { ...reported("c@x.io", 80, 80, { agoMin: 5 }), probe: probed("c@x.io", 10, 20, { agoMin: 5 }) };
     const byMail = new Map(rank([newerProbe, newerStatus, tie], BASE).map((a) => [a.email, a]));
-    expect(byMail.get("a@x.io")).toMatchObject({ source: "probe", session: { used: 10 }, collected_at: at(-5) });
-    expect(byMail.get("b@x.io")).toMatchObject({ source: "statusline", session: { used: 80 }, collected_at: at(-5) });
+    expect(byMail.get("a@x.io")).toMatchObject({ source: "probe", session: { used: 10 }, numbers_at: at(-5), collected_at: at(-30) });
+    expect(byMail.get("b@x.io")).toMatchObject({ source: "statusline", session: { used: 80 }, numbers_at: at(-5), collected_at: at(-5) });
     expect(byMail.get("c@x.io")).toMatchObject({ source: "probe", session: { used: 10 } });
   });
 
@@ -541,20 +541,31 @@ describe("probe records", () => {
     expect(rank([stale, other], BASE).map((a) => a.email)).toEqual(["b@x.io", "a@x.io"]);
   });
 
-  it("works with only a probe: known usage, no activity, no last_activity", () => {
+  it("works with only a probe: known usage, no activity, no collected_at/reporter", () => {
     const [a] = rank([account("a@x.io", { probe: probed("a@x.io", 3, 4, { dev: "ali" }) })], { ...BASE, dev: "murat" });
-    expect(a).toMatchObject({ source: "probe", state: "free", busy_by: [], reporter: { dev: "ali" } });
-    expect(a!.last_activity).toBeUndefined();
+    expect(a).toMatchObject({ source: "probe", state: "free", busy_by: [], numbers_at: at(-5) });
+    expect(a!.collected_at).toBeUndefined();
+    expect(a!.reporter).toBeUndefined();
     const unknown = account("b@x.io");
     expect(rank([unknown, account("a@x.io", { probe: probed("a@x.io", 3, 4) })], BASE).map((x) => x.email))
       .toEqual(["a@x.io", "b@x.io"]);
   });
 
-  it("keeps activity and last_activity from the status line under a newer probe", () => {
+  it("keeps activity, collected_at and reporter from the status line under a newer probe", () => {
     const a = { ...reported("a@x.io", 50, 50, { agoMin: 3, dev: "ali" }), probe: probed("a@x.io", 60, 60, { agoMin: 1 }) };
     const [r] = rank([a], { ...BASE, dev: "murat" });
-    expect(r).toMatchObject({ state: "in_use", busy_by: ["ali"], source: "probe", reporter: { dev: "murat" } });
-    expect(r!.last_activity).toEqual({ dev: "ali", machine_id: "aabbccddeeff", at: at(-3) });
+    expect(r).toMatchObject({
+      state: "in_use", busy_by: ["ali"], source: "probe", session: { used: 60 }, numbers_at: at(-1),
+      collected_at: at(-3), reporter: { dev: "ali", machine_id: "aabbccddeeff" },
+    });
+  });
+
+  it("lets a later probe saying a window is not running end a refusal of that window", () => {
+    const later = account("a@x.io", {
+      probe: probed("a@x.io", 0, 0, { weekResets: null, agoMin: 2 }),
+      exhausted: [refusal("week", null, { agoMin: 30 })],
+    });
+    expect(rank([later], BASE)[0]!.exhausted).toBe(false);
   });
 
   it("treats a window that is not running as 0% with no reset: never passed, never blocking, sorted after real resets", () => {
@@ -566,10 +577,10 @@ describe("probe records", () => {
     expect(ranked[1]!.exhausted).toBe(false);
   });
 
-  it("is not superseded as a refusal by a window that is not running", () => {
+  it("is not ended by a window that was not running before the refusal", () => {
     const a = account("a@x.io", {
-      probe: probed("a@x.io", 0, 0, { weekResets: null }),
-      exhausted: [refusal("week", 600)],
+      probe: probed("a@x.io", 0, 0, { weekResets: null, agoMin: 30 }),
+      exhausted: [refusal("week", 600, { agoMin: 10 })],
     });
     expect(rank([a], BASE)[0]).toMatchObject({ exhausted: true, exhausted_window: "week" });
   });

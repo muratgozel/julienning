@@ -72,7 +72,7 @@ func parseListing(body []byte) (*Listing, error) {
 	return &l, nil
 }
 
-func (c *httpClient) PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport) (*ProbeResult, error) {
+func (c *httpClient) PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport, listing bool) (*ProbeResult, error) {
 	out := make([]ProbeReport, len(reports))
 	for i, r := range reports {
 		r.Session.ResetsAt = truncUTC(r.Session.ResetsAt)
@@ -80,18 +80,17 @@ func (c *httpClient) PostProbes(ctx context.Context, reporter Identity, dev stri
 		r.CollectedAt = r.CollectedAt.UTC().Truncate(time.Second)
 		out[i] = r
 	}
-	var q url.Values
+	q := url.Values{}
 	if dev != "" {
-		q = url.Values{"dev": {dev}}
+		q.Set("dev", dev)
+	}
+	if !listing {
+		q.Set("listing", "0")
 	}
 	body, err := c.do(ctx, http.MethodPost, "/probes", q, struct {
 		Reporter Identity      `json:"reporter"`
 		Reports  []ProbeReport `json:"reports"`
 	}{reporter, out})
-	if err != nil {
-		return nil, err
-	}
-	l, err := parseListing(body)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +100,24 @@ func (c *httpClient) PostProbes(ctx context.Context, reporter Identity, dev stri
 	if err := json.Unmarshal(body, &extra); err != nil {
 		return nil, malformed(err)
 	}
-	return &ProbeResult{Listing: l, NotShared: extra.NotShared}, nil
+	res := &ProbeResult{NotShared: extra.NotShared}
+	if !listing {
+		return res, nil
+	}
+	// The listing's Raw is what `accounts --json` prints: without the
+	// batch's own not_shared it is the same document GET /accounts gives.
+	doc, err := decodeObject(body)
+	if err != nil {
+		return nil, malformed(err)
+	}
+	delete(doc, "not_shared")
+	if body, err = json.Marshal(doc); err != nil {
+		return nil, fmt.Errorf("encode listing: %w", err)
+	}
+	if res.Listing, err = parseListing(body); err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // truncUTC is whole seconds in UTC; the Worker stores no sub-second resets.

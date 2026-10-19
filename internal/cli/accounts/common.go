@@ -148,6 +148,10 @@ func window(w *remote.Window, now time.Time, loc *time.Location) string {
 	if w == nil {
 		return "unknown"
 	}
+	if w.ResetsAt == nil && !w.ResetPassed {
+		// A probe found the window not running: nothing used, nothing to reset.
+		return usage.FormatPercent(w.Percent()) + "%"
+	}
 	reset := "?"
 	if w.ResetsAt != nil {
 		reset = usage.FormatReset(*w.ResetsAt, now, loc)

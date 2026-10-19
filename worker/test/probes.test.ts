@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   A,
   ALI,
+  ControlledKV,
+  exhaustedOf,
+  putExhausted,
+  viaKv,
   B,
   byEmail,
   C,
@@ -42,15 +46,17 @@ describe("POST /probes", () => {
     expect(ttl).toBeLessThanOrEqual(8 * 24 * 3600 + 1);
     expect(await probeOf(A)).toMatchObject({ session: { used: 30 }, week: { used: 40 }, reporter: MURAT });
 
-    expect(Object.keys(res).sort()).toEqual(["accounts", "generated_at", "not_shared", "tz"]);
+    expect(Object.keys(res).sort()).toEqual(["accounts", "generated_at", "not_shared", "probes", "tz"]);
     expect(res.not_shared).toEqual([]);
     const a = byEmail(res, A);
     expect(a.rank).toBe(1);
     expect(a.source).toBe("probe");
     expect(a.session).toMatchObject({ used: 30, effective: 30, reset_passed: false });
     expect(a.week).toMatchObject({ used: 40, effective: 40 });
-    expect(a.reporter).toEqual(MURAT);
-    expect(a.last_activity).toBeUndefined();
+    expect(a.numbers_at).toBeDefined();
+    // collected_at/reporter are the status line report's: none yet.
+    expect(a.collected_at).toBeUndefined();
+    expect(a.reporter).toBeUndefined();
   });
 
   it("lists the probe on GET /accounts and GET /accounts/:email too", async () => {
@@ -110,8 +116,8 @@ describe("probe and status line together", () => {
     await putUsage(B, ALI, 80, 80, iso(-2));
 
     const res = await listJson("&dev=murat");
-    expect(byEmail(res, A)).toMatchObject({ source: "probe", session: { used: 10 }, collected_at: iso(-2), reporter: MURAT });
-    expect(byEmail(res, B)).toMatchObject({ source: "statusline", session: { used: 80 }, collected_at: iso(-2), reporter: ALI });
+    expect(byEmail(res, A)).toMatchObject({ source: "probe", session: { used: 10 }, numbers_at: iso(-2), collected_at: iso(-30), reporter: ALI });
+    expect(byEmail(res, B)).toMatchObject({ source: "statusline", session: { used: 80 }, numbers_at: iso(-2), collected_at: iso(-2), reporter: ALI });
   });
 
   it("keeps a teammate's in_use from the status line when a newer probe supplies the numbers", async () => {
@@ -123,7 +129,7 @@ describe("probe and status line together", () => {
     expect(a.session!.used).toBe(85);
     expect(a.state).toBe("in_use");
     expect(a.busy_by).toEqual(["ali"]);
-    expect(a.last_activity).toEqual({ ...ALI, at: iso(-3) });
+    expect(a).toMatchObject({ collected_at: iso(-3), reporter: ALI });
 
     const text = await (await call("/accounts?dev=murat")).text();
     expect(text).toMatch(/in use by ali \(3m\)/);
@@ -268,5 +274,28 @@ describe("unshare", () => {
     await seed(probeKey(A), { session: "nope" });
     const a = byEmail(await listJson("&dev=murat"), A);
     expect(a).toMatchObject({ source: "statusline", session: { used: 33 } });
+  });
+});
+
+describe("the background round's batch", () => {
+  it("answers only not_shared with ?listing=0, without a list operation", async () => {
+    await shared(A);
+    const kv = new ControlledKV(env.USAGE);
+    const res = await sendProbes([probeReport(A), probeReport(B)], MURAT, "?listing=0", viaKv(kv));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ probes: true, not_shared: [B] });
+    expect(kv.calls.map((c) => c.op)).not.toContain("list");
+    expect(await probeOf(A)).not.toBeNull();
+  });
+});
+
+describe("refusals and probes", () => {
+  it("fills a refusal's unknown reset from a probe newer than the status line", async () => {
+    await shared(A);
+    const weekReset = iso(2 * 24 * 60);
+    await putUsage(A, ALI, 50, 50, iso(-120));
+    await postProbes([probeReport(A, 50, 97, iso(-1), { week: weekReset })]);
+    await putExhausted(A, "week");
+    expect((await exhaustedOf(A, MURAT))!.record.resets_at).toBe(weekReset);
   });
 });

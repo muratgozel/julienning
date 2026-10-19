@@ -3,12 +3,11 @@ package usageprobe
 import (
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/muratgozel/julienning/internal/paths"
 	"github.com/muratgozel/julienning/internal/usage"
 )
 
@@ -28,7 +27,7 @@ func (r Report) Messages(now time.Time) []Message {
 		for _, a := range r.Listing.Accounts {
 			e := strings.ToLower(a.Email)
 			nicks[e] = a.Nickname
-			numbersAt[e] = a.CollectedAt
+			numbersAt[e] = a.UsageAt()
 		}
 	}
 	label := func(email string) string {
@@ -126,17 +125,4 @@ func scrubEmails(s string) string {
 	return emailRe.ReplaceAllString(s, "<email>")
 }
 
-func shortenHome(path string) string {
-	h, err := os.UserHomeDir()
-	if err != nil || h == "" {
-		return path
-	}
-	h = filepath.Clean(h)
-	if path == h {
-		return "~"
-	}
-	if strings.HasPrefix(path, h+string(filepath.Separator)) {
-		return "~" + path[len(h):]
-	}
-	return path
-}
+func shortenHome(path string) string { return paths.ShortenHome(path) }

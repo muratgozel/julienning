@@ -7,8 +7,6 @@ package resolve
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
@@ -53,7 +51,7 @@ func (e *NotLocalError) Error() string {
 			label += " (" + e.Email + ")"
 		}
 		return fmt.Sprintf("%s is signed out on this machine (%s held it last and has no login now); sign in again with: julienning login %s",
-			label, shortenHome(e.SignedOut[0].Dir), who)
+			label, shortHome(e.SignedOut[0].Dir), who)
 	}
 	const hint = "sign in with `julienning login <config>` or `julienning new-config`"
 	if e.Nickname != "" {
@@ -147,20 +145,4 @@ func Label(cache *sharedcache.Cache, cd config.ConfigDir, email string) string {
 		}
 	}
 	return cd.Name
-}
-
-// shortenHome shows a path under $HOME as ~/…, as every message does.
-func shortenHome(path string) string {
-	h, err := os.UserHomeDir()
-	if err != nil || h == "" {
-		return path
-	}
-	h = filepath.Clean(h)
-	if path == h {
-		return "~"
-	}
-	if strings.HasPrefix(path, h+string(filepath.Separator)) {
-		return "~" + path[len(h):]
-	}
-	return path
 }

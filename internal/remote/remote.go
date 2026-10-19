@@ -90,8 +90,8 @@ type ProbeReport struct {
 }
 
 // ProbeResult is the POST /probes answer: the ranked listing with the batch
-// merged in, and the reported emails the Worker has not on its allowlist
-// (nothing was stored for them).
+// merged in (nil when none was asked for), and the reported emails the
+// Worker has not on its allowlist (nothing was stored for them).
 type ProbeResult struct {
 	Listing   *Listing
 	NotShared []string
@@ -136,13 +136,6 @@ func (w *Window) Percent() float64 {
 	return w.Used
 }
 
-// Activity is the latest status line report: who was on the account, and when.
-type Activity struct {
-	Dev       string    `json:"dev"`
-	MachineID string    `json:"machine_id"`
-	At        time.Time `json:"at"`
-}
-
 // Claim is one holder of the advisory "in use" marker. An account can have
 // several holders (one per dev+machine with live sessions).
 type Claim struct {
@@ -153,24 +146,24 @@ type Claim struct {
 
 // Account is one account in the Worker's JSON response.
 type Account struct {
-	Rank        int        `json:"rank,omitempty"`
-	Email       string     `json:"email"`
-	Nickname    string     `json:"nickname,omitempty"` // team-wide; "" for records created before nicknames existed
-	Session     *Window    `json:"session,omitempty"`
-	Week        *Window    `json:"week,omitempty"`
+	Rank     int     `json:"rank,omitempty"`
+	Email    string  `json:"email"`
+	Nickname string  `json:"nickname,omitempty"` // team-wide; "" for records created before nicknames existed
+	Session  *Window `json:"session,omitempty"`
+	Week     *Window `json:"week,omitempty"`
+	// CollectedAt and Reporter are the latest status line report (only that
+	// means someone is on the account; see Activity), from every Worker.
 	CollectedAt *time.Time `json:"collected_at,omitempty"`
 	Reporter    *Identity  `json:"reporter,omitempty"`
-	// Source says where Session/Week/CollectedAt/Reporter came from: the
-	// newer of the status line report ("statusline") and a usage probe
-	// ("probe"). "" from a Worker that predates probes.
-	Source string `json:"source,omitempty"`
-	// LastActivity is the latest status line report, which alone means
-	// someone is on the account. nil from a Worker that predates probes;
-	// read it through Activity, which falls back to Reporter/CollectedAt.
-	LastActivity *Activity `json:"last_activity,omitempty"`
-	Claims       []Claim   `json:"claims"`
-	State        string    `json:"state"`
-	BusyBy       []string  `json:"busy_by"` // other devs holding or actively using it, in every state
+	// Source says where Session/Week came from: the newer of the status
+	// line report ("statusline") and a usage probe ("probe"), and NumbersAt
+	// when they were read. Both absent from a Worker that predates probes;
+	// read the time through UsageAt.
+	Source    string     `json:"source,omitempty"`
+	NumbersAt *time.Time `json:"numbers_at,omitempty"`
+	Claims    []Claim    `json:"claims"`
+	State     string     `json:"state"`
+	BusyBy    []string   `json:"busy_by"` // other devs holding or actively using it, in every state
 
 	// Exhausted: a window is at 100%, or Claude refused a request for a
 	// limit, so it refuses work until a reset. ExhaustedUntil is the reset
@@ -190,19 +183,26 @@ type Account struct {
 }
 
 // Activity returns who sent the latest status line report and when, or
-// ok=false when there is none. A Worker from before probes has no
-// last_activity, but there Reporter/CollectedAt always are the status line's.
+// ok=false when there is none: the only signal that someone is on the
+// account (a usage probe never is).
 func (a *Account) Activity() (dev, machineID string, at time.Time, ok bool) {
-	if l := a.LastActivity; l != nil {
-		return l.Dev, l.MachineID, l.At, true
+	if a.CollectedAt == nil {
+		return "", "", time.Time{}, false
 	}
-	if a.Source == "" && a.CollectedAt != nil {
-		if a.Reporter != nil {
-			dev, machineID = a.Reporter.Dev, a.Reporter.MachineID
-		}
-		return dev, machineID, *a.CollectedAt, true
+	if a.Reporter != nil {
+		dev, machineID = a.Reporter.Dev, a.Reporter.MachineID
 	}
-	return "", "", time.Time{}, false
+	return dev, machineID, *a.CollectedAt, true
+}
+
+// UsageAt is when Session/Week were read: NumbersAt, or CollectedAt from a
+// Worker that predates probes (there the numbers are always the status
+// line's). nil when nothing was ever read.
+func (a *Account) UsageAt() *time.Time {
+	if a.NumbersAt != nil {
+		return a.NumbersAt
+	}
+	return a.CollectedAt
 }
 
 // IsExhausted reports whether the account cannot take work until a reset.
@@ -244,7 +244,10 @@ func (a *Account) ExhaustedWindow() string {
 type Listing struct {
 	GeneratedAt time.Time `json:"generated_at"`
 	TZ          string    `json:"tz"`
-	Accounts    []Account `json:"accounts"`
+	// Probes: the Worker takes POST /probes. A Worker that predates them
+	// omits it, and then nothing is probed.
+	Probes   bool      `json:"probes"`
+	Accounts []Account `json:"accounts"`
 
 	// Raw is the whole response body; see Account.Raw.
 	Raw json.RawMessage `json:"-"`
@@ -268,10 +271,11 @@ type Client interface {
 	// PutExhausted marks a shared account exhausted after Claude refused a
 	// request for a usage limit (IsNotShared for an unshared email).
 	PutExhausted(ctx context.Context, email string, r ExhaustedReport) error
-	// PostProbes stores usage probes (one report per account) and returns
-	// the listing ranked for dev with them merged in. IsUnknownRoute means
+	// PostProbes stores usage probes (one report per account) and, with
+	// listing, returns the listing ranked for dev with them merged in
+	// (without, the Worker saves a KV list operation). IsUnknownRoute means
 	// the Worker predates probes.
-	PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport) (*ProbeResult, error)
+	PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport, listing bool) (*ProbeResult, error)
 	// PutClaim adds or refreshes this dev+machine's claim.
 	PutClaim(ctx context.Context, email string, id Identity) error
 	// DeleteClaim removes only this dev+machine's claim (idempotent).
@@ -340,10 +344,8 @@ func (l *Listing) normalize() {
 
 func (a *Account) normalize() {
 	utcPtr(&a.CollectedAt)
+	utcPtr(&a.NumbersAt)
 	utcPtr(&a.ExhaustedUntil)
-	if a.LastActivity != nil {
-		a.LastActivity.At = a.LastActivity.At.UTC()
-	}
 	a.Session.normalize()
 	a.Week.normalize()
 	for i := range a.Claims {

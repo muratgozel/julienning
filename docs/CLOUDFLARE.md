@@ -268,11 +268,12 @@ Writes happen on:
   older than the stored one writes nothing;
 - `POST /probes`: one write to `probe:<email>` per account in the batch whose
   probe is newer than the stored one (two reads each, and one list for the
-  answer). A CLI probes an account only when its numbers are older than 15
-  minutes (`accounts`, `next`, `use`) or an hour (the background round, at
-  most every 10 minutes per machine), and never the same login twice within
-  5 minutes, so an account is probed about once an hour while nobody uses
-  it and not at all while a status line keeps it fresh;
+  answer, none for the background round's `listing=0`). A CLI probes an
+  account only when its numbers are older than 15 minutes (`accounts`,
+  `next`, `use`) or an hour (the background round, at most hourly per
+  machine, riding on its allowlist refresh), and never the same login twice
+  within 5 minutes, so an account is probed about once an hour while nobody
+  uses it and not at all while a status line keeps it fresh;
 - `PUT claim`: one write to that holder's own key, on session start plus a
   refresh at most hourly;
 - `PUT exhausted`: one write to that reporter's own key, once per refused

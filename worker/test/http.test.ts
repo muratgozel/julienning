@@ -773,7 +773,8 @@ describe("response formats", () => {
     expect(res.tz).toBe("UTC");
     expect(res.generated_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(res.accounts[0]!.rank).toBe(1);
-    expect(Object.keys(res).sort()).toEqual(["accounts", "generated_at", "tz"]);
+    expect(Object.keys(res).sort()).toEqual(["accounts", "generated_at", "probes", "tz"]);
+    expect(res.probes).toBe(true);
     expect(Object.keys(res.accounts[0]!).sort()).toEqual([
       "added_at",
       "added_by",
@@ -784,8 +785,8 @@ describe("response formats", () => {
       "exhausted",
       "exhausted_until",
       "exhausted_window",
-      "last_activity",
       "nickname",
+      "numbers_at",
       "rank",
       "reporter",
       "session",
