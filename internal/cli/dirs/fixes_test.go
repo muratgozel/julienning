@@ -309,7 +309,7 @@ func TestUninstallPurgeRemovesEveryStateFile(t *testing.T) {
 	h := newHarness(t)
 	installed(t, h)
 	versions, link := installBinary(t, h)
-	for _, name := range []string{"errors.log", "errors.log.trim", "update-check.json", "claim-sync.lock", ".claims-reconciled", ".last-STATUS", ".last-X-1a2b3c4d", ".config.json.12345", "sent/1a2b3c4d.json", "sent/1a2b3c4d.inflight", "sent/.tmp-99", "sent/a@b.io.json"} {
+	for _, name := range []string{"errors.log", "errors.log.trim", "update-check.json", "claim-sync.lock", ".claims-reconciled", ".last-STATUS", ".last-X-1a2b3c4d", ".config.json.12345", "sent/1a2b3c4d.json", "sent/1a2b3c4d.inflight", "sent/.tmp-99", "sent/a@b.io.json", "probes/bd1e1feb.json", "probes/.tmp-12"} {
 		h.writeFile(filepath.Join(h.jl, name), "x")
 	}
 	for _, name := range []string{"dev", "0.2.9-rc.1", ".download-123.tar.gz", ".0.3.1.4567.tmp"} {

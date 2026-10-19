@@ -72,3 +72,24 @@ func TestLabel(t *testing.T) {
 		t.Fatal("label")
 	}
 }
+
+func TestNotLocalNamesTheSignedOutDir(t *testing.T) {
+	cfg, cache, _, _ := fixture(t)
+	// julienning3 has no login; it held claude9 last.
+	cfg.Configs[2].LastEmail = "claude9@x.io"
+	_, err := Target(cfg, cache, "nine", nil)
+	var nl *NotLocalError
+	if !errors.As(err, &nl) || len(nl.SignedOut) != 1 || nl.SignedOut[0].Name != "julienning3" {
+		t.Fatalf("got %v", err)
+	}
+	want := "nine (claude9@x.io) is signed out on this machine (~/.claude-julienning3 held it last and has no login now); sign in again with: julienning login nine"
+	if err.Error() != want {
+		t.Fatalf("message:\n got %s\nwant %s", err, want)
+	}
+
+	// A dir now logged into someone else is not "signed out" of claude9.
+	os.WriteFile(filepath.Join(cfg.Configs[2].Dir, ".claude.json"), []byte(`{"oauthAccount":{"emailAddress":"other@x.io"}}`), 0o600)
+	if _, err := Target(cfg, cache, "nine", nil); !errors.As(err, &nl) || len(nl.SignedOut) != 0 || !strings.Contains(err.Error(), "is shared but not logged in") {
+		t.Fatalf("got %v", err)
+	}
+}

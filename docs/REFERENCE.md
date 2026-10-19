@@ -24,6 +24,7 @@ Every julienning command, flag, output, file and error in one page, with output 
 - [Other machines](#other-machines)
 - [How claims work](#how-claims-work)
 - [How usage reaches KV](#how-usage-reaches-kv)
+- [Usage probes](#usage-probes)
 - [How exhaustion is detected](#how-exhaustion-is-detected)
 - [Undo](#undo)
 - [Web view](#web-view)
@@ -50,14 +51,19 @@ entered at `julienning setup` and shared out of band.
 
 - **No auth tokens.** julienning never reads, copies or sends Claude
   credentials, and never opens the `<dir>/sessions/*.key` files. Signing in is
-  Claude Code's own flow; `julienning login TARGET` only starts `claude` with
-  the right `CLAUDE_CONFIG_DIR`.
+  Claude Code's own flow; `julienning login TARGET` only runs
+  `claude auth login` with the right `CLAUDE_CONFIG_DIR`, and
+  [usage probes](#usage-probes) only run `claude -p "/usage"`, so Claude Code
+  fetches an account's usage with its own login.
 - **What it touches:** it sets `CLAUDE_CONFIG_DIR` (and unsets it for
   `~/.claude`, see [Default dir](#default-dir)). It reads the account email
   (`oauthAccount.emailAddress` in `~/.claude.json` for `~/.claude`,
   `<dir>/.claude.json` otherwise) and the JSON Claude Code pipes to status line
   scripts (model, context %, `rate_limits.five_hour` / `seven_day` used % and
-  reset time). For the session picker it reads Claude Code's live-session
+  reset time), and of the `/usage` report it reads only the session and
+  weekly used % with their reset times (the rest, which describes your local
+  sessions, is thrown away), plus `loggedIn` from `claude auth status`. For
+  the session picker it reads Claude Code's live-session
   registry (`<dir>/sessions/<pid>.json`) and the first and last 256 KB of recent
   transcripts; a session you pick from another dir is moved between your
   config dirs, and the `.git` entry of its working directory (or the nearest
@@ -301,6 +307,13 @@ sign in:
 
 ```
 julienning: beta (claude2@example.com) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config`
+```
+
+When Claude Code signed a dir out and cleared its login, julienning still
+knows which account the dir held last, and says so:
+
+```
+julienning: beta (claude2@example.com) is signed out on this machine (~/.claude-sixtynine held it last and has no login now); sign in again with: julienning login beta
 ```
 
 `nick` and `unshare` act on the team account, so it need not be logged in
@@ -556,8 +569,11 @@ The selection is written to `~/.julienning/current` and is machine-wide: the
 next `claude` in any terminal uses it.
 
 **`next`** syncs this machine's claims, asks the Worker for the ranking (as
-you: your own claims and reports never count as busy) and takes the best
-account that has a registered, logged-in dir here. If several dirs are logged
+you: your own claims and reports never count as busy), refreshes the usage
+of stale accounts logged in here through Claude Code and waits for it (see
+[Usage probes](#usage-probes); a few seconds, and only when something is
+stale), then takes the best account that has a registered, logged-in dir
+here that is not signed out. If several dirs are logged
 into it, the selected one wins, else the first by config name. If your current
 account ranks level with the winner, you stay. The Worker ranks exhausted
 accounts (a window at 100%) after every usable one, so `next` only lands on
@@ -572,7 +588,8 @@ and needs the Worker: without it,
 
 **`use TARGET`** takes a nickname, an email or a config name (see
 [Nicknames](#nicknames)) and works offline (it falls back to the cached
-allowlist with a warning). A config name reaches any registered dir, also one
+allowlist with a warning). Online, it refreshes the target's usage the same
+way before the summary line, that account only. A config name reaches any registered dir, also one
 nobody is signed into; `use` then warns
 (`julienning: warning: julienning3 is not logged in yet; run: julienning login julienning3`),
 as it does for a dir whose account is not shared, and starts a plain new
@@ -837,8 +854,9 @@ differs or a file could not be read. Without a terminal, plain `sync` refuses an
 
 ### Other commands
 
-**`julienning accounts [--json]`** syncs claims, refreshes the allowlist and
-prints the ranking:
+**`julienning accounts [--json]`** syncs claims, refreshes the allowlist,
+refreshes the usage of stale accounts logged in here through Claude Code
+(see [Usage probes](#usage-probes)) and prints the ranking:
 
 ```
 #  NICK     ACCOUNT              SESSION      WEEK              STATE                              LOCAL                   UPDATED
@@ -877,17 +895,24 @@ prints the ranking:
   UPDATED `-`; it disappears once the listing has the account, or after the
   10 minutes.
 - LOCAL: the registered dirs here logged into that account, as paths, `*` on
-  the selected one, `-` for none.
+  the selected one, then the dirs signed out of it marked ` (signed out)`
+  (Claude Code signed the dir out, or a usage probe found its login gone;
+  its sessions are still there: `julienning login NICKNAME` signs in again),
+  `-` for none.
+- UPDATED: the age of the numbers, from a status line report or a
+  [usage probe](#usage-probes), whichever is newer.
 - Order: not exhausted first (exhausted accounts last, the one that frees up
   first on top), then not busy, then accounts with usage before those
   without, then session %, week %, session reset, email.
 - `--json`: the Worker document (each account's `nickname` is `null` when it
   has none; `exhausted`, `exhausted_until` and `exhausted_window`, `null`
   unless exhausted) with
-  `local_config` and `local_configs` (config names) added to every account,
-  plus a top-level `syncing` array (always present) of
-  `{"email", "nickname", "local_configs"}` for the syncing accounts, which
-  never appear under `accounts`.
+  `local_config`, `local_configs` and `signed_out_configs` (config names)
+  added to every account, plus a top-level `syncing` array (always present)
+  of `{"email", "nickname", "local_configs", "signed_out_configs"}` for the
+  syncing accounts, which never appear under `accounts`. The Worker document
+  says where the numbers came from (`source`: `statusline` or `probe`) and
+  carries the latest status line report as `last_activity`.
 
 **`julienning current [--json]`** prints `none`, or:
 
@@ -974,10 +999,27 @@ Until its account is shared and named, the new dir is reached by its config
 name; once it is logged into an account that is already shared, its nickname
 works right away.
 
-**`julienning login TARGET [-- claude args...]`** runs `claude` against the
-dir TARGET resolves to (see [Nicknames](#nicknames)) so you can sign in;
-arguments after `--` go to claude. A fresh dir nobody is signed into has only
-its config name (`julienning login julienning3`).
+**`julienning login TARGET [-- claude args...]`** signs the dir TARGET
+resolves to (see [Nicknames](#nicknames)) into its account with
+`claude auth login`, right in this terminal, then checks which account it
+got. For a nickname or email the login page is pre-filled with that account.
+A fresh dir nobody is signed into has only its config name
+(`julienning login julienning3`). When no dir here is logged into the
+account because Claude Code signed it out, `login` signs in again in the dir
+that held it last (its sessions are still there), but only when Claude Code
+confirms nobody is signed in there:
+
+```
+julienning: note: ~/.claude-sixtynine held beta (claude2@example.com) last and has no login now; signing in there again (its sessions are still there)
+Signed in: beta (claude2@example.com) in ~/.claude-sixtynine.
+```
+
+If the browser was signed into another account, the dir ends up on that one
+and `login` says so (exit 1):
+`~/.claude-sixtynine is now signed in as claude9 (claude9@example.com), not beta (claude2@example.com): the browser was signed into claude9. Sign out of claude.ai there (or use a private window) and run: julienning login beta`.
+Whenever a dir changes accounts, julienning notes that the sessions in it
+stay there, under the new account. Arguments after `--` start plain `claude`
+with them instead, as before, without the check.
 
 **`julienning share EMAIL [--nick NAME]`** adds an account to the team
 allowlist under a nickname (default: the email's local part). Sharing an
@@ -1316,6 +1358,41 @@ one is dropped, and a `collected_at` ahead of the Worker's clock is clamped to
 it, so one machine with a fast clock cannot make everyone else's reports look
 stale.
 
+## Usage probes
+
+The status line only reports while someone uses an account through
+julienning. When a teammate uses it with plain Claude Code (or on claude.ai),
+or nobody has used it past its weekly reset, its numbers go stale. So
+`accounts`, `next` and `use` (and, at most hourly, the background processes
+while Claude is in use) ask Claude Code itself: they run
+`claude -p "/usage"` against each stale account's config dir and send what it
+reports to the Worker, which then shows it to the whole team.
+
+- Claude Code fetches the account's own numbers from Claude, whoever spent
+  them, with its own login. julienning never reads credentials, and only the
+  numbers are kept (the rest of the /usage report, which describes your
+  local sessions, is thrown away). It is a local command: no model request,
+  no quota used, no 5-hour window started.
+- Only shared accounts logged in on this machine are probed, never a
+  personal one. An account is stale when its numbers are older than 15
+  minutes (an hour for the background), a window's reset has passed, or it
+  has none. A login is never probed twice within 5 minutes.
+- It takes about 1.5 seconds; up to four accounts are probed at once, each
+  for at most 10 seconds, and the commands wait for all of them before
+  showing or ranking anything.
+- It needs Claude Code 2.1.301 or newer and a Worker deployed with this
+  release.
+- When Claude Code has no login in a dir, the account is shown as signed out
+  there (`accounts` LOCAL `(signed out)`), `next` skips that dir, and you are
+  told how to sign in again:
+
+```
+julienning: warning: beta (claude2@example.com) is signed out in ~/.claude-sixtynine; sign in again with: julienning login beta
+```
+
+A probe that fails says why and what the numbers are based on instead:
+`julienning: warning: could not refresh the usage of beta (claude2@example.com) in ~/.claude-sixtynine (claude did not answer within 10s); its numbers are from 3h ago`.
+
 ## How exhaustion is detected
 
 Two signals mark an account exhausted; either is enough, and the account
@@ -1532,7 +1609,8 @@ generated 2026-09-29 20:28 (UTC)
 
 The Worker is in `worker/` (TypeScript, wrangler v4, KV binding `USAGE`,
 secret `AUTH_TOKEN`). Every writer has its own KV key (`share:<email>`, which
-also holds the nickname, `usage:<email>`, `claim:<email>:<dev>:<machine_id>`),
+also holds the nickname, `usage:<email>`, `probe:<email>`,
+`claim:<email>:<dev>:<machine_id>`, `exhausted:<email>:<dev>:<machine_id>`),
 so concurrent requests never overwrite each other's data. A nickname rename is
 the one rewrite, and the nickname check is read-then-write; the two races that
 accepts are in [docs/CLOUDFLARE.md](CLOUDFLARE.md#14-kv-limits). [docs/CLOUDFLARE.md](CLOUDFLARE.md) walks through
@@ -1631,6 +1709,9 @@ newest 500 lines once it passes 1 MB.
 | `CLAIM_SYNC_FAILED` | claim reconciliation failed (Worker unreachable, lock, unreadable dir) |
 | `SHARE_FAILED` | the account of a dir `new-config` created could not be shared yet; the share stays pending and is retried. `nickname taken: "delta" belongs to another team account` → pick another with `julienning setup`; otherwise the Worker or the account file says why. Also written once when the account signed in there is marked personal on this machine (then it is never shared) |
 | `SHARED_REFRESH_FAILED` | refreshing `shared.json` failed |
+| `PROBE_FAILED` | a background [usage probe](#usage-probes) failed; the line names the config and why (`claude did not answer within 10s`, `Claude Code 2.1.200 cannot report usage; julienning needs 2.1.301 or newer`, …), or sending the probes to the Worker failed (an old Worker needs a redeploy). At most every 10 minutes per dir |
+| `PROBE_INVALID` | Claude Code's usage report had an unexpected shape; the line ends with its signature (row kinds and field types, never numbers). Claude Code changed its format: report it |
+| `SIGNED_OUT` | a background usage probe found a config dir without a working login; sign in again with `julienning login` |
 | `UPDATE_CHECK_FAILED` | the daily update check failed: the latest-release lookup on GitHub (retried on the next background run), or the auto-update install (download, checksum, the new binary's `version`, the symlink switch; retried at the next daily check, the active version is unchanged), or `JULIENNING_AUTO_UPDATE` is not a boolean. `julienning update` shows the same error right away |
 | `LOG_FAILED` | errors.log itself could not be written; shown only in the status line |
 
@@ -1707,7 +1788,7 @@ Common messages:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off), `tmux` ([tmux mode](#tmux-mode): absent until decided, then `enabled` and `session`) |
+| `config.json` | dev, machine id, Worker URL and token, registered dirs (with `share_on_login` while a share from `new-config` is pending, and `last_email`, the last account seen in the dir), declined emails, `personal_dirs` (where each personal account was last found), `send_min_interval_sec`, `name_prefix`, `auto_update` (absent = on; `false` turns background auto-updates off), `tmux` ([tmux mode](#tmux-mode): absent until decided, then `enabled` and `session`) |
 | `current` | path of the selected config dir (read by the `claude` function) |
 | `pins.json` | [pins](#pins): directory → account email (the `claude` function asks julienning about pins only while it exists) |
 | `hosts.json` | [other machines](#other-machines): name, ssh destination, machine id, home, platform and the paths of julienning, claude and tmux there |
@@ -1719,4 +1800,5 @@ Common messages:
 | `update-check.json` | latest known release, when it was checked, and the version the last auto-update installed (until its one-time notice is shown) |
 | `errors.log` | diagnostics, no emails |
 | `sent/` | send-usage debounce cache and in-flight markers, one `<hash>.json` / `<hash>.inflight` per account (a hash of the email, never the address) |
+| `probes/` | the last [usage probe](#usage-probes) of each registered dir, one `<hash>.json` per dir (a hash of its path) |
 | `claim-sync.lock`, `update.lock`, `.claims-reconciled`, `.last-*` | lock and throttle markers (per-account ones are also named by the hash) |

@@ -49,6 +49,10 @@ func (c *httpClient) ListAccounts(ctx context.Context, dev string) (*Listing, er
 	if err != nil {
 		return nil, err
 	}
+	return parseListing(body)
+}
+
+func parseListing(body []byte) (*Listing, error) {
 	var l Listing
 	if err := json.Unmarshal(body, &l); err != nil {
 		return nil, malformed(err)
@@ -66,6 +70,47 @@ func (c *httpClient) ListAccounts(ctx context.Context, dev string) (*Listing, er
 	l.Raw = body
 	l.normalize()
 	return &l, nil
+}
+
+func (c *httpClient) PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport) (*ProbeResult, error) {
+	out := make([]ProbeReport, len(reports))
+	for i, r := range reports {
+		r.Session.ResetsAt = truncUTC(r.Session.ResetsAt)
+		r.Week.ResetsAt = truncUTC(r.Week.ResetsAt)
+		r.CollectedAt = r.CollectedAt.UTC().Truncate(time.Second)
+		out[i] = r
+	}
+	var q url.Values
+	if dev != "" {
+		q = url.Values{"dev": {dev}}
+	}
+	body, err := c.do(ctx, http.MethodPost, "/probes", q, struct {
+		Reporter Identity      `json:"reporter"`
+		Reports  []ProbeReport `json:"reports"`
+	}{reporter, out})
+	if err != nil {
+		return nil, err
+	}
+	l, err := parseListing(body)
+	if err != nil {
+		return nil, err
+	}
+	var extra struct {
+		NotShared []string `json:"not_shared"`
+	}
+	if err := json.Unmarshal(body, &extra); err != nil {
+		return nil, malformed(err)
+	}
+	return &ProbeResult{Listing: l, NotShared: extra.NotShared}, nil
+}
+
+// truncUTC is whole seconds in UTC; the Worker stores no sub-second resets.
+func truncUTC(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC().Truncate(time.Second)
+	return &u
 }
 
 // GetAccount sends dev so the Worker can tell the caller's own activity from

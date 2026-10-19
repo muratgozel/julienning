@@ -7,12 +7,13 @@ import (
 
 // Call is one recorded request against a Fake.
 type Call struct {
-	Op        string // "list", "get", "share", "nickname", "unshare", "usage", "exhausted", "claim", "unclaim"
+	Op        string // "list", "get", "share", "nickname", "unshare", "usage", "exhausted", "probes", "claim", "unclaim"
 	Nickname  string
 	Email     string
 	Dev       string
 	Usage     *UsageReport
 	Exhausted *ExhaustedReport
+	Probes    []ProbeReport
 	Identity  *Identity
 }
 
@@ -24,6 +25,12 @@ type Fake struct {
 
 	Listing  *Listing
 	Accounts map[string]*Account // by email, for GetAccount
+
+	// ProbesListing is what PostProbes answers (Listing when nil), so a
+	// test decides how the Worker ranked the probed numbers.
+	ProbesListing   *Listing
+	ProbesNotShared []string
+	ProbesErr       error
 
 	ListErr         error
 	GetErr          error
@@ -118,6 +125,22 @@ func (f *Fake) PutUsage(_ context.Context, email string, r UsageReport) error {
 func (f *Fake) PutExhausted(_ context.Context, email string, r ExhaustedReport) error {
 	id := r.Reporter
 	return f.record(Call{Op: "exhausted", Email: email, Dev: id.Dev, Exhausted: &r, Identity: &id}, f.PutExhaustedErr)
+}
+
+func (f *Fake) PostProbes(_ context.Context, reporter Identity, dev string, reports []ProbeReport) (*ProbeResult, error) {
+	id := reporter
+	rs := append([]ProbeReport(nil), reports...)
+	if err := f.record(Call{Op: "probes", Dev: dev, Probes: rs, Identity: &id}, f.ProbesErr); err != nil {
+		return nil, err
+	}
+	l := f.ProbesListing
+	if l == nil {
+		l = f.Listing
+	}
+	if l == nil {
+		l = &Listing{}
+	}
+	return &ProbeResult{Listing: l, NotShared: f.ProbesNotShared}, nil
 }
 
 func (f *Fake) PutClaim(_ context.Context, email string, id Identity) error {

@@ -848,7 +848,7 @@ func TestAccountsJSONNicknames(t *testing.T) {
 	if _, ok := c["nickname"]; ok {
 		t.Errorf("account 3 gained a nickname key: %v", c)
 	}
-	wantKeys := "busy_by,claims,email,local_config,local_configs,nickname,rank,state"
+	wantKeys := "busy_by,claims,email,local_config,local_configs,nickname,rank,signed_out_configs,state"
 	if keys := strings.Join(slices.Sorted(maps.Keys(a)), ","); keys != wantKeys {
 		t.Errorf("account 1 keys = %s, want %s", keys, wantKeys)
 	}
@@ -1244,7 +1244,7 @@ func TestAccountsSyncingRows(t *testing.T) {
 	if locals, _ := s["local_configs"].([]any); len(locals) != 1 || locals[0] != "sixtynine3" {
 		t.Errorf("syncing local_configs = %#v", s["local_configs"])
 	}
-	if keys := strings.Join(slices.Sorted(maps.Keys(s)), ","); keys != "email,local_configs,nickname" {
+	if keys := strings.Join(slices.Sorted(maps.Keys(s)), ","); keys != "email,local_configs,nickname,signed_out_configs" {
 		t.Errorf("syncing keys = %s", keys)
 	}
 }

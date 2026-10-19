@@ -45,6 +45,14 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &re) && re.Status == 404
 }
 
+// IsUnknownRoute reports whether the Worker does not know the route at all
+// (404 "not found"): it was deployed before the route existed and needs a
+// redeploy. An unshared account is a different 404 (IsNotShared).
+func IsUnknownRoute(err error) bool {
+	var re *Error
+	return errors.As(err, &re) && re.Status == 404 && re.Message == "not found"
+}
+
 // Identity is who is claiming an account.
 type Identity struct {
 	Dev       string `json:"dev"`
@@ -63,6 +71,30 @@ type UsageReport struct {
 	Week        UsageWindow `json:"week"`
 	CollectedAt time.Time   `json:"collected_at"`
 	Reporter    Identity    `json:"reporter"`
+}
+
+// ProbeWindow is one window as a usage probe read it. ResetsAt nil (sent as
+// null) means the window is not running; Used is then 0.
+type ProbeWindow struct {
+	Used     float64    `json:"used"`
+	ResetsAt *time.Time `json:"resets_at"`
+}
+
+// ProbeReport is one account in a POST /probes batch: what Claude Code's
+// `/usage` said for a login on this machine.
+type ProbeReport struct {
+	Email       string      `json:"email"`
+	Session     ProbeWindow `json:"session"`
+	Week        ProbeWindow `json:"week"`
+	CollectedAt time.Time   `json:"collected_at"`
+}
+
+// ProbeResult is the POST /probes answer: the ranked listing with the batch
+// merged in, and the reported emails the Worker has not on its allowlist
+// (nothing was stored for them).
+type ProbeResult struct {
+	Listing   *Listing
+	NotShared []string
 }
 
 // Exhausted window names, as the Worker spells them in ExhaustedReport and in
@@ -104,6 +136,13 @@ func (w *Window) Percent() float64 {
 	return w.Used
 }
 
+// Activity is the latest status line report: who was on the account, and when.
+type Activity struct {
+	Dev       string    `json:"dev"`
+	MachineID string    `json:"machine_id"`
+	At        time.Time `json:"at"`
+}
+
 // Claim is one holder of the advisory "in use" marker. An account can have
 // several holders (one per dev+machine with live sessions).
 type Claim struct {
@@ -121,9 +160,17 @@ type Account struct {
 	Week        *Window    `json:"week,omitempty"`
 	CollectedAt *time.Time `json:"collected_at,omitempty"`
 	Reporter    *Identity  `json:"reporter,omitempty"`
-	Claims      []Claim    `json:"claims"`
-	State       string     `json:"state"`
-	BusyBy      []string   `json:"busy_by"` // other devs holding or actively using it, in every state
+	// Source says where Session/Week/CollectedAt/Reporter came from: the
+	// newer of the status line report ("statusline") and a usage probe
+	// ("probe"). "" from a Worker that predates probes.
+	Source string `json:"source,omitempty"`
+	// LastActivity is the latest status line report, which alone means
+	// someone is on the account. nil from a Worker that predates probes;
+	// read it through Activity, which falls back to Reporter/CollectedAt.
+	LastActivity *Activity `json:"last_activity,omitempty"`
+	Claims       []Claim   `json:"claims"`
+	State        string    `json:"state"`
+	BusyBy       []string  `json:"busy_by"` // other devs holding or actively using it, in every state
 
 	// Exhausted: a window is at 100%, or Claude refused a request for a
 	// limit, so it refuses work until a reset. ExhaustedUntil is the reset
@@ -140,6 +187,22 @@ type Account struct {
 	// Raw is the exact JSON object the Worker sent, kept so `--json` output can
 	// pass through fields this binary does not know about yet.
 	Raw json.RawMessage `json:"-"`
+}
+
+// Activity returns who sent the latest status line report and when, or
+// ok=false when there is none. A Worker from before probes has no
+// last_activity, but there Reporter/CollectedAt always are the status line's.
+func (a *Account) Activity() (dev, machineID string, at time.Time, ok bool) {
+	if l := a.LastActivity; l != nil {
+		return l.Dev, l.MachineID, l.At, true
+	}
+	if a.Source == "" && a.CollectedAt != nil {
+		if a.Reporter != nil {
+			dev, machineID = a.Reporter.Dev, a.Reporter.MachineID
+		}
+		return dev, machineID, *a.CollectedAt, true
+	}
+	return "", "", time.Time{}, false
 }
 
 // IsExhausted reports whether the account cannot take work until a reset.
@@ -205,6 +268,10 @@ type Client interface {
 	// PutExhausted marks a shared account exhausted after Claude refused a
 	// request for a usage limit (IsNotShared for an unshared email).
 	PutExhausted(ctx context.Context, email string, r ExhaustedReport) error
+	// PostProbes stores usage probes (one report per account) and returns
+	// the listing ranked for dev with them merged in. IsUnknownRoute means
+	// the Worker predates probes.
+	PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport) (*ProbeResult, error)
 	// PutClaim adds or refreshes this dev+machine's claim.
 	PutClaim(ctx context.Context, email string, id Identity) error
 	// DeleteClaim removes only this dev+machine's claim (idempotent).
@@ -274,6 +341,9 @@ func (l *Listing) normalize() {
 func (a *Account) normalize() {
 	utcPtr(&a.CollectedAt)
 	utcPtr(&a.ExhaustedUntil)
+	if a.LastActivity != nil {
+		a.LastActivity.At = a.LastActivity.At.UTC()
+	}
 	a.Session.normalize()
 	a.Week.normalize()
 	for i := range a.Claims {

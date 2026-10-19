@@ -356,3 +356,46 @@ func TestTmuxModePersistence(t *testing.T) {
 		t.Error("nil config has tmux mode on")
 	}
 }
+
+func TestRecordLogins(t *testing.T) {
+	t.Setenv(EnvHome, t.TempDir())
+	t.Setenv("JULIENNING_REMOTE_URL", "")
+	t.Setenv("JULIENNING_TOKEN", "")
+	c, err := New("murat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Configs = []ConfigDir{{Name: "a", Dir: "/d/a"}, {Name: "b", Dir: "/d/b"}}
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := RecordLogins(map[string]string{"/d/a": "One@x.io", "/d/b": ""})
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("first record: %v %v", changes, err)
+	}
+	got, _ := Load()
+	if a, _ := got.Find("a"); a.LastEmail != "one@x.io" {
+		t.Fatalf("a: %+v", a)
+	}
+	// A dir that lost its login keeps what was recorded; another account
+	// in the dir is a change.
+	changes, err = RecordLogins(map[string]string{"/d/a": "", "/d/b": "two@x.io"})
+	if err != nil || len(changes) != 0 {
+		t.Fatalf("%v %v", changes, err)
+	}
+	changes, err = RecordLogins(map[string]string{"/d/a": "nine@x.io"})
+	if err != nil || len(changes) != 1 || changes[0] != (LoginChange{Name: "a", Dir: "/d/a", From: "one@x.io", To: "nine@x.io"}) {
+		t.Fatalf("%+v %v", changes, err)
+	}
+}
+
+func TestValidateLastEmail(t *testing.T) {
+	c := &Config{Version: SchemaVersion, Dev: "murat", MachineID: "3fa9c2d1e07b", Configs: []ConfigDir{{Name: "a", Dir: "/d/a", LastEmail: "Upper@x.io"}}}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "invalid last_email") {
+		t.Fatalf("got %v", err)
+	}
+	c.Configs[0].LastEmail = "lower@x.io"
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

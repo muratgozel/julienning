@@ -122,6 +122,9 @@ logins (accounts move between dirs), using the cached allowlist:
    ``alpha (claude1@x.io) is shared but not logged in on this machine; sign in with `julienning login <config>` or `julienning new-config` ``
    (without a nickname:
    `no registered config dir on this machine is logged in as x@y; sign in with …`);
+   when a registered dir without a login held it last (`last_email`), the
+   error says so instead:
+   `alpha (claude1@x.io) is signed out on this machine (~/.claude-x held it last and has no login now); sign in again with: julienning login alpha`;
 3. a registered config name → that dir, logged in or not (the only way to
    reach a fresh dir);
 4. otherwise
@@ -176,6 +179,7 @@ integration"); dir-name aliases no longer exist.
 | `update.lock` | selfupdate | auto-update lock (O_EXCL, stale after 10 min) |
 | `errors.log` | usage | diagnostics, never contains emails |
 | `sent/` | usage | send-usage debounce cache + in-flight markers, named by a short hash of the email (no addresses in file names) |
+| `probes/` | usageprobe | the last usage probe of each registered dir, `<hash of the dir path>.json`: `{dir, email, outcome, probed_at, session?, week?}` (outcome `ok`, `signed_out` or `failed`; the windows only with `ok`); the cache window, the numbers re-sent while the Worker's listing lags, and the signed-out mark (see "Usage probes") |
 | `claim-sync.lock`, `.claims-reconciled` | claims | per-machine lock (stale after 60 s), 10-minute reconcile marker |
 | `.last-<CODE>` | usage | error-log throttle markers (email-free names) |
 
@@ -189,7 +193,8 @@ integration"); dir-name aliases no longer exist.
   "remote": { "url": "https://julienning.example.workers.dev", "token": "…" },
   "configs": [
     { "name": "default", "dir": "/Users/murat/.claude" },
-    { "name": "julienning1", "dir": "/Users/murat/.claude-julienning1" },
+    { "name": "julienning1", "dir": "/Users/murat/.claude-julienning1",
+      "last_email": "claude1@x.io" },
     { "name": "julienning2", "dir": "/Users/murat/.claude-julienning2",
       "share_on_login": { "nickname": "delta" } }
   ],
@@ -207,6 +212,18 @@ dir's first login (see new-config); `nickname` absent = the email's local
 part, decided at share time. It must pass the nickname rule (checked on load
 and save). It is removed once the share lands, the email turns out to be
 shared already, or the email is declined; `forget` drops it with the dir.
+`last_email` is optional per dir: the last login julienning saw there
+(lowercased, `config.RecordLogins`; recorded by every usage refresh, which
+reads every registered dir's login, and by `login`). It outlives the login
+on purpose: when Claude Code signs a dir out it can clear `oauthAccount`,
+and `last_email` is then all that still ties the dir (and its sessions) to
+the account. It is never read as the current login. `accounts` lists such a
+dir under that account as signed out, `login NICKNAME` signs in there again,
+and the `NotLocalError` names it. When a refresh finds a dir logged into
+another account than recorded, it records the new one and prints
+`note: ~/.claude-sixtynine was logged into claude2 (claude2@x.io) and is now logged into claude9 (claude9@x.io); the sessions in it stay there, under claude9`
+once. A julienning that predates the field drops it when it saves
+config.json (it is only a hint).
 `personal_dirs` is optional: where `use EMAIL` or a pin last found each
 personal account (lowercased email, absolute clean dir, one entry per email;
 checked on load and save). It is a shortcut past discovery, never trusted
@@ -571,7 +588,7 @@ machine's claims (best effort); clear `current`; delete `pins.json`
 (`Pins:     removed N pins`), because a terminal opened before the uninstall
 keeps the wrapper, which follows pins while the file exists. `--purge` also
 removes julienning's own files (known state files in `~/.julienning`, among
-them `hosts.json`, the `ssh/` control sockets and `received/`; no uninstall
+them `hosts.json`, `sent/`, `probes/`, the `ssh/` control sockets and `received/`; no uninstall
 here ever touches a host, `uninstall --host NAME` does; version
 files named `dev` or semver in the versions dir, and the command symlink only
 when it points into the versions dir), then each directory only if it is
@@ -743,7 +760,7 @@ installed; claude runs in place until it is fixed (turn it off with:
 julienning setup --no-tmux)`. julienning's own launches follow a change at
 once; the shell functions in new terminals.
 
-Launch rule, for `launch.Exec` (use, next, login, new-config), the `claude`
+Launch rule, for `launch.Exec` (use, next, login with claude args after `--`, new-config), the `claude`
 wrapper and the `claude-<nick>` functions: when tmux mode is on, stdin and
 stdout are terminals, `$TMUX` is empty, `$TERM_PROGRAM` is not `vscode` and
 tmux is found, claude runs in a window of that session instead of in place
@@ -817,8 +834,28 @@ tmux is found, claude runs in a window of that session instead of in place
   are named after nicknames, settings.json never names the config). Prints
   `Renamed "julienning1" to "work" (~/.claude-julienning1).`
 - `login NICKNAME|EMAIL|CONFIG [-- args]`: `resolve.Target` (a fresh dir has
-  only its config name; a shared account with no local login is the
-  `NotLocalError`), then `launch.Exec`.
+  only its config name). A shared account no dir is logged into
+  (`NotLocalError`) goes to the first dir by name whose `last_email` is that
+  account and that has no login, but only when `claude auth status` there
+  says not logged in (a dir with a working login is never signed over;
+  failing to ask is an error naming the dir); the note
+  `~/.claude-x held alpha (claude1@x.io) last and has no login now; signing in there again (its sessions are still there)`
+  says so. No such dir:
+  ``alpha (claude1@x.io) is not logged in on this machine, and no signed-out dir here held it last; sign it into a new dir with `julienning new-config`, or into an existing one with `julienning login CONFIG` (see `julienning configs`) ``.
+  With claude args after `--`, `launch.Exec` starts plain claude with them,
+  unchecked, as before. Otherwise `claude auth login` runs in this terminal
+  (never in tmux) against the dir, with `--email <account>` for a nickname
+  or email target (the login page is pre-filled; a config name pre-fills
+  nothing), and its exit status is the error
+  (`claude auth login did not finish (exit status 1)`). Then the dir's login
+  is read back: none is
+  `~/.claude-x still has no login after claude auth login; start claude there and sign in with /login`;
+  it is recorded (`last_email`) and a usage probe's signed-out mark on the
+  dir is dropped; when the dir held another account before,
+  `note: ~/.claude-x was logged into beta (claude2@x.io); the sessions in it stay there, under alpha`;
+  another account than the target is an error (exit 1):
+  `~/.claude-x is now signed in as claude9 (claude9@x.io), not alpha (claude1@x.io): the browser was signed into claude9. Sign out of claude.ai there (or use a private window) and run: julienning login alpha`;
+  success prints `Signed in: alpha (claude1@x.io) in ~/.claude-x.`.
 - `configs [--json]`: `*` current, NAME, NICK (nickname of the dir's current
   login when shared, else `-`), DIR (home-shortened), EMAIL (`(not logged
   in)` / `(unreadable)`), SHARED (`yes` / `no` / `?` when the cache is
@@ -964,7 +1001,10 @@ with: NICK is the team nickname (`-` for legacy records); allowlisted
 accounts that never reported show `-` windows; STATE shows every other holder
 (`in use by ali, can (12m)`); LOCAL lists the registered dirs here logged
 into that email as home-shortened paths, comma-separated, `*` on the
-selected one (`*~/.claude-julienning1`), `-` for none. Rows keep the
+selected one (`*~/.claude-julienning1`), then the dirs signed out of it
+with ` (signed out)` (`usageprobe.SignedOutDirs`: no login but `last_email`
+names the account, or a usage probe found the current login signed out;
+`~/.claude-sixtynine (signed out)`), `-` for none. Rows keep the
 Worker's order (Ranking and state: not exhausted (exhausted ones by
 `exhausted_until` asc) → not busy → known before unknown → session asc →
 week asc → session reset asc → email).
@@ -1004,6 +1044,14 @@ the first) and `local_configs` (config names) per account, and a top-level
 `syncing` array, always present, of `{email, nickname (null when unknown),
 local_configs}`; syncing accounts never go under `accounts`. Before listing,
 run claim reconciliation (below) synchronously and refresh `shared.json`.
+`signed_out_configs` (config names, always an array) is added next to
+`local_configs`, in accounts and syncing rows; signed-out dirs are never in
+`local_configs` or `local_config`.
+
+Between the listing and the table, `accounts` refreshes stale usage through
+usage probes and waits for them (see "Usage probes"); the table shows the
+Worker's answer to the probes, and the refresh's warnings and notes go to
+stderr first.
 
 `current` adds `state: <STATE text>` under the usage line when the account
 is exhausted (only then).
@@ -1019,8 +1067,12 @@ the current selection without re-ranking; nothing selected → same as
 `next`. An explicit TARGET ignores pins; `next` never looks at them)
 `julienning use --clear`
 
-1. Target: `next` ranks via the Worker and picks the first shared account
-   with a registered, logged-in local dir (prefer the current dir on ties:
+1. Target: `next` lists, refreshes stale usage through usage probes and
+   waits for every probe (see "Usage probes"), then ranks on the Worker's
+   answer to the probes, so the account it picks never changes after the
+   picker shows it. It picks the first shared account
+   with a registered, logged-in local dir that is not signed out
+   (`usageprobe.SignedOutDirs`; prefer the current dir on ties:
    `sameRank` compares every Worker sort key but the email, exhausted and
    `exhausted_until` included). The Worker sinks exhausted accounts, so the
    first local one is exhausted only when all are; guarded anyway: a usable
@@ -1043,6 +1095,10 @@ the current selection without re-ranking; nothing selected → same as
    A dir reached by config name may be not logged in or not shared — then warn
    (`julienning3 is not logged in yet; run: julienning login julienning3`),
    skip the session list's move/merge and launch plain.
+   A shared target (on the listing; never offline, never a personal
+   account) has its usage refreshed through usage probes, that account
+   only, before the summary line shows it; the refresh warns when the dir
+   is signed out (the switch still happens).
 2. Set `current` to the target.
 3. Launch mode (stdin and stdout are terminals, not `--no-launch`/`--json`):
    list sessions (below) with the picker; `New session` is the first row and
@@ -1307,7 +1363,10 @@ unreadable `shared.json` does not stop it either). `session-end` only
 requires a registered dir (the login may be gone after `/logout`); when the
 input lacks a session id, the ending session is identified by the registry
 entry whose pid is the hook's parent or grandparent. Only entries for which
-`livesess.CountsAsSession` is true (interactive/bg, not spare, not daemons)
+`livesess.CountsAsSession` is true (interactive/bg, not spare, not daemons,
+not julienning's usage probe: Claude Code registers `claude -p` as kind
+`interactive`, so the probe passes `--name julienning-usage-probe` and
+entries with that name are left out)
 count as live sessions for claims.
 
 `claim-sync [--starting SESSION_ID] [--ending SESSION_ID | --ending-pid PID]` (detached, network
@@ -1416,7 +1475,93 @@ so a silent run can be diagnosed afterwards. The
 send-usage child refreshes `shared.json` when stale and runs claim
 reconciliation at most every 10 minutes; when it did either, it then runs
 the daily update check / auto-update outside the claim-sync lock. A 404 `account is not shared` from
-the Worker removes the email from `shared.json`.
+the Worker removes the email from `shared.json`. Every send-usage drops a
+usage probe's signed-out mark on its own config dir (the status line had
+rate limits, so that login works).
+
+### Usage probes (`internal/usageprobe`)
+
+The status line reports only while someone uses an account through
+julienning. A teammate on plain Claude Code (or claude.ai) reports nothing,
+and an account idle past its reset keeps old numbers (shown `0% → reset`,
+gone after the 8-day `usage:` TTL). A usage probe is the second source:
+`claude -p "/usage"` against the account's config dir, which makes Claude
+Code fetch the account's usage from Claude's usage endpoint with its own
+login. julienning never reads credentials; it reads the structured
+`usage_report` Claude Code prints next to the /usage text and throws the
+text away (it describes local sessions). /usage is a local command: no model
+request, no quota, no 5-hour window started.
+
+- **Command** (`usageprobe.Args`): `claude -p /usage --safe-mode
+  --no-session-persistence --name julienning-usage-probe --output-format
+  stream-json --verbose`, claude found like every launch (`launch.ClaudePath`),
+  working directory the temp dir, stdin `/dev/null`, stderr discarded,
+  its own process group killed after 10 s (`usageprobe.Timeout`), at most 4
+  at once (`usageprobe.Parallel`; Claude Code serializes token refreshes
+  across processes, so a probe next to a live session in the same dir is
+  safe). `--safe-mode` keeps the dir's hooks (julienning's own included),
+  plugins, MCP servers and CLAUDE.md out while auth works; the registry
+  entry's name keeps claims away (see "Claims from sessions"). The
+  environment drops every `CLAUDE*` and `ANTHROPIC_*` variable (Claude Code's
+  session variables, which a probe started from a hook inherits, and
+  anything that would authenticate as someone else, such as
+  `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`), then selects the dir
+  like `launch.Env` (unset for the default dir).
+- **Answer**: one JSON message per line; the `system`/`init` message's
+  `claude_code_version` and the first `assistant` message's
+  `usage_report.rate_limits.limits[]`. The row of `kind` `session` is the
+  session window, `weekly_all` the week (classified on `kind`, never on a
+  label; `weekly_scoped` rows are ignored). `percent` is clamped to 100 and
+  rounded to one decimal; `resets_at` (ISO 8601, fractional seconds, jitter
+  of up to a second around the real boundary) is rounded to the nearest
+  second, or null for a window that is not running, which is accepted only
+  at 0%.
+- **Outcomes**: `ok`; `signed_out` when there is no `usage_report` and
+  `claude auth status --json` says `loggedIn: false` (exit 1 is normal
+  then); `failed` otherwise, with an actionable error that never quotes
+  claude's output: claude not found, `Claude Code X cannot report usage;
+  julienning needs 2.1.301 or newer (run: claude update)`, `claude did not
+  answer within 10s`, `claude exited with status N`, `Claude Code could not
+  fetch the usage …` (`rate_limits` or `limits` null), `Claude Code is signed
+  in but reported no plan usage …`, or `unexpected usage report from Claude
+  Code` with a shape signature (kinds and JSON types, never values) for
+  errors.log. A missing row is never read as 0%.
+- **Refresh** (`usageprobe.Refresh`, given the listing just fetched): reads
+  every registered dir's login and records it (`last_email`, see
+  config.json). For every registered dir logged into an account on the
+  listing (only those: personal usage never leaves the machine; `use`
+  passes one email), it skips a login probed less than 5 minutes ago
+  (`usageprobe.CacheWindow`, whatever the outcome; an `ok` result is
+  re-sent instead, because the listing can lag the write by a minute, and
+  a `signed_out` one is reported again), and probes when the account has
+  no numbers, a window whose reset has passed, numbers older than 15
+  minutes (`accounts`, `next`, `use`; `usageprobe.InteractiveStale`) or an
+  hour (the background round), or when the dir is marked signed out. Each
+  result is saved in `probes/`. The newest `ok` per account, when newer
+  than the listing's `collected_at`, goes in one `POST /probes`, whose
+  answer replaces the listing. An old Worker (404 `not found`) or any other
+  failure keeps the listing and is reported. The interactive budget is 45
+  s; a probe still running then is killed, so nothing arrives after the
+  command decided.
+- **Messages** (stderr, `julienning: warning:` unless noted):
+  `alpha (claude1@x.io) is signed out in ~/.claude-x; sign in again with: julienning login alpha`;
+  `could not refresh the usage of alpha (claude1@x.io) in ~/.claude-x (claude did not answer within 10s); its numbers are from 3h ago`
+  (`it has no reported numbers yet`);
+  `the Worker does not take usage probes yet, so the numbers were not refreshed; it needs a redeploy (GitHub Actions, workflow deploy-worker)`;
+  `could not send the refreshed usage to the Worker (…); showing the last reported numbers`;
+  the login-change note (see config.json).
+- **Signed out** (`usageprobe.SignedOutDirs`): a dir without a login whose
+  `last_email` names an account, or one whose last probe found its current
+  login signed out (the mark is for that login only). `next` (and
+  `transfer`'s pick) skip such dirs, `accounts` lists them ` (signed out)`.
+  A later `ok` probe, a status line report from the dir or a verified
+  `login` drops the mark.
+- **Background round**: claim-sync and the send-usage child, after the
+  claim-sync lock is released, run a refresh with the hour threshold on the
+  listing their `shared.json` refresh fetched, so it costs no list of its
+  own and runs at most hourly per machine, only while Claude is used there.
+  Problems go to errors.log (throttled per dir, no emails): `PROBE_FAILED`,
+  `PROBE_INVALID` (with the shape), `SIGNED_OUT`.
 
 ## Hosts
 
@@ -2171,14 +2316,15 @@ listing needs no per-key reads):
 |-----|-----------|----------|
 | `share:<email>` | share / nickname rename / unshare only | `{added_by, added_at, nickname}` (nickname absent on records from before nicknames; read as null) |
 | `usage:<email>` | PUT usage (only if `share:` exists) | `{session, week, collected_at, reporter}`; `expirationTtl` 8 days |
+| `probe:<email>` | POST /probes (only if `share:` exists, and only a newer `collected_at` than the stored probe) | `{session, week, collected_at, reporter}`, a window's `resets_at` null when the window is not running (then `used` is 0); `expirationTtl` 8 days |
 | `claim:<email>:<dev>:<machine_id>` | PUT/DELETE claim of that holder; usage refresh by the same reporter when the claim is older than 1 h (KV write budget) | `{at}`; `expirationTtl` = CLAIM_TTL_MIN (min 60 s) |
 | `exhausted:<email>:<dev>:<machine_id>` | PUT exhausted of that reporter | `{window, resets_at, at}` (`window` `session`/`week`, `resets_at` ISO or null, `at` server-stamped); `expirationTtl` = until `resets_at` when known (min 60 s), else 5 h for `session`, 7 d for `week` |
 
 An email is shared iff `share:<email>` exists. The listing shows only shared
-emails; orphaned `usage:`/`claim:` keys (written by a request that raced an
-unshare) are ignored and expire on their own. Unshare deletes the share key,
-the usage key and every claim and exhausted key under `claim:<email>:` and
-`exhausted:<email>:`. Each key's metadata
+emails; orphaned `usage:`/`probe:`/`claim:` keys (written by a request that
+raced an unshare) are ignored and expire on their own. Unshare deletes the
+share key, the usage and probe keys and every claim and exhausted key under
+`claim:<email>:` and `exhausted:<email>:`. Each key's metadata
 is validated independently: an invalid claim key drops only that holder.
 `collected_at` later than the Worker's clock is clamped to now before storing
 and comparing. The JSON response shape per account (below) is unchanged.
@@ -2195,9 +2341,23 @@ Logical account view (as returned):
   "week": { "used": 28, "resets_at": "…" },
   "collected_at": "…",
   "reporter": { "dev": "murat", "machine_id": "…" },
+  "source": "statusline",
+  "last_activity": { "dev": "murat", "machine_id": "…", "at": "…" },
   "claims": [ { "dev": "murat", "machine_id": "…", "at": "…" } ]
 }
 ```
+
+`session`/`week`/`collected_at`/`reporter` are the account's numbers, when
+they were read and who sent them: the newer of the `usage:` record (status
+line) and the `probe:` record (the probe on a tie), `source` saying which
+(`statusline` or `probe`; absent with neither). `last_activity` is the
+`usage:` record's reporter and `collected_at` (absent before its first
+report): only a status line report means someone is on the account, so it,
+not a probe, drives `in_use` and its age. Both fields are new and optional;
+a CLI that predates them reads `collected_at` as the age of the numbers,
+which it still is. A window with `resets_at` null comes only from a probe:
+the window is not running, `used` and `effective` are 0 and `reset_passed`
+is false.
 
 Routes:
 
@@ -2213,10 +2373,14 @@ Routes:
 | PUT | `/accounts/:email/claim` | `{dev, machine_id}` | 204 upsert own holder; 404 when not shared |
 | DELETE | `/accounts/:email/claim` | `?dev=&machine_id=` (both required) | 204 remove own holder (idempotent) |
 | PUT | `/accounts/:email/exhausted` | `{window: "session"\|"week", resets_at?: ISO\|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first |
+| POST | `/probes` | `{reporter, reports: [{email, session: {used, resets_at}, week: {used, resets_at}, collected_at}]}` (1–32 reports, one per email; body up to 16 KiB); `dev`, `tz` | 200: the GET /accounts JSON document ranked for `dev` (default the reporter's dev) with the batch merged in, plus `not_shared` (reported emails not on the allowlist, nothing stored for them); 400 on a bad body (a `resets_at` null with `used` above 0 included); Bearer only. Each shared report writes `probe:<email>` when its clamped `collected_at` is newer than the stored probe's. The batch is merged over the listing before ranking because listings lag writes |
 
-Ranking and state: holders with `at` older than `CLAIM_TTL_MIN` are ignored.
-`busy_by` = sorted unique devs ≠ querying `dev` that hold a fresh claim or
-reported within `ACTIVITY_TTL_MIN` (all such devs when no `dev` query).
+Ranking and state: the windows are the account's numbers above (the newer of
+the `usage:` and `probe:` records). Holders with `at` older than
+`CLAIM_TTL_MIN` are ignored. `busy_by` = sorted unique devs ≠ querying `dev`
+that hold a fresh claim or sent a status line report within
+`ACTIVITY_TTL_MIN` (all such devs when no `dev` query); probes never count
+and never refresh a claim.
 `exhausted`: any present window with effective usage ≥ 100 (Claude refuses
 work until it resets), or an `exhausted:` record that still counts
 (`worker/src/exhausted.ts`). A record's stored `resets_at` is the reported
@@ -2233,7 +2397,8 @@ pre-refusal numbers after a refusal. `exhausted_until` =
 the latest known reset among the windows at 100% and the valid records (null
 when none is known); `exhausted_window` = `session`/`week` of that reset, or
 of the records when no reset is known (`week` when both), null when not
-exhausted. `state`: `exhausted` first, else `in_use`
+exhausted. A window that is not running never blocks and never supersedes a
+record, and sorts like an unknown session reset. `state`: `exhausted` first, else `in_use`
 when another dev reported within the activity TTL, `claimed` when only fresh
 claims by others exist, else `free`; `busy_by` is populated in every state.
 Sort: not exhausted first → not busy first → known usage before unknown →

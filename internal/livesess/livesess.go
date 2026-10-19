@@ -40,13 +40,20 @@ type Session struct {
 
 var registryName = regexp.MustCompile(`^[0-9]+\.json$`)
 
+// ProbeSessionName is the name julienning's usage probe gives its `claude -p
+// "/usage"` process (internal/usageprobe). Claude Code registers that process
+// as kind "interactive" for the second or so it runs; CountsAsSession leaves
+// it out, or a claim-sync running meanwhile would claim the account for a
+// session nobody has.
+const ProbeSessionName = "julienning-usage-probe"
+
 // CountsAsSession reports whether a registry entry is a user-facing session
 // for claim purposes. Claude also registers daemon, daemon-worker and
 // pre-spawned spare processes; counting those would hold claims forever.
 // Unknown/empty kinds (older versions) count, to stay conservative. Move
 // safety must NOT use this: any live entry with a matching session id blocks.
 func CountsAsSession(s Session) bool {
-	if s.Spare {
+	if s.Spare || s.Name == ProbeSessionName {
 		return false
 	}
 	switch s.Kind {

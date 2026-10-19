@@ -39,6 +39,12 @@ quick start; keep it short and put detail in REFERENCE.md.
   dir and no fallback dirs (`internal/launch/tmux_test.go` TestMain refuses
   otherwise); shell tests bake a fake tmux's path; e2e's fake tmux is first
   on PATH from the start.
+- Tests never run the real claude. `internal/usageprobe` tests point
+  `findClaude` at a fake script; the CLI packages that probe stub
+  `refreshUsage` in TestMain (`internal/cli/accounts`,
+  `internal/cli/switching`), and `internal/cli/dirs` stubs `authLogin` and
+  `checkSignedIn`. A new caller of `usageprobe.Refresh`/`SignedIn` or of
+  `claude auth` gets the same seam.
 - Tests never run a real ssh or reach a real host. `sshx.Binary` points at a
   fake in `internal/sshx` tests; `internal/cli/hosts` tests replace
   `agentCall`, `listCall`, `runScript`, `runForwarded` and the agent's
@@ -89,7 +95,9 @@ the fake releases host, `--host` forwarding with the picker on the
 pseudo-terminal, a launch into the host's fake tmux, a minor-version update
 of the host, `transfer` both ways and a retry after `touch $T/drop-receive`
 made the fake ssh lose a receive's answer, `uninstall --host`, `host remove`),
-`forget`, `update` and `uninstall` (its session move into `~/.claude`, with
+usage probes through the fake claude's `-p /usage` (a report, a Claude Code
+too old to report, a signed-out dir that `next` skips and `login` signs back
+in), `forget`, `update` and `uninstall` (its session move into `~/.claude`, with
 an open session left behind, and plain `claude` checked native in a new shell
 and in one that loaded the integration before), and asserts byte-for-byte
 restoration at the end. Run it after any change to setup, uninstall, forget, the installer,
@@ -208,6 +216,20 @@ Each item names the only package that touches it.
   only on request, in `teamsync.Settings` and both docs together. The
   installed claude binary embeds its settings schema (`strings` on it and
   grep `<key>:()=>`) when a key needs checking.
+- Usage probe (`internal/usageprobe`, 2.1.301-2.1.303, macOS and Linux):
+  `claude -p "/usage" --safe-mode --no-session-persistence --name
+  julienning-usage-probe --output-format stream-json --verbose` is a local
+  command (no model request). Its `assistant` message carries
+  `usage_report.rate_limits.limits[]`: `kind` `session`/`weekly_all`/
+  `weekly_scoped`, `percent` 0-100, `resets_at` ISO 8601 whose fractional
+  seconds jitter around the real boundary (13:39:59.707 and 13:40:00.345 for
+  one reset; round, never floor), and null, presumably, for a window that is
+  not running (not observed yet; accepted only at 0%). No
+  `usage_report` at all means no subscription login; `claude auth status
+  --json` (`loggedIn`, exit 1 when false) tells signed out apart. `-p`
+  registers in `sessions/<pid>.json` as kind `interactive`, hence `--name`
+  and `livesess.ProbeSessionName`. `claude auth login --email` pre-fills the
+  login page (`julienning login`).
 - Status line stdin JSON: `rate_limits.five_hour` and `seven_day` with
   `used_percentage` and `resets_at`; an unexpected shape is reported as
   `USAGE_INVALID` with a type signature (`internal/usage`).

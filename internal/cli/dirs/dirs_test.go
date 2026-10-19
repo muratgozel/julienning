@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/muratgozel/julienning/internal/claudecfg"
 	"github.com/muratgozel/julienning/internal/cli"
 	"github.com/muratgozel/julienning/internal/config"
 	"github.com/muratgozel/julienning/internal/launch"
@@ -54,7 +55,16 @@ type harness struct {
 	execs       []execCall
 	tmux        launch.Tmux // what findTmux finds; tmuxErr wins when set
 	tmuxErr     error
+	// logins records `claude auth login` runs; loginAs is the account the
+	// fake sign-in writes into the dir ("" writes nothing), loginErr fails it.
+	logins   []loginCall
+	loginAs  string
+	loginErr error
+	// signedIn is what the fake `claude auth status` says per dir.
+	signedIn map[string]bool
 }
+
+type loginCall struct{ dir, email string }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -81,6 +91,22 @@ func newHarness(t *testing.T) *harness {
 	prevClient, prevHealth, prevInteractive := newClient, checkHealth, isInteractive
 	prevSecret, prevStable, prevNow, prevExec := readSecret, stableCommand, now, launch.Exec
 	prevFindTmux, prevLockWait := findTmux, devLockWait
+	prevAuthLogin, prevSignedIn := authLogin, checkSignedIn
+	// Never the real claude: login's sign-in and its check are faked.
+	authLogin = func(_ cli.Env, dir, email string) error {
+		h.logins = append(h.logins, loginCall{dir, email})
+		if h.loginErr != nil {
+			return h.loginErr
+		}
+		if h.loginAs != "" {
+			body := `{"oauthAccount":{"emailAddress":"` + h.loginAs + `"}}`
+			if err := os.WriteFile(claudecfg.AccountFilePath(dir), []byte(body), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	checkSignedIn = func(_ context.Context, dir string) (bool, error) { return h.signedIn[dir], nil }
 	newClient = func(*config.Config) remote.Client { return h.fake }
 	checkHealth = func(context.Context, string) error { return h.healthErr }
 	isInteractive = func(cli.Env) bool { return h.interactive }
@@ -111,6 +137,7 @@ func newHarness(t *testing.T) *harness {
 		newClient, checkHealth, isInteractive = prevClient, prevHealth, prevInteractive
 		readSecret, stableCommand, now, launch.Exec = prevSecret, prevStable, prevNow, prevExec
 		findTmux, devLockWait = prevFindTmux, prevLockWait
+		authLogin, checkSignedIn = prevAuthLogin, prevSignedIn
 	})
 	return h
 }

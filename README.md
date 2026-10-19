@@ -10,7 +10,7 @@ weekly limit is left. macOS and Linux, zsh and bash; Claude Code must already
 be installed.
 
 - **No auth tokens.** julienning never reads, copies or sends Claude credentials; signing in stays Claude Code's own flow.
-- **Only `CLAUDE_CONFIG_DIR`.** That is how it switches accounts; from Claude it takes just the account email and the usage numbers the status line shows.
+- **Only `CLAUDE_CONFIG_DIR`.** That is how it switches accounts; from Claude it takes just the account email and the usage numbers Claude Code shows (its status line, and `/usage` for accounts nobody uses through julienning right now).
 - **Reports go to your team's own Worker:** that email and its nickname, those numbers, whether you have it open, when Claude refused it a request for a limit, your username and a random machine id. Session lists stay local.
 - **Personal accounts never report.** An account that is not shared with the team sends no usage and no claims.
 
@@ -131,6 +131,12 @@ there; `julienning use <personal email>` lists that account's own.
 
 ## Good to know
 
+- **Usage stays fresh even when nobody uses an account through julienning.**
+  `accounts`, `next` and `use` ask Claude Code (`claude -p "/usage"`, no
+  tokens used) for the numbers of stale shared accounts logged in on your
+  machine, which takes a few seconds, and share them with the team. A dir
+  Claude Code signed out shows `(signed out)` in `accounts`;
+  `julienning login <nickname>` signs in there again, sessions included.
 - **Claims follow open sessions.** Opening Claude on a shared account shows it
   as yours in everyone's `accounts` (`claimed by`, then `in use by` once usage
   comes in); closing your last session on it releases it. Switching alone

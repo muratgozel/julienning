@@ -467,22 +467,108 @@ func TestLoginResolvesNicknameEmailAndConfig(t *testing.T) {
 	h.initConfig(false, config.ConfigDir{Name: "julienning1", Dir: one}, config.ConfigDir{Name: "julienning2", Dir: fresh})
 	h.cacheNicks("c1@team.io=alpha", "far@team.io=far")
 
+	// Claude args after -- keep the old way: plain claude, unchecked.
 	h.mustRun(runLogin, "alpha", "--", "--model", "opus")
-	h.mustRun(runLogin, "C1@team.io")
-	h.mustRun(runLogin, "julienning2")
-	want := []execCall{{dir: one, args: []string{"--model", "opus"}}, {dir: one}, {dir: fresh}}
-	if !reflect.DeepEqual(h.execs, want) {
-		t.Fatalf("execs = %+v, want %+v", h.execs, want)
+	if want := []execCall{{dir: one, args: []string{"--model", "opus"}}}; !reflect.DeepEqual(h.execs, want) || len(h.logins) != 0 {
+		t.Fatalf("execs = %+v, logins = %+v", h.execs, h.logins)
 	}
 
-	h.execs = nil
+	h.loginAs = "c1@team.io"
+	if out := h.mustRun(runLogin, "C1@team.io"); out != "Signed in: alpha (c1@team.io) in ~/.claude-one.\n" {
+		t.Errorf("stdout = %q", out)
+	}
+	h.loginAs = "new@team.io"
+	if out := h.mustRun(runLogin, "julienning2"); out != "Signed in: new@team.io in ~/.claude-fresh.\n" {
+		t.Errorf("stdout = %q", out)
+	}
+	// An account's login page is pre-filled; a config name has no account to pre-fill.
+	if want := []loginCall{{one, "c1@team.io"}, {fresh, ""}}; !reflect.DeepEqual(h.logins, want) {
+		t.Fatalf("logins = %+v, want %+v", h.logins, want)
+	}
+	cfg, _ := config.Load()
+	if cd, _ := cfg.Find("julienning2"); cd.LastEmail != "new@team.io" {
+		t.Errorf("the new login must be recorded: %+v", cd)
+	}
+
+	h.logins = nil
 	err := h.run(runLogin, "far")
-	var nl *resolve.NotLocalError
-	if !errors.As(err, &nl) || !strings.Contains(err.Error(), "far (far@team.io) is shared but not logged in on this machine") {
+	if err == nil || !strings.Contains(err.Error(), "far (far@team.io) is not logged in on this machine, and no signed-out dir here held it last") ||
+		!strings.Contains(err.Error(), "julienning new-config") {
 		t.Fatalf("got %v", err)
 	}
-	if len(h.execs) != 0 {
-		t.Fatalf("launched despite the error: %+v", h.execs)
+	if len(h.logins) != 0 {
+		t.Fatalf("signed in despite the error: %+v", h.logins)
+	}
+}
+
+func TestLoginSignsTheLastDirInAgain(t *testing.T) {
+	h := newHarness(t)
+	gone := h.mkdir(".claude-sixtynine") // Claude Code signed it out and cleared the login
+	other := h.mkdir(".claude-other")
+	h.initConfig(false,
+		config.ConfigDir{Name: "julienning3", Dir: gone, LastEmail: "c2@team.io"},
+		config.ConfigDir{Name: "julienning4", Dir: other},
+	)
+	h.cacheNicks("c2@team.io=claude2")
+	h.loginAs = "c2@team.io"
+
+	out := h.mustRun(runLogin, "claude2")
+	if want := []loginCall{{gone, "c2@team.io"}}; !reflect.DeepEqual(h.logins, want) {
+		t.Fatalf("logins = %+v", h.logins)
+	}
+	if out != "Signed in: claude2 (c2@team.io) in ~/.claude-sixtynine.\n" ||
+		!strings.Contains(h.stderr.String(), "~/.claude-sixtynine held claude2 (c2@team.io) last and has no login now") {
+		t.Errorf("stdout %q stderr %q", out, h.stderr.String())
+	}
+}
+
+func TestLoginNeverSignsOverAWorkingLogin(t *testing.T) {
+	h := newHarness(t)
+	gone := h.mkdir(".claude-sixtynine")
+	h.initConfig(false, config.ConfigDir{Name: "julienning3", Dir: gone, LastEmail: "c2@team.io"})
+	h.cacheNicks("c2@team.io=claude2")
+	h.signedIn = map[string]bool{gone: true} // credentials are there, the account file says nobody
+	err := h.run(runLogin, "claude2")
+	if err == nil || !strings.Contains(err.Error(), "no signed-out dir here held it last") || len(h.logins) != 0 {
+		t.Fatalf("err %v logins %+v", err, h.logins)
+	}
+}
+
+func TestLoginReportsTheWrongAccount(t *testing.T) {
+	h := newHarness(t)
+	gone := h.mkdir(".claude-sixtynine")
+	h.initConfig(false, config.ConfigDir{Name: "julienning3", Dir: gone, LastEmail: "c2@team.io"})
+	h.cacheNicks("c2@team.io=claude2", "c9@team.io=claude9")
+	h.loginAs = "c9@team.io" // the browser was signed into claude9
+	err := h.run(runLogin, "claude2")
+	if err == nil || !strings.Contains(err.Error(), "~/.claude-sixtynine is now signed in as claude9 (c9@team.io), not claude2 (c2@team.io): the browser was signed into claude9") ||
+		!strings.Contains(err.Error(), "run: julienning login claude2") {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(h.stderr.String(), "~/.claude-sixtynine was logged into claude2 (c2@team.io); the sessions in it stay there, under claude9") {
+		t.Errorf("stderr: %q", h.stderr.String())
+	}
+	cfg, _ := config.Load()
+	if cd, _ := cfg.Find("julienning3"); cd.LastEmail != "c9@team.io" {
+		t.Errorf("what the dir holds now is recorded: %+v", cd)
+	}
+}
+
+func TestLoginFailures(t *testing.T) {
+	h := newHarness(t)
+	one := h.loggedIn(".claude-one", "c1@team.io")
+	h.initConfig(false, config.ConfigDir{Name: "julienning1", Dir: one})
+	h.loginErr = errors.New("claude auth login did not finish (exit status 1)")
+	if err := h.run(runLogin, "julienning1"); err == nil || err.Error() != "claude auth login did not finish (exit status 1)" {
+		t.Fatalf("got %v", err)
+	}
+	h.loginErr = nil
+	fresh := h.mkdir(".claude-fresh")
+	cfg, _ := config.Load()
+	cfg.Add(config.ConfigDir{Name: "julienning2", Dir: fresh})
+	cfg.Save()
+	if err := h.run(runLogin, "julienning2"); err == nil || !strings.Contains(err.Error(), "~/.claude-fresh still has no login after claude auth login") {
+		t.Fatalf("got %v", err)
 	}
 }
 

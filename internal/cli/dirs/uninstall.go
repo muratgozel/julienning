@@ -504,10 +504,12 @@ var stateFiles = map[string]bool{
 }
 
 // ownedSubdirs are the directories julienning creates in its state dir and
-// what it owns inside each: the send-usage cache, the ssh control sockets
-// (named by ssh's %C hash) and the receipts of transferred sessions.
+// what it owns inside each: the send-usage cache, the usage probe results
+// (both named by a short hash), the ssh control sockets (named by ssh's %C
+// hash) and the receipts of transferred sessions.
 var ownedSubdirs = map[string]func(string, os.DirEntry) bool{
 	config.SentDir:    ownedSentEntry,
+	config.ProbesDir:  ownedProbeEntry,
 	sshx.SocketDir:    ownedSocketEntry,
 	hosts.ReceivedDir: ownedReceiptEntry,
 }
@@ -532,6 +534,14 @@ var sentFileRe = regexp.MustCompile(`^([0-9a-f]{8}|[^/]*@[^/]*)\.(json|inflight)
 
 func ownedSentEntry(_ string, e os.DirEntry) bool {
 	return !e.IsDir() && sentFileRe.MatchString(e.Name())
+}
+
+// probeFileRe matches probes/<hash of a dir>.json (usageprobe.StatePath) and
+// its atomic-write temps.
+var probeFileRe = regexp.MustCompile(`^[0-9a-f]{8}\.json$|^\.tmp-`)
+
+func ownedProbeEntry(_ string, e os.DirEntry) bool {
+	return !e.IsDir() && probeFileRe.MatchString(e.Name())
 }
 
 // socketRe matches ssh control sockets named by %C (40 hex characters), and

@@ -203,10 +203,47 @@ case "$os" in darwin) rc="$HOME/.bash_profile" ;; *) rc="$HOME/.bashrc" ;; esac
 unset CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CONFIG_HOME JULIENNING_REMOTE_URL JULIENNING_TOKEN \
   JULIENNING_NOW_EPOCH JULIENNING_AUTO_UPDATE JULIENNING_RELEASES_BASE JULIENNING_REPO JULIENNING_VERSION
 
-# A claude that only reports which config dir it was started with (and a
-# version, which transfer compares between machines).
-# shellcheck disable=SC2016 # the variables are for the fake claude to expand
-printf '#!/bin/sh\nif [ "$1" = --version ]; then echo "2.1.303 (Claude Code)"; exit 0; fi\necho "FAKE CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$T/fakebin/claude"
+# A claude that reports which config dir it was started with (and a version,
+# which transfer compares between machines). For the usage probe it answers
+# `-p /usage` from <config dir>/fake-usage, logging "probe <dir>|" to
+# $T/probes.log: "ok S W" is a report with those percentages, "signedout" no
+# report (and `auth status` says logged out); without the file it is a
+# Claude Code too old to report, so every other check keeps the Worker's
+# numbers. `auth login --email E` signs E in the way Claude Code writes it.
+cat >"$T/fakebin/claude" <<CLAUDE
+#!/bin/sh
+[ "\$1" = --version ] && { echo "2.1.303 (Claude Code)"; exit 0; }
+dir="\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}"
+account="\$dir/.claude.json"
+[ -z "\$CLAUDE_CONFIG_DIR" ] && account="\$HOME/.claude.json"
+mode="\$(cat "\$dir/fake-usage" 2>/dev/null)"
+case " \$* " in
+*" -p /usage "*)
+  echo "probe \$dir|" >>"$T/probes.log"
+  case "\$mode" in
+  ok\ *)
+    set -- \$mode
+    printf '{"type":"system","subtype":"init","claude_code_version":"2.1.303"}\\n'
+    printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Current session"}]},"usage_report":{"rate_limits":{"limits":[{"kind":"session","percent":%s,"resets_at":"2099-01-01T04:59:59.6+00:00"},{"kind":"weekly_all","percent":%s,"resets_at":"2099-01-05T05:00:00.2+00:00"}]}}}\\n' "\$2" "\$3"
+    ;;
+  signedout) printf '{"type":"system","subtype":"init","claude_code_version":"2.1.303"}\\n' ;;
+  *) printf '{"type":"system","subtype":"init","claude_code_version":"2.1.200"}\\n' ;;
+  esac
+  exit 0
+  ;;
+esac
+if [ "\$1" = auth ] && [ "\$2" = status ]; then
+  [ "\$mode" = signedout ] && { echo '{"loggedIn":false,"authMethod":"none"}'; exit 1; }
+  echo '{"loggedIn":true,"authMethod":"claude.ai"}'
+  exit 0
+fi
+if [ "\$1" = auth ] && [ "\$2" = login ]; then
+  echo "login \$dir|\$*" >>"$T/probes.log"
+  [ "\$3" = --email ] && printf '{"oauthAccount":{"emailAddress":"%s"},"numStartups":3}' "\$4" >"\$account"
+  exit 0
+fi
+echo "FAKE CLAUDE dir=\${CLAUDE_CONFIG_DIR:-<unset>} args=\$*"
+CLAUDE
 chmod +x "$T/fakebin/claude"
 # A tmux that logs every call as [arg][arg]... to $T/tmux.log and keeps one
 # session (the file $T/tmux-session). A window runs its command at once, with
@@ -671,6 +708,67 @@ printf '{"session_id":"e2e-session-1","hook_event_name":"StopFailure","error":"o
   CLAUDE_CONFIG_DIR="$HOME/.claude-two" julienning hook stop-failure
 sleep 1
 expect_contains "other StopFailure errors change nothing" "free" "$(row bravo)"
+
+# --- usage probes: Claude Code's own /usage for accounts nobody reports -------------------
+# gamma never reported; bravo's Claude Code is "too old" (no fake-usage yet).
+# The commands above already probed both (and failed: too old); dropping the
+# probe state stands in for the 5-minute cache window passing.
+rm -rf "$JULIENNING_HOME/probes"
+printf 'ok 61 72\n' >"$HOME/.claude-old/fake-usage"
+: >"$T/probes.log"
+run julienning accounts
+expect_contains "accounts probes a stale account and shows Claude's numbers" "61% → 2099" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
+probes="$(cat "$T/probes.log")"
+expect_contains "the probe ran in gamma's dir" "probe $HOME/.claude-old|" "$probes"
+expect_missing "alpha, reported minutes ago, is not probed" "probe $HOME/.claude-work|" "$probes"
+expect_missing "a personal dir is never probed" "probe $HOME/.claude|" "$probes"
+expect_missing "an unregistered personal dir is never probed" "probe $HOME/.claude-side|" "$probes"
+expect_contains "an old Claude Code is reported, not guessed" "cannot report usage; julienning needs 2.1.301 or newer" "$out"
+expect_contains "the Worker says the numbers came from a probe" '"source": "probe"' "$(account_json gamma)"
+expect_contains "the probe's numbers are not activity" '"state": "free"' "$(account_json gamma)"
+n_probes="$(wc -l <"$T/probes.log")"
+run julienning accounts
+[ "$(wc -l <"$T/probes.log")" = "$n_probes" ] || fail "a login was probed twice within the cache window:" "$(cat "$T/probes.log")"
+ok "no login is probed twice within the cache window"
+expect_contains "the cached numbers are still shown" "61%" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
+# Signed out: no report, and Claude Code says nobody is logged in. gamma at
+# 100% (alpha is exhausted too), so bravo would rank first.
+# gamma's numbers are seconds old: 20 minutes later they are stale. Probes
+# are stamped to the second and the Worker keeps the newer one, so a
+# re-probe in the same second would read as a resend.
+rm -rf "$JULIENNING_HOME/probes"
+sleep 1
+printf 'ok 100 100\n' >"$HOME/.claude-old/fake-usage"
+printf 'signedout\n' >"$HOME/.claude-two/fake-usage"
+run env JULIENNING_NOW_EPOCH=$(($(date +%s) + 1200)) julienning accounts
+expect_contains "a signed-out dir is reported with the way back" "bravo (beta@example.com) is signed out in ~/.claude-two; sign in again with: julienning login bravo" "$out"
+expect_contains "accounts marks the dir signed out" "/.claude-two (signed out)" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+expect_contains "a probe at 100% marks the account exhausted" "exhausted" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
+run julienning next --no-launch
+expect_missing "next never picks a signed-out dir" "Now using bravo" "$out"
+expect_contains "next falls back to an exhausted account rather than a signed-out one" "every usable shared account on this machine is exhausted" "$out"
+# Claude Code signed bravo's dir out and cleared the login: login signs in
+# there again, pre-filled, once Claude Code confirms nobody is signed in.
+printf '{"numStartups":3}' >"$HOME/.claude-two/.claude.json"
+run julienning accounts
+expect_contains "a dir Claude Code signed out still shows under its account" "/.claude-two (signed out)" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+run julienning login bravo
+expect_contains "login signs the dir that held the account in again" "/.claude-two held bravo (beta@example.com) last and has no login now" "$out"
+expect_contains "login reports the account it got" "Signed in: bravo (beta@example.com) in ~/.claude-two." "$out"
+expect_contains "the login page was pre-filled" "login $HOME/.claude-two|auth login --email beta@example.com" "$(cat "$T/probes.log")"
+printf '{"oauthAccount":{"emailAddress":"beta@example.com"},"numStartups":3}' >"$T/before/two-account.json"
+expect_same "bravo's account file is as before the sign-out" "$T/before/two-account.json" "$HOME/.claude-two/.claude.json"
+rm -f "$HOME/.claude-two/fake-usage"
+run julienning accounts
+expect_missing "a verified login drops the signed-out mark" "(signed out)" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+# gamma back to low numbers for what follows, then the "too old" default.
+rm -rf "$JULIENNING_HOME/probes"
+sleep 1
+printf 'ok 1 1\n' >"$HOME/.claude-old/fake-usage"
+run env JULIENNING_NOW_EPOCH=$(($(date +%s) + 1200)) julienning accounts
+expect_contains "a newer probe replaces the previous one" "1% → 2099" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
+rm -f "$HOME/.claude-old/fake-usage"
+expect_missing "errors.log stays free of emails" "@example.com" "$(cat "$JULIENNING_HOME/errors.log")"
 
 # --- forget -----------------------------------------------------------------------------------
 run julienning forget bravo --keep

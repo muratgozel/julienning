@@ -35,6 +35,7 @@ const (
 	PinsFile    = "pins.json"  // directory pins (internal/pins); the claude wrapper tests for it by this name
 	ErrorLog    = "errors.log" // statusline/send-usage diagnostics, never contains emails
 	SentDir     = "sent"       // send-usage debounce cache, one file per email
+	ProbesDir   = "probes"     // usage probe results, one file per registered dir (internal/usageprobe)
 )
 
 // EnvHome overrides the state directory (tests, multiple profiles).
@@ -60,6 +61,14 @@ type ConfigDir struct {
 	// automatically (claims.ResolvePendingShares), then the mark is cleared.
 	// nil means nothing is pending.
 	ShareOnLogin *ShareOnLogin `json:"share_on_login,omitempty"`
+	// LastEmail is the last login julienning saw in this dir (lowercased;
+	// RecordLogins). It outlives the login on purpose: when Claude Code signs
+	// a dir out it can clear oauthAccount, and then LastEmail is all that
+	// still ties the dir (and its sessions) to the account, for `accounts`
+	// (shown as signed out) and `login NICKNAME` (which signs in there
+	// again). Never read it as the current login: that is always the
+	// account file, read live.
+	LastEmail string `json:"last_email,omitempty"`
 }
 
 // ShareOnLogin is a pending share of a registered dir's future login.
@@ -343,6 +352,9 @@ func (c *Config) Validate() error {
 		if seenDir[cd.Dir] {
 			return fmt.Errorf("duplicate config dir %q", cd.Dir)
 		}
+		if e := cd.LastEmail; e != "" && (e != strings.ToLower(e) || !strings.Contains(e, "@") || strings.ContainsAny(e, " \t\r\n")) {
+			return fmt.Errorf("config %q: invalid last_email %q (a lowercase address; fix or remove it)", cd.Name, e)
+		}
 		if s := cd.ShareOnLogin; s != nil && s.Nickname != "" && !shell.ValidNickname(s.Nickname) {
 			return fmt.Errorf("config %q: invalid share_on_login nickname %q (%s; fix it, or remove the nickname to use the email's local part)", cd.Name, s.Nickname, shell.NicknameRule)
 		}
@@ -577,6 +589,45 @@ func UpdateDir(dir string, mutate func(*ConfigDir)) (found bool, err error) {
 		}
 	}
 	return false, nil
+}
+
+// LoginChange is a registered dir whose recorded login was replaced by a
+// different account.
+type LoginChange struct {
+	Name, Dir string
+	From, To  string // lowercased emails
+}
+
+// RecordLogins re-reads config.json and sets LastEmail of every registered
+// dir in logins (dir → its current login; "" means not logged in and keeps
+// what was recorded) that differs, saving once when anything changed. It
+// returns the dirs whose recorded account was replaced by another one, in
+// config order: their sessions stayed in the dir, under the new account.
+// Like UpdateDir it re-reads first, because it runs from commands that may
+// overlap with others saving config.json.
+func RecordLogins(logins map[string]string) ([]LoginChange, error) {
+	c, err := Load()
+	if err != nil {
+		return nil, err
+	}
+	var changes []LoginChange
+	dirty := false
+	for i := range c.Configs {
+		cd := &c.Configs[i]
+		email := strings.ToLower(strings.TrimSpace(logins[filepath.Clean(cd.Dir)]))
+		if email == "" || email == cd.LastEmail {
+			continue
+		}
+		if cd.LastEmail != "" {
+			changes = append(changes, LoginChange{Name: cd.Name, Dir: cd.Dir, From: cd.LastEmail, To: email})
+		}
+		cd.LastEmail = email
+		dirty = true
+	}
+	if !dirty {
+		return nil, nil
+	}
+	return changes, c.Save()
 }
 
 // Current returns the selected config dir, or ok=false when none is selected.

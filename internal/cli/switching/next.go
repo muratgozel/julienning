@@ -51,6 +51,9 @@ func runNext(env cli.Env) error {
 	if err != nil {
 		return fmt.Errorf("cannot rank accounts (%v); pick manually with `julienning use NICKNAME`", err)
 	}
+	// Every probe has finished (or been killed) before the ranking is read:
+	// the account picked below never changes after the picker shows it.
+	listing = probeListing(env, cfg, listing, now, "")
 	cache := refreshCache(env, listing, now)
 	if len(listing.Accounts) == 0 {
 		return fmt.Errorf("the team allowlist is empty; share an account with `julienning share EMAIL`")

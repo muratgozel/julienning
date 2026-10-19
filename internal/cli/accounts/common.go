@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/selfupdate"
 	"github.com/muratgozel/julienning/internal/usage"
+	"github.com/muratgozel/julienning/internal/usageprobe"
 )
 
 // Timeouts: interactive commands can afford to wait a little, detached
@@ -31,7 +33,35 @@ const (
 	// must stay well below claims.LockStale, or a slow run's lock would be
 	// broken while it still runs.
 	backgroundBudget = 25 * time.Second
+	// probeBudget bounds a refresh through usage probes: two rounds of
+	// usageprobe.Parallel probes (each bounded by usageprobe.Timeout) plus
+	// the POST. A probe still running at the end is killed, so no result
+	// can arrive after the command decided.
+	probeBudget = 45 * time.Second
 )
+
+// refreshUsage probes stale accounts through Claude Code. A var because it
+// runs claude: tests replace it (TestMain stubs it out), and tests never run
+// the real claude.
+var refreshUsage = usageprobe.Refresh
+
+// probeAccounts refreshes the stale usage of shared accounts logged in here
+// before anything is shown or ranked (SPEC "Usage probes"), waiting for every
+// probe, and prints what went wrong. The listing it returns is the one to
+// show: the Worker's answer with the probes merged in, else l.
+func probeAccounts(env cli.Env, cfg *config.Config, l *remote.Listing, n time.Time) *remote.Listing {
+	ctx, cancel := context.WithTimeout(context.Background(), probeBudget)
+	defer cancel()
+	rep := refreshUsage(ctx, usageprobe.Options{
+		Config: cfg, Client: newClient(cfg, interactiveTimeout), Listing: l, Now: n,
+		StaleAfter: usageprobe.InteractiveStale,
+	})
+	rep.Print(env.Stderr, n)
+	if rep.Listing == nil {
+		return l
+	}
+	return rep.Listing
+}
 
 // newClient builds the Worker client. Tests replace it with one returning a
 // *remote.Fake so no command ever touches the network.
@@ -67,29 +97,43 @@ func location() *time.Location {
 	return time.Local
 }
 
+// notef prints something worth knowing that is not a problem.
+func notef(env cli.Env, format string, a ...any) {
+	fmt.Fprintf(env.Stderr, "julienning: note: %s\n", fmt.Sprintf(format, a...))
+}
+
 // warnf prints a non-fatal problem; the command still succeeds.
 func warnf(env cli.Env, format string, a ...any) {
 	fmt.Fprintf(env.Stderr, "julienning: warning: %s\n", fmt.Sprintf(format, a...))
 }
 
 // localConfigs maps each lowercased email to the registered dirs logged into
-// it, in config order (sorted by name). Dirs without a login are skipped;
-// dirs whose account file cannot be read are returned in unreadable so the
-// caller can say so instead of silently hiding them.
-func localConfigs(cfg *config.Config) (byEmail map[string][]config.ConfigDir, unreadable map[string]error) {
+// it, in config order (sorted by name), and to the dirs signed out of it: a
+// dir Claude Code signed out (no login, but its last_email names the
+// account) or one a usage probe found signed out. Other dirs without a login
+// are skipped; dirs whose account file cannot be read are returned in
+// unreadable so the caller can say so instead of silently hiding them.
+func localConfigs(cfg *config.Config) (byEmail, signedOut map[string][]config.ConfigDir, unreadable map[string]error) {
 	byEmail = make(map[string][]config.ConfigDir, len(cfg.Configs))
+	signedOut = map[string][]config.ConfigDir{}
 	unreadable = map[string]error{}
+	out := usageprobe.SignedOutDirs(cfg)
 	for _, cd := range cfg.Configs {
 		email, err := claudecfg.ReadEmail(cd.Dir)
 		switch {
 		case errors.Is(err, claudecfg.ErrNotLoggedIn):
+			if out[filepath.Clean(cd.Dir)] {
+				signedOut[cd.LastEmail] = append(signedOut[cd.LastEmail], cd)
+			}
 		case err != nil:
 			unreadable[cd.Name] = err
+		case out[filepath.Clean(cd.Dir)]:
+			signedOut[email] = append(signedOut[email], cd)
 		default:
 			byEmail[email] = append(byEmail[email], cd)
 		}
 	}
-	return byEmail, unreadable
+	return byEmail, signedOut, unreadable
 }
 
 // summary renders "session 12% → 17:30, week 28% → Tue 21:00" for one account.

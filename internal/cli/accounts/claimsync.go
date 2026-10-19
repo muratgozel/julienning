@@ -15,6 +15,7 @@ import (
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 	"github.com/muratgozel/julienning/internal/usage"
+	"github.com/muratgozel/julienning/internal/usageprobe"
 )
 
 func init() {
@@ -97,6 +98,7 @@ func runClaimSync(env cli.Env) error {
 	}
 
 	u := upkeep{cfg: cfg, client: newClient(cfg, reportTimeout), logger: logger}
+	var listing *remote.Listing
 	func() {
 		defer release()
 		// Read the clock after waiting: the reconcile and cache stamps must
@@ -109,8 +111,9 @@ func runClaimSync(env cli.Env) error {
 		ctx, cancel := context.WithTimeout(context.Background(), backgroundBudget)
 		defer cancel()
 		u.reconcile(ctx, claims.Ending{SessionID: *ending, PID: *endingPID})
-		u.refreshShared(ctx)
+		listing = u.refreshShared(ctx)
 	}()
+	u.probeIdle(listing)
 	u.updateIfDue()
 	return nil
 }
@@ -183,14 +186,37 @@ func (u upkeep) reconcile(ctx context.Context, ending claims.Ending) {
 }
 
 // refreshShared refetches shared.json when it is stale or unreadable (a
-// corrupt file is replaced rather than trusted).
-func (u upkeep) refreshShared(ctx context.Context) {
+// corrupt file is replaced rather than trusted). It returns the listing it
+// fetched (nil when it did not), which the background usage probes reuse:
+// it is fetched at most hourly, and KV list operations are scarce.
+func (u upkeep) refreshShared(ctx context.Context) *remote.Listing {
 	if !sharedStale(u.now) {
-		return
+		return nil
 	}
-	if _, _, err := sharedcache.Refresh(ctx, u.client, u.cfg.Dev, u.now); err != nil {
+	_, l, err := sharedcache.Refresh(ctx, u.client, u.cfg.Dev, u.now)
+	if err != nil {
 		u.fail(usage.CodeSharedRefresh, err)
 	}
+	return l
+}
+
+// probeIdle is the background round of usage probes (SPEC "Usage probes"):
+// the shared accounts logged in here whose numbers are older than
+// usageprobe.BackgroundStale, so a teammate's `next` sees fresh numbers for
+// accounts nobody uses through julienning. It rides on refreshShared's
+// listing, so it runs at most hourly per machine and costs no extra list.
+// Callers run it after releasing the claim-sync lock: probes take seconds.
+func (u upkeep) probeIdle(l *remote.Listing) {
+	if l == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeBudget)
+	defer cancel()
+	rep := refreshUsage(ctx, usageprobe.Options{
+		Config: u.cfg, Client: u.client, Listing: l, Now: u.now,
+		StaleAfter: usageprobe.BackgroundStale,
+	})
+	rep.Log(u.logger)
 }
 
 // updateIfDue runs the daily update check, which installs a newer release

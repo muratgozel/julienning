@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/muratgozel/julienning/internal/sharedcache"
 	"github.com/muratgozel/julienning/internal/tui"
 	"github.com/muratgozel/julienning/internal/usage"
+	"github.com/muratgozel/julienning/internal/usageprobe"
 
 	"golang.org/x/term"
 )
@@ -30,6 +32,10 @@ const (
 	listTimeout      = 10 * time.Second
 	reconcileTimeout = 3 * time.Second
 	maxLimit         = 500
+	// probeBudget bounds a refresh through usage probes: two rounds of
+	// usageprobe.Parallel probes plus the POST. A probe still running at the
+	// end is killed, so nothing arrives after the account was picked.
+	probeBudget = 45 * time.Second
 )
 
 // Seams for tests: commands run through cli.Main without a TTY, a Worker or
@@ -53,7 +59,31 @@ var (
 	// execClaude replaces the process with claude (see launch.Exec).
 	execClaude = func(dir string, args []string, chdir string) error { return launch.Exec(dir, args, chdir) }
 	getwd      = os.Getwd
+	// refreshUsage runs claude (usageprobe.Refresh); TestMain stubs it out,
+	// because tests never run the real claude.
+	refreshUsage = usageprobe.Refresh
 )
+
+// probeListing refreshes the stale usage of the shared accounts logged in
+// here (only, when set: one lowercased email) through Claude Code and waits
+// for every probe, so `next` ranks and `use` reports on fresh numbers (SPEC
+// "Usage probes"). It prints what went wrong and returns the listing to use.
+func probeListing(env cli.Env, cfg *config.Config, l *remote.Listing, now time.Time, only string) *remote.Listing {
+	if l == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeBudget)
+	defer cancel()
+	rep := refreshUsage(ctx, usageprobe.Options{
+		Config: cfg, Client: newClient(cfg, listTimeout), Listing: l, Now: now,
+		StaleAfter: usageprobe.InteractiveStale, Only: only,
+	})
+	rep.Print(env.Stderr, now)
+	if rep.Listing == nil {
+		return l
+	}
+	return rep.Listing
+}
 
 func isTerminal(v any) bool {
 	f, ok := v.(*os.File)
@@ -154,10 +184,15 @@ func reconcile(env cli.Env, cfg *config.Config, c remote.Client, now time.Time) 
 
 // localByEmail maps each logged-in email to the registered dirs holding it,
 // sorted by name. Dirs whose account file cannot be read are reported and
-// skipped; dirs without a login are skipped silently (normal for new dirs).
+// skipped; dirs without a login are skipped silently (normal for new dirs),
+// and so are dirs a usage probe found signed out (the refresh says so).
 func localByEmail(env cli.Env, cfg *config.Config) map[string][]config.ConfigDir {
 	out := map[string][]config.ConfigDir{}
+	signedOut := usageprobe.SignedOutDirs(cfg)
 	for _, cd := range cfg.Configs {
+		if signedOut[filepath.Clean(cd.Dir)] {
+			continue
+		}
 		email, err := claudecfg.ReadEmail(cd.Dir)
 		if errors.Is(err, claudecfg.ErrNotLoggedIn) {
 			continue

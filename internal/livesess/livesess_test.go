@@ -60,6 +60,14 @@ func TestCountsAsSession(t *testing.T) {
 	if CountsAsSession(Session{Kind: "interactive", Spare: true}) {
 		t.Error("spare must not count")
 	}
+	// Claude Code 2.1.303 registers `claude -p` as kind "interactive"; the
+	// usage probe is told apart by the name it passes with --name.
+	if CountsAsSession(Session{Kind: "interactive", Name: ProbeSessionName}) {
+		t.Error("julienning's usage probe must not count")
+	}
+	if !CountsAsSession(Session{Kind: "interactive", Name: "fix the build"}) {
+		t.Error("a named session must still count")
+	}
 }
 
 func TestParseStartBothOrders(t *testing.T) {

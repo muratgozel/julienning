@@ -607,20 +607,23 @@ func TestSplitLoginArgs(t *testing.T) {
 	}
 }
 
-func TestLoginUsesLaunchExec(t *testing.T) {
+func TestLoginRunsClaudeAuthLogin(t *testing.T) {
 	h := newHarness(t)
 	one := h.mkdir(".claude-one")
 	def := h.mkdir(".claude")
 	h.initConfig(false, config.ConfigDir{Name: "one", Dir: one}, config.ConfigDir{Name: "default", Dir: def})
 
 	h.mustRun(runLogin, "one", "--", "--model", "opus")
-	h.mustRun(runLogin, "default")
 	if h.stdout.Len() != 0 {
 		t.Errorf("login printed %q before exec", h.stdout.String())
 	}
-	want := []execCall{{dir: one, args: []string{"--model", "opus"}}, {dir: def}}
-	if !reflect.DeepEqual(h.execs, want) {
+	if want := []execCall{{dir: one, args: []string{"--model", "opus"}}}; !reflect.DeepEqual(h.execs, want) {
 		t.Fatalf("execs = %+v, want %+v", h.execs, want)
+	}
+	h.loginAs = "me@team.io"
+	h.mustRun(runLogin, "default")
+	if want := []loginCall{{def, ""}}; !reflect.DeepEqual(h.logins, want) || len(h.execs) != 1 {
+		t.Fatalf("logins = %+v, execs = %+v", h.logins, h.execs)
 	}
 }
 

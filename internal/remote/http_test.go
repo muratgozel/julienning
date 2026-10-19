@@ -747,3 +747,74 @@ func TestExhaustedWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestPostProbes(t *testing.T) {
+	c, got := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","not_shared":["gone@x.io"],
+		  "accounts":[{"rank":1,"email":"a@x.io","source":"probe",
+		    "session":{"used":0,"effective":0,"resets_at":null,"reset_passed":false},
+		    "week":{"used":40,"effective":40,"resets_at":"2026-09-20T10:00:00Z","reset_passed":false},
+		    "collected_at":"2026-09-16T12:19:00Z","reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"},
+		    "last_activity":{"dev":"ali","machine_id":"aaaaaaaaaaaa","at":"2026-09-16T15:10:00+03:00"},
+		    "claims":[],"state":"in_use","busy_by":["ali"]}]}`)
+	})
+	ist := time.FixedZone("IST", 3*3600)
+	reset := time.Date(2026, 9, 20, 13, 0, 0, 345468000, ist)
+	res, err := c.PostProbes(context.Background(), Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}, "murat", []ProbeReport{{
+		Email:       "a@x.io",
+		Session:     ProbeWindow{Used: 0},
+		Week:        ProbeWindow{Used: 40, ResetsAt: &reset},
+		CollectedAt: time.Date(2026, 9, 16, 15, 19, 0, 900000000, ist),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.method != http.MethodPost || got.path != "/probes" || got.rawQ != "dev=murat" || got.auth != "Bearer tok123" {
+		t.Fatalf("request: %+v", got)
+	}
+	want := `{"reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"},"reports":[{"email":"a@x.io",` +
+		`"session":{"used":0,"resets_at":null},"week":{"used":40,"resets_at":"2026-09-20T10:00:00Z"},` +
+		`"collected_at":"2026-09-16T12:19:00Z"}]}`
+	if got.body != want {
+		t.Fatalf("body:\n got %s\nwant %s", got.body, want)
+	}
+	if len(res.NotShared) != 1 || res.NotShared[0] != "gone@x.io" {
+		t.Fatalf("not_shared: %v", res.NotShared)
+	}
+	a := res.Listing.Accounts[0]
+	if a.Source != "probe" || a.Session.ResetsAt != nil || a.Week.ResetsAt == nil || len(a.Raw) == 0 {
+		t.Fatalf("account: %+v", a)
+	}
+	dev, _, at, ok := a.Activity()
+	if !ok || dev != "ali" || !at.Equal(time.Date(2026, 9, 16, 12, 10, 0, 0, time.UTC)) || at.Location() != time.UTC {
+		t.Fatalf("activity: %v %v %v", dev, at, ok)
+	}
+}
+
+func TestIsUnknownRoute(t *testing.T) {
+	c, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"error":"not found"}`)
+	})
+	_, err := c.PostProbes(context.Background(), Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}, "", []ProbeReport{{Email: "a@x.io"}})
+	if !IsUnknownRoute(err) || IsNotShared(err) {
+		t.Fatalf("an old Worker's 404 must read as an unknown route: %v", err)
+	}
+	if IsUnknownRoute(NotSharedError()) {
+		t.Fatal("an unshared account is not an unknown route")
+	}
+}
+
+func TestAccountActivityFallback(t *testing.T) {
+	at := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	old := Account{Reporter: &Identity{Dev: "ali", MachineID: "aaaaaaaaaaaa"}, CollectedAt: &at}
+	if dev, _, got, ok := old.Activity(); !ok || dev != "ali" || !got.Equal(at) {
+		t.Fatalf("a Worker without last_activity: the reporter is the activity (%v %v %v)", dev, got, ok)
+	}
+	probed := old
+	probed.Source = "probe"
+	if _, _, _, ok := probed.Activity(); ok {
+		t.Fatal("a probe's reporter is never activity")
+	}
+}

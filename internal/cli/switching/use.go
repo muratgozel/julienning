@@ -148,6 +148,11 @@ func runUse(env cli.Env) error {
 		warnf(env, "%v; using the cached shared-account list", remoteErr)
 	}
 
+	// A shared target's usage is refreshed before the summary line shows
+	// it; the refresh also says when the dir is signed out.
+	if sel.email != "" && listing != nil && findAccount(listing, sel.email) != nil {
+		listing = probeListing(env, cfg, listing, now, sel.email)
+	}
 	if sel.email != "" {
 		sel.account = findAccount(listing, sel.email)
 		sel.shared = sel.account != nil

@@ -67,6 +67,7 @@ func runAccounts(env cli.Env) error {
 	if err != nil {
 		return err
 	}
+	listing = probeAccounts(env, cfg, listing, n)
 	// The listing is the allowlist: keep the status line's gate current.
 	cache, err := sharedcache.FromListing(listing, n)
 	if err != nil {
@@ -74,7 +75,7 @@ func runAccounts(env cli.Env) error {
 	}
 	syncRows := syncing(cache, listing)
 
-	local, unreadable := localConfigs(cfg)
+	local, signedOut, unreadable := localConfigs(cfg)
 	for _, name := range slices.Sorted(maps.Keys(unreadable)) {
 		warnf(env, "cannot read the account of config %s (%v)", name, unreadable[name])
 	}
@@ -85,9 +86,9 @@ func runAccounts(env cli.Env) error {
 	isCurrent := func(cd config.ConfigDir) bool { return curOK && cur.Dir == cd.Dir }
 
 	if *asJSON {
-		err = accountsJSON(env, listing, syncRows, local, isCurrent)
+		err = accountsJSON(env, listing, syncRows, local, signedOut, isCurrent)
 	} else {
-		err = accountsTable(env, cfg, listing, syncRows, local, isCurrent, n)
+		err = accountsTable(env, cfg, listing, syncRows, local, signedOut, isCurrent, n)
 	}
 	if err != nil {
 		return err
@@ -131,7 +132,7 @@ func syncing(cache *sharedcache.Cache, l *remote.Listing) []syncingAccount {
 	return out
 }
 
-func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syncRows []syncingAccount, local map[string][]config.ConfigDir,
+func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syncRows []syncingAccount, local, signedOut map[string][]config.ConfigDir,
 	isCurrent func(config.ConfigDir) bool, n time.Time) error {
 	if len(listing.Accounts) == 0 && len(syncRows) == 0 {
 		fmt.Fprintln(env.Stdout, "no shared accounts yet (share one: julienning share EMAIL)")
@@ -149,30 +150,39 @@ func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syn
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			rank, orDash(a.Nickname), a.Email, column(a.Session, n, loc), column(a.Week, n, loc),
-			stateFor(a, v, n, loc), localColumn(local[strings.ToLower(a.Email)], isCurrent), updated(a, n))
+			stateFor(a, v, n, loc), localColumn(local[strings.ToLower(a.Email)], signedOut[strings.ToLower(a.Email)], isCurrent), updated(a, n))
 	}
 	// Unranked: the Worker has not listed them yet.
 	for _, s := range syncRows {
 		fmt.Fprintf(tw, "-\t%s\t%s\t-\t-\t%s\t%s\t-\n",
-			orDash(s.nickname), s.email, syncingState, localColumn(local[s.email], isCurrent))
+			orDash(s.nickname), s.email, syncingState, localColumn(local[s.email], signedOut[s.email], isCurrent))
 	}
 	return tw.Flush()
 }
 
 // localColumn lists every registered dir logged into the account as a
-// home-shortened path, the selected one marked with `*`; "-" when none. Paths,
-// not config names: users never type dir names, but they do need to know
-// which directory holds the login.
-func localColumn(dirs []config.ConfigDir, isCurrent func(config.ConfigDir) bool) string {
-	if len(dirs) == 0 {
+// home-shortened path, the selected one marked with `*`, then the dirs
+// signed out of it with ` (signed out)`: they still hold the account's
+// sessions. "-" when none. Paths, not config names: users never type dir
+// names, but they do need to know which directory holds the login.
+func localColumn(dirs, signedOut []config.ConfigDir, isCurrent func(config.ConfigDir) bool) string {
+	if len(dirs) == 0 && len(signedOut) == 0 {
 		return "-"
 	}
-	paths := make([]string, len(dirs))
-	for i, cd := range dirs {
-		paths[i] = shortenHome(cd.Dir)
+	paths := make([]string, 0, len(dirs)+len(signedOut))
+	for _, cd := range dirs {
+		p := shortenHome(cd.Dir)
 		if isCurrent(cd) {
-			paths[i] = "*" + paths[i]
+			p = "*" + p
 		}
+		paths = append(paths, p)
+	}
+	for _, cd := range signedOut {
+		p := shortenHome(cd.Dir) + " (signed out)"
+		if isCurrent(cd) {
+			p = "*" + p
+		}
+		paths = append(paths, p)
 	}
 	return strings.Join(paths, ",")
 }
@@ -233,8 +243,10 @@ func yourMachines(a *remote.Account, self string, n time.Time) []string {
 			add(c.MachineID)
 		}
 	}
-	if a.Reporter != nil && a.Reporter.Dev == self && a.CollectedAt != nil && n.Sub(*a.CollectedAt) < ownActivityTTL {
-		add(a.Reporter.MachineID)
+	// The latest status line report, not whoever sent the newest numbers:
+	// a usage probe is not someone using the account.
+	if dev, machine, at, ok := a.Activity(); ok && dev == self && n.Sub(at) < ownActivityTTL {
+		add(machine)
 	}
 	return ids
 }
@@ -305,10 +317,15 @@ func stateFor(a *remote.Account, v viewer, n time.Time, loc *time.Location) stri
 	switch a.State {
 	case "in_use":
 		who := a.BusyBy
-		if len(who) == 0 && a.Reporter != nil {
-			who = []string{a.Reporter.Dev}
+		dev, _, at, active := a.Activity()
+		if len(who) == 0 && active {
+			who = []string{dev}
 		}
-		s := busy("in use", who, a.CollectedAt, n)
+		var since *time.Time
+		if active {
+			since = &at
+		}
+		s := busy("in use", who, since, n)
 		if you {
 			s += " and " + youText
 		}
@@ -421,7 +438,7 @@ func updated(a *remote.Account, n time.Time) string {
 // upgrade. Syncing accounts go in a top-level "syncing" array (always
 // present), never inside "accounts": they are not ranked and have no Worker
 // record yet.
-func accountsJSON(env cli.Env, l *remote.Listing, syncRows []syncingAccount, local map[string][]config.ConfigDir, isCurrent func(config.ConfigDir) bool) error {
+func accountsJSON(env cli.Env, l *remote.Listing, syncRows []syncingAccount, local, signedOut map[string][]config.ConfigDir, isCurrent func(config.ConfigDir) bool) error {
 	doc, err := l.Object()
 	if err != nil {
 		return err
@@ -436,6 +453,8 @@ func accountsJSON(env cli.Env, l *remote.Listing, syncRows []syncingAccount, loc
 		names, preferred := configNames(local[strings.ToLower(email)], isCurrent)
 		a["local_config"] = preferred
 		a["local_configs"] = names
+		out, _ := configNames(signedOut[strings.ToLower(email)], isCurrent)
+		a["signed_out_configs"] = out
 	}
 	rows := make([]any, 0, len(syncRows))
 	for _, s := range syncRows {
@@ -444,7 +463,8 @@ func accountsJSON(env cli.Env, l *remote.Listing, syncRows []syncingAccount, loc
 			nick = s.nickname
 		}
 		names, _ := configNames(local[s.email], isCurrent)
-		rows = append(rows, map[string]any{"email": s.email, "nickname": nick, "local_configs": names})
+		out, _ := configNames(signedOut[s.email], isCurrent)
+		rows = append(rows, map[string]any{"email": s.email, "nickname": nick, "local_configs": names, "signed_out_configs": out})
 	}
 	doc["syncing"] = rows
 	return printJSON(env, doc)

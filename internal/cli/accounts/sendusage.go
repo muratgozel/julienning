@@ -14,6 +14,7 @@ import (
 	"github.com/muratgozel/julienning/internal/remote"
 	"github.com/muratgozel/julienning/internal/sharedcache"
 	"github.com/muratgozel/julienning/internal/usage"
+	"github.com/muratgozel/julienning/internal/usageprobe"
 )
 
 func init() {
@@ -104,12 +105,21 @@ func runSendUsage(env cli.Env) error {
 	}
 	sendReport(ctx, client, logger, dir, addr, payload, report, *force, time.Duration(cfg.SendMinIntervalSec)*time.Second)
 
+	// The status line had rate limits, so this dir's login works: a usage
+	// probe's signed-out mark on it is out of date.
+	if cd, err := claudecfg.ActiveDir(os.Getenv(usage.EnvConfigDir)); err == nil {
+		if err := usageprobe.ClearSignedOut(cd); err != nil {
+			_ = logger.LogThrottled(usageprobe.CodeProbeFailed, err.Error())
+		}
+	}
+
 	// Upkeep rides on the reporter because it runs while Claude is in use,
 	// which is exactly when crashed sessions (no SessionEnd) need cleaning up.
 	// It runs even when the report was debounced; its own markers keep it
 	// rare, and the claim-sync lock keeps it to one process per machine.
 	u := upkeep{cfg: cfg, client: client, logger: logger, now: n}
-	if backgroundUpkeep(ctx, u) {
+	if ran, listing := backgroundUpkeep(ctx, u); ran {
+		u.probeIdle(listing)
 		u.updateIfDue()
 	}
 	return nil
@@ -184,28 +194,29 @@ func sendReport(ctx context.Context, client remote.Client, logger usage.Logger, 
 // backgroundUpkeep reconciles claims at most every claims.ReconcileEvery and
 // refreshes shared.json when stale. Nothing due means no lock and no I/O
 // beyond two stats, so running it on every render is cheap. It reports
-// whether it ran; the update check rides on the same occasions, but after
-// the claim-sync lock is released (see upkeep.updateIfDue).
-func backgroundUpkeep(ctx context.Context, u upkeep) bool {
+// whether it ran, and the listing refreshShared fetched (nil when it did
+// not); the background usage probes and the update check ride on the same
+// occasions, but after the claim-sync lock is released (see upkeep.probeIdle
+// and upkeep.updateIfDue).
+func backgroundUpkeep(ctx context.Context, u upkeep) (bool, *remote.Listing) {
 	reconcile := claims.ReconcileDue(u.now)
 	stale := sharedStale(u.now)
 	if !reconcile && !stale {
-		return false
+		return false, nil
 	}
 	release, ok, err := claims.AcquireLock(u.now)
 	if err != nil {
 		u.fail(usage.CodeClaimSync, err)
-		return false
+		return false, nil
 	}
 	if !ok {
-		return false // claim-sync (or another reporter) is doing this right now
+		return false, nil // claim-sync (or another reporter) is doing this right now
 	}
 	defer release()
 	if reconcile {
 		u.reconcile(ctx, claims.Ending{})
 	}
-	u.refreshShared(ctx)
-	return true
+	return true, u.refreshShared(ctx)
 }
 
 // sendFailed records one SEND_FAILED line, at most once per 10 minutes per

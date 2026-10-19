@@ -7,6 +7,8 @@ package resolve
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/muratgozel/julienning/internal/claudecfg"
@@ -33,9 +35,26 @@ type Match struct {
 // machine is logged into it.
 type NotLocalError struct {
 	Nickname, Email string
+	// SignedOut are the registered dirs that held the account last
+	// (config.ConfigDir.LastEmail) and have no login now: Claude Code signed
+	// them out. Their sessions are still there; `julienning login` signs in
+	// there again.
+	SignedOut []config.ConfigDir
 }
 
 func (e *NotLocalError) Error() string {
+	if len(e.SignedOut) > 0 {
+		who := e.Email
+		if e.Nickname != "" {
+			who = e.Nickname
+		}
+		label := who
+		if e.Nickname != "" {
+			label += " (" + e.Email + ")"
+		}
+		return fmt.Sprintf("%s is signed out on this machine (%s held it last and has no login now); sign in again with: julienning login %s",
+			label, shortenHome(e.SignedOut[0].Dir), who)
+	}
 	const hint = "sign in with `julienning login <config>` or `julienning new-config`"
 	if e.Nickname != "" {
 		return fmt.Sprintf("%s (%s) is shared but not logged in on this machine; %s", e.Nickname, e.Email, hint)
@@ -56,6 +75,23 @@ func Dirs(cfg *config.Config, email string, current *config.ConfigDir) []config.
 			} else {
 				out = append(out, cd)
 			}
+		}
+	}
+	return out
+}
+
+// SignedOutDirs returns the registered dirs, by name, whose last recorded
+// login was email and that have no login now (the account file is missing
+// or names nobody). An unreadable account file is not "no login".
+func SignedOutDirs(cfg *config.Config, email string) []config.ConfigDir {
+	email = strings.ToLower(email)
+	var out []config.ConfigDir
+	for _, cd := range cfg.Configs {
+		if cd.LastEmail != email {
+			continue
+		}
+		if _, err := claudecfg.ReadEmail(cd.Dir); errors.Is(err, claudecfg.ErrNotLoggedIn) {
+			out = append(out, cd)
 		}
 	}
 	return out
@@ -97,7 +133,7 @@ func Target(cfg *config.Config, cache *sharedcache.Cache, arg string, current *c
 func byEmail(cfg *config.Config, email, nick, via string, current *config.ConfigDir) (Match, error) {
 	dirs := Dirs(cfg, email, current)
 	if len(dirs) == 0 {
-		return Match{}, &NotLocalError{Nickname: nick, Email: email}
+		return Match{}, &NotLocalError{Nickname: nick, Email: email, SignedOut: SignedOutDirs(cfg, email)}
 	}
 	return Match{Dir: dirs[0], Email: email, Nickname: nick, Via: via}, nil
 }
@@ -111,4 +147,20 @@ func Label(cache *sharedcache.Cache, cd config.ConfigDir, email string) string {
 		}
 	}
 	return cd.Name
+}
+
+// shortenHome shows a path under $HOME as ~/…, as every message does.
+func shortenHome(path string) string {
+	h, err := os.UserHomeDir()
+	if err != nil || h == "" {
+		return path
+	}
+	h = filepath.Clean(h)
+	if path == h {
+		return "~"
+	}
+	if strings.HasPrefix(path, h+string(filepath.Separator)) {
+		return "~" + path[len(h):]
+	}
+	return path
 }
