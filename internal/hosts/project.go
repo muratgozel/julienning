@@ -183,20 +183,20 @@ func firstLine(path string) string {
 	return strings.TrimSpace(line)
 }
 
-type remote struct{ name, url string }
+type gitRemote struct{ name, url string }
 
 var sectionRe = regexp.MustCompile(`^\[\s*remote\s+"((?:[^"\\]|\\.)*)"\s*\]`)
 
 // readRemotes reads every url of every [remote "…"] section of a git config
 // file, origin first, then in file order. url.*.insteadOf is ignored, as
 // SPEC says: the URL written is what identifies the repository.
-func readRemotes(path string) []remote {
+func readRemotes(path string) []gitRemote {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	var out []remote
+	var out []gitRemote
 	current, inRemote := "", false
 	sc := bufio.NewScanner(io.LimitReader(f, 1<<20))
 	for sc.Scan() {
@@ -220,11 +220,11 @@ func readRemotes(path string) []remote {
 			continue
 		}
 		if v := configValue(val); v != "" {
-			out = append(out, remote{name: current, url: v})
+			out = append(out, gitRemote{name: current, url: v})
 		}
 	}
 	// origin first, the rest in file order.
-	var sorted []remote
+	var sorted []gitRemote
 	for _, r := range out {
 		if r.name == "origin" {
 			sorted = append(sorted, r)

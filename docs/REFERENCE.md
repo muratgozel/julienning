@@ -80,8 +80,10 @@ entered at `julienning setup` and shared out of band.
 - **Other machines** ([hosts](#other-machines)) are reached only through your
   own `ssh`. The team token reaches a host only on ssh's stdin, during
   `julienning host add`, never on a command line other users there could see.
-  Nothing about hosts reaches the Worker beyond what each machine already
-  reports as itself.
+  Session transcripts leave a machine only through `julienning transfer`, to
+  a machine you added, over your own ssh connection; logins, credentials and
+  the live-session registry never travel. Nothing about hosts reaches the
+  Worker beyond what each machine already reports as itself.
 
 ## Install
 
@@ -1166,6 +1168,64 @@ In `accounts` here, your own claims say where they come from:
 `in use by you here and on box`, `in use by you on another machine` (a
 machine not in `host list`).
 
+### Moving a session to another machine
+
+```
+julienning transfer [--host SOURCE] [--to HOST] [TARGET] [--all] [--limit N] [--no-launch]
+```
+
+`transfer` moves a conversation between machines and resumes it there:
+from this machine by default (`--host box`: from box), to `--to box` (or
+`--to local`), else a picker of the other machines. It needs a terminal.
+
+1. The account it goes into is chosen on the destination like
+   [`next`](#daily-use) (TARGET names one, like `use TARGET`; team accounts
+   only) and becomes that machine's selection:
+   `Moving into alpha (claude1@example.com) in ~/.claude-x on box — session 12% → 17:30, week 28% → Tue 21:00.`
+2. The picker lists the sessions of your shared accounts on the source, in
+   this directory's project there (`--all`: every project). Personal
+   accounts never show up; open ones cannot be picked.
+3. The destination finds its checkout of the session's project by the
+   repository's remote URL, as [--host](#--host) does. When it has none:
+
+   ```
+   box has no checkout of github.com/x/shop under /home/dev (checked 2 projects Claude used there and folders named shop).
+   Clone it there, for example:
+     git clone git@github.com:x/shop.git ~/Code/shop
+   then run the transfer again, or type the path of a checkout on box (Enter cancels):
+   ```
+
+   Code never moves; the checkout must already be there. A different branch
+   is only a warning
+   (`the session was on branch feat/x; box's ~/src/shop is on main`).
+4. Asked first:
+   `Move "Fix flaky clock tests" from beta on this machine to alpha on box?`
+   (Enter or `y` moves, `n` or Esc goes back to the list).
+5. It moves the transcript, checkpoints, task list and session environment,
+   rewrites every path in them for the destination (checkout, config dir,
+   home), and merges the project memory (never overwriting). Sessions over
+   5 MB show their progress.
+   `Moved "Fix flaky clock tests" from beta on this machine to alpha on box (memory: 1 file added; 214 paths rewritten for ~/src/shop).`
+6. It resumes it there, in that machine's [tmux mode](#tmux-mode);
+   `--no-launch` prints how instead:
+   `Resume it on box: cd ~/src/shop && claude-alpha --resume 3f2a9c1b-…`.
+
+Claude Code must match in major.minor on both machines (patch releases may
+differ): otherwise the transfer stops before anything is chosen
+(`This machine runs Claude Code 2.1.303 and box 2.0.14; a transfer needs the same major.minor on both machines (patch releases may differ); update Claude Code on box (claude update) and run the transfer again`),
+and a session last written by another major.minor than the destination's
+is greyed out (`(written by Claude Code 2.0; box runs 2.1)`).
+
+The source keeps the session until the destination has a verified copy.
+A transfer cut off before that leaves nothing on the destination. When the
+answer is lost after the destination committed (`cannot reach box (…)`),
+both machines hold it; running the same transfer again finishes it
+(`box already had "Fix flaky clock tests" from a transfer that lost its connection; finished it.`).
+When the session changed on the source while it travelled, both copies
+stay (`"…" changed on this machine while it was being sent; both copies are kept (box has it as it was before the change)`).
+Between two hosts (`--host box --to gpu`) this machine relays; the two never
+connect to each other.
+
 ### host list / host remove
 
 ```
@@ -1583,6 +1643,9 @@ Common messages:
 - **`box: no answer from julienning at … (run: julienning host add box to repair the entry)`**:
   julienning moved or was removed there; `host add` finds it again or
   reinstalls it.
+- **`julienning: box: this machine already has a session with id … ; resume it here, or remove it first`**
+  (transfer): the destination has that session already and it is not the
+  copy a lost transfer left (it was resumed there since). Resume it there.
 - **Status line shows only model and context**: julienning replaced that dir's
   statusLine; `forget` or `uninstall` restores yours.
 - **`Worker URL or token not configured (run: julienning setup, or set JULIENNING_REMOTE_URL and JULIENNING_TOKEN)`**:
@@ -1647,6 +1710,7 @@ Common messages:
 | `pins.json` | [pins](#pins): directory → account email (the `claude` function asks julienning about pins only while it exists) |
 | `hosts.json` | [other machines](#other-machines): name, ssh destination, machine id, home, platform and the paths of julienning, claude and tmux there |
 | `ssh/` | ssh control sockets, one per host |
+| `received/` | receipts of sessions [transferred](#moving-a-session-to-another-machine) to this machine, one per session id, kept 30 days (they let a transfer that lost its answer finish) |
 | `shared.json` | allowlist snapshot: shared emails and their team nicknames (read by the status line, hooks and `claude-<nickname>`) |
 | `claims.json` | emails this machine holds a claim on |
 | `patches.json` | statusLine values replaced in settings.json, for restore |

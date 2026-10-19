@@ -37,6 +37,10 @@ type Session struct {
 	// MaybeOpen: the session's dir has no live registry (older Claude Code)
 	// and the file changed in the last RecentWindow, so it may be open.
 	MaybeOpen bool `json:"maybe_open,omitempty"`
+	// ClaudeVersion is the Claude Code version that last wrote the
+	// transcript, GitBranch the last branch it records; "" when unknown.
+	ClaudeVersion string `json:"claude_version,omitempty"`
+	GitBranch     string `json:"git_branch,omitempty"`
 }
 
 // ShortID is the first 8 characters of the id, as shown in the picker.

@@ -366,3 +366,54 @@ func plural(n int, one, many string) string {
 	}
 	return fmt.Sprintf("%d %s", n, many)
 }
+
+// Check takes a checkout the user typed (SPEC "Locating a project": the
+// question after nothing was found): `~` is this machine's home, and it
+// need not be inside it, since it is not a search. For a project in a
+// repository it must be a checkout sharing a remote URL; the project's sub
+// folder must exist in it.
+func Check(p *Project, typed string, o LocateOptions) (Located, error) {
+	home := filepath.Clean(o.Home)
+	dir := strings.TrimSpace(typed)
+	switch {
+	case dir == "~":
+		dir = home
+	case strings.HasPrefix(dir, "~/"):
+		dir = filepath.Join(home, dir[2:])
+	}
+	if !filepath.IsAbs(dir) {
+		return Located{}, fmt.Errorf("%s is not an absolute path (start it with / or ~/)", typed)
+	}
+	dir = filepath.Clean(dir)
+	if !isDir(dir) {
+		return Located{}, fmt.Errorf("%s has no directory %s", o.Machine, shorten(dir, home))
+	}
+	if !p.InRepo() {
+		return Located{Cwd: dir, How: "typed"}, nil
+	}
+	wt, ok := findWorktree(dir)
+	if !ok {
+		return Located{}, fmt.Errorf("%s is not a git checkout", shorten(dir, home))
+	}
+	if !verify(p, wt) {
+		var theirs string
+		if rs := readRemotes(filepath.Join(wt.commonDir, "config")); len(rs) > 0 {
+			theirs = NormalizeRemote(rs[0].url)
+		}
+		if theirs == "" {
+			return Located{}, fmt.Errorf("that checkout has no remote, so it cannot be told apart from %s", p.Remotes[0])
+		}
+		return Located{}, fmt.Errorf("that is a checkout of %s, not %s", theirs, p.Remotes[0])
+	}
+	loc := Located{Checkout: wt.top, Branch: wt.branch(), How: "typed", Cwd: wt.top}
+	if root, ok := sessions.GitRoot(wt.top); ok {
+		loc.GitRoot = root
+	}
+	if p.Sub != "" {
+		loc.Cwd = filepath.Join(wt.top, p.Sub)
+		if !isDir(loc.Cwd) {
+			return Located{}, &PathMissingError{Machine: o.Machine, Checkout: shorten(wt.top, home), Sub: p.Sub, RanIn: o.RanIn}
+		}
+	}
+	return loc, nil
+}

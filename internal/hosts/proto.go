@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+
+	"github.com/muratgozel/julienning/internal/remote"
+	"github.com/muratgozel/julienning/internal/sessions"
 )
 
 // Proto is the agent protocol version (SPEC "Agent"). Within one proto a
@@ -255,4 +258,98 @@ func DecodeArg(s string, v any) error {
 		return Errorf(CodeInvalid, "the request is not valid JSON: %v", err)
 	}
 	return nil
+}
+
+// LocateRequest is `agent locate`'s stdin: find the project's checkout on
+// this machine (SPEC "Locating a project"), or check Path, a checkout the
+// user typed.
+type LocateRequest struct {
+	Project *Project `json:"project"`
+	// Branch is preferred among several checkouts (the session's).
+	Branch string `json:"branch,omitempty"`
+	// Machine is the controller's name for this machine; RanIn says where
+	// the session ran, for messages.
+	Machine string `json:"machine"`
+	RanIn   string `json:"ran_in,omitempty"`
+	Path    string `json:"path,omitempty"`
+}
+
+// SessionsRequest is `agent sessions`'s stdin: the sessions transfer may
+// move from this machine, in its checkout of Project (nil: every project).
+type SessionsRequest struct {
+	Project *Project `json:"project"`
+	All     bool     `json:"all"`
+	Limit   int      `json:"limit"`
+	Machine string   `json:"machine"`
+}
+
+// SessionsAnswer lists them: Cwd is the directory listed ("" with all),
+// Labels name each config dir as picker rows do, Projects is each listed
+// session's project, computed here (the destination locates it).
+type SessionsAnswer struct {
+	Cwd      string              `json:"cwd"`
+	Sessions []sessions.Session  `json:"sessions"`
+	Labels   map[string]string   `json:"labels"`
+	Projects map[string]*Project `json:"projects"`
+	Warnings []string            `json:"warnings,omitempty"`
+}
+
+// ChooseRequest is `agent choose`'s stdin: TARGET, or "" to rank like next;
+// TZ renders the warnings' times in the controller's zone.
+type ChooseRequest struct {
+	Target string `json:"target"`
+	TZ     string `json:"tz,omitempty"`
+}
+
+// ChooseAnswer is the account the session moves into; it is now this
+// machine's selection.
+type ChooseAnswer struct {
+	Config   string          `json:"config"`
+	Dir      string          `json:"dir"`
+	Email    string          `json:"email"`
+	Nickname string          `json:"nickname"`
+	Account  *remote.Account `json:"account"`
+	Warnings []string        `json:"warnings,omitempty"`
+}
+
+// ExportRequest is `agent export`'s stdin; the answer is the frame line,
+// then the archive's header line and the archive (sessions.Pack).
+type ExportRequest struct {
+	ID        string `json:"id"`
+	ConfigDir string `json:"config_dir"`
+}
+
+// ReceiveRequest is the first line of `agent receive`'s stdin, written by
+// the controller ahead of the export's header line and archive: where the
+// session goes (choose's account, locate's directory).
+type ReceiveRequest struct {
+	ConfigDir string `json:"config_dir"`
+	Email     string `json:"email"`
+	Cwd       string `json:"cwd"`
+	Checkout  string `json:"checkout"`
+	GitRoot   string `json:"git_root"`
+	From      string `json:"from"`
+}
+
+// ReleaseRequest is `agent release`'s stdin.
+type ReleaseRequest struct {
+	ID             string `json:"id"`
+	ConfigDir      string `json:"config_dir"`
+	ManifestSHA256 string `json:"manifest_sha256"`
+}
+
+// ReleaseAnswer is `agent release`'s answer.
+type ReleaseAnswer struct {
+	Released bool     `json:"released"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// LaunchRequest is `agent launch`'s argument: resume a session (Args) in
+// Dir's account from Cwd, in this machine's tmux mode.
+type LaunchRequest struct {
+	MachineID string   `json:"machine_id"`
+	Dir       string   `json:"dir"`
+	Cwd       string   `json:"cwd"`
+	Args      []string `json:"args"`
+	Host      string   `json:"host,omitempty"`
 }

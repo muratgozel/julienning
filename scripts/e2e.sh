@@ -203,9 +203,10 @@ case "$os" in darwin) rc="$HOME/.bash_profile" ;; *) rc="$HOME/.bashrc" ;; esac
 unset CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CONFIG_HOME JULIENNING_REMOTE_URL JULIENNING_TOKEN \
   JULIENNING_NOW_EPOCH JULIENNING_AUTO_UPDATE JULIENNING_RELEASES_BASE JULIENNING_REPO JULIENNING_VERSION
 
-# A claude that only reports which config dir it was started with.
+# A claude that only reports which config dir it was started with (and a
+# version, which transfer compares between machines).
 # shellcheck disable=SC2016 # the variables are for the fake claude to expand
-printf '#!/bin/sh\necho "FAKE CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$T/fakebin/claude"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo "2.1.303 (Claude Code)"; exit 0; fi\necho "FAKE CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$T/fakebin/claude"
 chmod +x "$T/fakebin/claude"
 # A tmux that logs every call as [arg][arg]... to $T/tmux.log and keeps one
 # session (the file $T/tmux-session). A window runs its command at once, with
@@ -709,8 +710,9 @@ claude() {
 }
 RC
 cp "$host_rc" "$T/before/host_rc"
+# Another patch release than this machine's: transfer must allow it.
 # shellcheck disable=SC2016 # the variables are for the fake claude to expand
-printf '#!/bin/sh\necho "HOST CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$H/.local/bin/claude"
+printf '#!/bin/sh\nif [ "$1" = --version ]; then echo "2.1.300 (Claude Code)"; exit 0; fi\necho "HOST CLAUDE dir=${CLAUDE_CONFIG_DIR:-<unset>} args=$*"\n' >"$H/.local/bin/claude"
 sed -e "s|$T/tmux.log|$T/host-tmux.log|" -e "s|$T/tmux-session|$T/host-tmux-session|" -e "s|$T/fakebin/window-shell|$H/.local/bin/window-shell|" \
   "$T/fakebin/tmux" >"$H/.local/bin/tmux"
 printf '#!/bin/sh\necho "HOST WINDOW SHELL"\n' >"$H/.local/bin/window-shell"
@@ -730,8 +732,20 @@ done
 printf '%s %s\n' "\$dest" "\$*" >>"$T/ssh.log"
 if [ "\$dest" != box ]; then echo "ssh: Could not resolve hostname \$dest: nodename nor servname provided" >&2; exit 255; fi
 cd "$H" || exit 255
-exec env -i HOME="$H" USER=dev LOGNAME=dev SHELL=/bin/bash PATH="$H/.local/bin:/usr/bin:/bin" \
-  SSH_CONNECTION="127.0.0.1 50000 127.0.0.2 22" TERM="\${TERM:-dumb}" /bin/sh -c "\$1"
+remote() {
+  env -i HOME="$H" USER=dev LOGNAME=dev SHELL=/bin/bash PATH="$H/.local/bin:/usr/bin:/bin" \
+    SSH_CONNECTION="127.0.0.1 50000 127.0.0.2 22" TERM="\${TERM:-dumb}" /bin/sh -c "\$1"
+}
+# \$T/drop-receive: the next receive runs, but its answer is lost.
+case "\$1" in *" agent receive"*)
+  if [ -f "$T/drop-receive" ]; then
+    rm -f "$T/drop-receive"
+    remote "\$1" >/dev/null
+    echo "Connection to box closed by remote host." >&2
+    exit 255
+  fi ;;
+esac
+remote "\$1"
 SSH
 chmod +x "$T/fakebin/ssh"
 on_host() { env -i HOME="$H" USER=dev SHELL=/bin/bash PATH="$H/.local/bin:/usr/bin:/bin" "$@"; }
@@ -845,6 +859,57 @@ run julienning host add box --yes
 expect_contains "host add --yes updates the host to this machine's version" "Updated julienning on box to 9.1.0." "$out"
 run julienning accounts --host box
 expect_contains "forwarding works again after the update" "alpha" "$out"
+
+# Transfer: a session of this machine's checkout moves to box's checkout of
+# the same repository and resumes there; it comes back with --no-launch;
+# a transfer whose answer is lost after box committed finishes on retry.
+sid_move=77777777-7777-4777-8777-777777777777
+enc_shop="$(printf '%s' "$HOME/Code/shop/web" | sed 's/[^A-Za-z0-9]/-/g')"
+host_enc_shop="$(printf '%s' "$H/src/shop/web" | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$HOME/.claude-work/projects/$enc_shop" "$HOME/.claude-work/file-history/$sid_move"
+printf '{"type":"user","isSidechain":false,"cwd":"%s","sessionId":"%s","version":"2.1.303","gitBranch":"main","message":{"role":"user","content":"fix %s/app.go"},"timestamp":"2026-01-02T10:00:00.000Z"}\n{"type":"ai-title","aiTitle":"Travelling task","sessionId":"%s"}\n' \
+  "$HOME/Code/shop/web" "$sid_move" "$HOME/Code/shop/web" "$sid_move" >"$HOME/.claude-work/projects/$enc_shop/$sid_move.jsonl"
+printf 'package main // %s\n' "$HOME/Code/shop/web" >"$HOME/.claude-work/file-history/$sid_move/0123456789abcdef@v1"
+touch -t 202601021000 "$HOME/.claude-work/projects/$enc_shop/$sid_move.jsonl"
+rm -f "$T/host-tmux.log" "$T/host-tmux-session"
+steps=('expect=Travelling task' 'send=Travelling' 'sleep=300ms' 'send=\r' 'expect=Move "Travelling task"' 'sleep=500ms' 'send=\r' 'expect=HOST WINDOW SHELL')
+out="$(cd "$HOME/Code/shop/web" && "$T/ptydrive" "${steps[@]}" -- env TERM=xterm-256color julienning transfer --to box 2>&1)" ||
+  fail "transfer --to box failed" "$out"
+expect_contains "transfer names the account it moves into on the host" "Moving into alpha (alpha@example.com) in ~/.claude-team on box" "$out"
+expect_contains "transfer reports the move and the rewrite" 'Moved "Travelling task" from alpha on this machine to alpha on box (' "$out"
+expect_contains "the paths were rewritten for the host's checkout" "paths rewritten for ~/src/shop/web)" "$out"
+expect_contains "the session resumes on box, in its tmux session" "HOST CLAUDE dir=$H/.claude-team args=--resume $sid_move" "$out"
+moved="$H/.claude-team/projects/$host_enc_shop/$sid_move.jsonl"
+[ -f "$moved" ] || fail "the transcript is not in box's project folder"
+expect_contains "the transcript's cwd is box's checkout" "\"cwd\":\"$H/src/shop/web\"" "$(cat "$moved")"
+expect_missing "no path of this machine is left in it" "$HOME/Code/shop" "$(cat "$moved")"
+expect_contains "file-history is copied as it was" "$HOME/Code/shop/web" "$(cat "$H/.claude-team/file-history/$sid_move/0123456789abcdef@v1")"
+[ ! -e "$HOME/.claude-work/projects/$enc_shop/$sid_move.jsonl" ] || fail "this machine still has the moved session"
+ok "this machine no longer has the moved session"
+
+steps=('expect=Travelling task' 'send=Travelling' 'sleep=300ms' 'send=\r' 'expect=Move "Travelling task"' 'sleep=500ms' 'send=\r' 'expect=Resume it on this machine')
+out="$(cd "$HOME/Code/shop/web" && "$T/ptydrive" "${steps[@]}" -- env TERM=xterm-256color julienning transfer --host box --to local alpha --no-launch 2>&1)" ||
+  fail "transfer --host box --to local failed" "$out"
+expect_contains "transfer --host lists box's sessions in its checkout" "in ~/src/shop/web on box" "$out"
+expect_contains "the session comes back" 'Moved "Travelling task" from alpha on box to alpha on this machine (' "$out"
+expect_contains "--no-launch says how to resume it" "Resume it on this machine: cd ~/Code/shop/web && claude-alpha --resume $sid_move" "$out"
+expect_contains "its cwd is this machine's checkout again" "\"cwd\":\"$HOME/Code/shop/web\"" "$(cat "$HOME/.claude-work/projects/$enc_shop/$sid_move.jsonl")"
+[ ! -e "$moved" ] || fail "box still has the session it sent"
+ok "box no longer has the session it sent"
+
+touch "$T/drop-receive"
+steps=('expect=Travelling task' 'send=Travelling' 'sleep=300ms' 'send=\r' 'expect=Move "Travelling task"' 'sleep=500ms' 'send=\r' 'expect=cannot reach box')
+out="$(cd "$HOME/Code/shop/web" && "$T/ptydrive" "${steps[@]}" -- env TERM=xterm-256color julienning transfer --to box --no-launch 2>&1)" || true
+expect_contains "a lost answer is reported" "cannot reach box (Connection to box closed by remote host.)" "$out"
+[ -f "$moved" ] || fail "box did not commit the session before the answer was lost"
+[ -f "$HOME/.claude-work/projects/$enc_shop/$sid_move.jsonl" ] || fail "the source let go of a session without an answer"
+ok "after a lost answer both machines hold the session"
+steps=('expect=Travelling task' 'send=Travelling' 'sleep=300ms' 'send=\r' 'expect=Move "Travelling task"' 'sleep=500ms' 'send=\r' 'expect=finished it')
+out="$(cd "$HOME/Code/shop/web" && "$T/ptydrive" "${steps[@]}" -- env TERM=xterm-256color julienning transfer --to box --no-launch 2>&1)" ||
+  fail "the retried transfer failed" "$out"
+expect_contains "the retry finishes the transfer" 'box already had "Travelling task" from a transfer that lost its connection; finished it.' "$out"
+[ ! -e "$HOME/.claude-work/projects/$enc_shop/$sid_move.jsonl" ] || fail "the retry did not release this machine's copy"
+ok "the retry released this machine's copy"
 
 run julienning uninstall --host box --purge --yes
 expect_same "uninstall --host restores the host's rc file byte for byte" "$T/before/host_rc" "$host_rc"

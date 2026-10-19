@@ -46,8 +46,8 @@ Cloudflare Workers + KV) and the repo plumbing. Keep it current.
   target open that account in the directory and below it (see "pin /
   unpin").
 - **host**: another machine reachable over `ssh` that runs its own
-  julienning; commands take `--host NAME` (see "Hosts"), and `transfer`
-  (planned) moves sessions between machines.
+  julienning; commands take `--host NAME`, and `transfer` moves sessions
+  between machines (see "Hosts").
 
 ## Nicknames
 
@@ -168,6 +168,7 @@ integration"); dir-name aliases no longer exist.
 | `pins.json` | pins | `{version: 1, pins: [{dir, email}]}` sorted by dir; removed when the last pin goes (see "pin / unpin") |
 | `hosts.json` | hosts | `{version: 1, hosts: [...]}` sorted by name, 0600 (see below and "Hosts") |
 | `ssh/` | sshx | ssh control sockets, one per host, named by ssh's `%C` hash (0700) |
+| `received/` | sessions | receipts of sessions this machine received by `transfer`, `<session id>.json` each, pruned after 30 days (see "Moving a session between machines") |
 | `shared.json` | sharedcache | allowlist snapshot `{fetched_at, emails, nicknames}` (`nicknames`: email → nickname, omitted when none) |
 | `claims.json` | claims | emails this machine currently holds a claim on |
 | `patches.json` | claudecfg | per settings.json path: prior `statusLine` value for restore |
@@ -1419,14 +1420,9 @@ the Worker removes the email from `shared.json`.
 
 ## Hosts
 
-> **Partly planned (branch `murat/hosts`).** Implemented: hosts.json, the
-> transport, the agent verbs `hello`, `bootstrap`, `inventory`, `run` and
-> `install-self`, the version rule, `host add|list|remove`, `--host` and
-> "Locating a project" (used by forwarding). Planned: `transfer`, the agent
-> verbs it uses (`locate`, `sessions`, `choose`, `export`, `receive`,
-> `release`, `launch`), `received/` and "Moving a session between
-> machines". Rules that change other sections live there (Local state,
-> uninstall, accounts, tmux mode, shell integration, dev, Repo plumbing).
+> Built on branch `murat/hosts`. Rules that change other sections live
+> there (Local state, uninstall, accounts, tmux mode, shell integration,
+> dev, Repo plumbing); this section keeps what is specific to hosts.
 
 A **host** is another machine reachable with `ssh` that runs its own
 julienning: its own registered dirs, logins, selection, pins, hooks, status
@@ -1458,11 +1454,7 @@ Alpine has busybox and often no bash, NixOS keeps tools under
 
 ### Local state
 
-`hosts.json` and `ssh/` are in "Local state" above. Planned with `transfer`:
-
-| File | Owner | Purpose |
-|------|-------|---------|
-| `received/` | sessions | receipts of sessions this machine received by `transfer`, one per session id, pruned after 30 days |
+`hosts.json`, `ssh/` and `received/` are in "Local state" above.
 
 ### Transport (`internal/sshx`)
 
@@ -1513,13 +1505,13 @@ Alpine has busybox and often no bash, NixOS keeps tools under
 | `bootstrap` | stdin `{dev, worker_url, token, replace_worker, replace_token?}` | `{created, token_updated, worker_replaced, token_rejected?, worker_error?}` | `host add` |
 | `inventory` | – | `{configs: [{name, dir, email, nickname, shared, current}]}` | `host list` |
 | `run` | argument `{machine_id, argv, project, tz, no_color, host}` | none: it becomes `julienning ARGV` | `--host` |
-| `locate` (planned) | stdin `{project}` | `{cwd, checkout, git_root, branch, how}` | `transfer` |
-| `sessions` (planned) | stdin `{project, all, limit}` | `{cwd, sessions: [...]}` | `transfer` (source) |
-| `choose` (planned) | stdin `{target}` | `{config, dir, email, nickname, account, warnings}` | `transfer` (destination) |
-| `export` (planned) | stdin `{id, config_dir}` | header line, then the archive | `transfer` (source) |
-| `receive` (planned) | stdin header line, then the archive | `{committed, already, report}` | `transfer` (destination) |
-| `release` (planned) | stdin `{id, config_dir, manifest_sha256}` | `{released}` | `transfer` (source) |
-| `launch` (planned) | argument `{machine_id, dir, cwd, args}` | none: it becomes claude | `transfer` (resume) |
+| `locate` | stdin `{project, branch, machine, ran_in, path?}` | `{cwd, checkout, git_root, branch, how}` | `transfer` (destination) |
+| `sessions` | stdin `{project, all, limit, machine}` | `{cwd, sessions: [...], labels, projects, warnings}` | `transfer` (source) |
+| `choose` | stdin `{target, tz}` | `{config, dir, email, nickname, account, warnings}` | `transfer` (destination) |
+| `export` | stdin `{id, config_dir}` | header line, then the archive | `transfer` (source) |
+| `receive` | stdin: the controller's request line `{config_dir, email, cwd, checkout, git_root, from}`, then the export's header line and archive | `{committed, already, manifest_sha256, project_folder, rewrites, memory, warnings}` | `transfer` (destination) |
+| `release` | stdin `{id, config_dir, manifest_sha256}` | `{released, warnings}` | `transfer` (source) |
+| `launch` | argument `{machine_id, dir, cwd, args, host}` | none: it becomes claude | `transfer` (resume) |
 | `install-self` | – | `{version, link}` | `host add` (fallback install) |
 
 - `proto` is an integer, 1 at first. Within one proto a verb only gains
@@ -1562,6 +1554,22 @@ Alpine has busybox and often no bash, NixOS keeps tools under
 - `install-self`: the running binary (a temporary copy) installs itself as
   its own version (`selfupdate.InstallSelf`: versions dir, `version` run
   first, the command symlink switched, old versions pruned).
+- The transfer verbs act only on registered config dirs (`INVALID`
+  otherwise). `locate` searches without a picker (its stdin is the request):
+  several checkouts are `AMBIGUOUS`, and the controller then asks for a
+  path, which a second call checks (`path`: `~` is this machine's home; a
+  checkout sharing a remote URL, the sub folder present). `sessions` locates
+  the controller's project first (none with `all`), lists like
+  `switching.TransferSessions` (shared accounts only) and returns, per
+  listed `cwd`, the project computed here, which the destination locates.
+  `choose` is `switching.Choose` (it becomes the selection), its warnings
+  rendered in `tz`. `export` answers the frame line and then streams the
+  header line and the archive; a refusal before the header is the framed
+  error, a failure later cuts the stream (the receiver finds no manifest).
+  `receive` takes the controller's request line ahead of the export, since
+  where the session goes (the chosen account dir and the located directory)
+  is decided before the move. `launch` checks the machine id and runs
+  `launch.Exec` (tmux mode applies).
 - Errors: exit 1 and `{"error": {"code", "message"}}` after the frame line.
   Codes: `NOT_SET_UP`, `MACHINE_MISMATCH`, `WORKER_MISMATCH`,
   `WORKER_UNREACHABLE` (bootstrap: the Worker cannot be used from the host),
@@ -1917,9 +1925,18 @@ move and needs a terminal`. SOURCE is `--host` (default this machine).
    1. Esc → `Transfer canceled; nothing was moved.` (the destination's
    selection already changed, as with `next`).
 5. The session's project is located on the destination ("Locating a
-   project"); the warnings: `box runs Claude Code 2.1.290; this session was
-   last written by 2.1.302, which it may not resume` (transcript `version`)
-   and `the session was on branch feat/x; box's ~/src/shop is on main`.
+   project"); the warning `the session was on branch feat/x; box's
+   ~/src/shop is on main`. Claude Code versions (the user's rule, replacing
+   the planned warning): patch releases may differ; a major or minor
+   mismatch blocks, as early as it is known. Right after `hello` (step 1),
+   two machines whose Claude Code differs in major.minor are refused (`This
+   machine runs Claude Code 2.1.303 and box 2.0.14; a transfer needs the same
+   major.minor on both machines (patch releases may differ); update Claude
+   Code on box (claude update) and run the transfer again`, naming the older
+   one); in the session picker, a session whose transcript was last written
+   by another major.minor than the destination's Claude Code (its last
+   `version`) is shown disabled, `(written by Claude Code 2.0; box runs
+   2.1)`. An unknown version on either side does not block.
 6. Confirm (`tui.Confirm`): `Move "Fix flaky clock tests" from beta on this
    machine to alpha on box?` / `  Its transcript, checkpoints, task list and
    session environment move to ~/src/shop on box; this machine will no longer
@@ -1936,6 +1953,14 @@ move and needs a terminal`. SOURCE is `--host` (default this machine).
    claude-alpha --resume <id>` (`CLAUDE_CONFIG_DIR=<dir> claude --resume <id>`
    for an account without a nickname, `command claude --resume <id>` for the
    default dir).
+
+When nothing is found on the destination, or a host finds several
+checkouts it cannot choose between, the controller prints the message (with
+the clone suggestion for a repository, `mkdir -p` for a plain path) and asks
+for the path of a checkout there; Enter cancels (`Transfer canceled; nothing
+was moved.`), an unusable path is explained and asked again. A lost answer
+from `receive` is ssh's failure (`cannot reach box (…)`, exit 1): the source
+keeps the session, and the next transfer finishes it (step 4 below).
 
 With both ends on hosts (`--host box --to gpu`) this machine relays: box's
 export streams through this machine into gpu's receive, and the two never
@@ -1957,11 +1982,15 @@ be in an archive, and the receiver rejects them by name as well.
 
 1. **Pack** (the source, `sessions.Pack`, read-only): Move's refusals (open in
    the source's registry, may be open, invalid id). Then a header line `{proto,
-   id, source: {home, config_dir, project_folder, memory_folder, checkout,
-   checkout_real, git_root}, claude_version, git_branch}` and a gzip'd tar
-   (`archive/tar`, `compress/gzip`) of the items, whose last entry is
-   `MANIFEST.json`: per entry its path, type, mode, mtime, size and SHA-256,
-   computed while streaming.
+   id, title, source: {home, config_dir, project_folder, memory_folder, cwd,
+   checkout, checkout_real, git_root}, claude_version, git_branch, bytes}`
+   (`proto` is `sessions.ArchiveFormat`, 1; `bytes` the files' total, the
+   receiver's bound before the manifest arrives and the progress total) and
+   a gzip'd tar (`archive/tar`, `compress/gzip`) of the items, paths relative
+   to the config dir (memory as `projects/<memory folder>/memory/…`), whose
+   last entry is `MANIFEST.json` (`{id, entries}`): per entry its path, type,
+   mode, mtime, size and SHA-256, computed while streaming. A file that
+   changes size while it is read aborts the pack.
 2. **Receive** (the destination, `sessions.Unpack`):
    - checks that the account dir `choose` picked is still logged into that
      account, the id is in no projects folder there (`COLLISION`) and not open
@@ -1992,8 +2021,12 @@ be in an archive, and the receiver rejects them by name as well.
      MEMORY.md lines appended, conflicts reported); its failures are warnings,
      as in Move.
 3. **Release** (the source, `agent release` or in process): deletes the source
-   items only when the transcript is unchanged since the pack (size, mtime and
-   SHA-256 against the manifest) and not open; otherwise both copies stay:
+   items only when they are unchanged since the pack and not open: the source
+   packs the session again (to nowhere) and compares that manifest's SHA-256
+   with the one the destination received (`manifest_sha256` of `receive`'s
+   answer), which covers the transcript's size, mtime and SHA-256 and every
+   side file; the source keeps no state between export and release.
+   Otherwise both copies stay:
    `"Fix flaky clock tests" changed on this machine while it was being sent;
    both copies are kept (box has it as it was before the change)`. Exit 1.
 4. **Dropped connection after the commit**: the source still has the session.
@@ -2050,15 +2083,20 @@ a checkout, the note for other commands, a launch into the host's tmux), a
 claim from the host shown as `on box`, `uninstall --host` restoring the
 host's rc file, `host remove`.
 
-Planned with transfer:
+Transfer: unit tests for the path rewrite (JSON escapes, word boundaries,
+`shop` versus `shop2`, non-ASCII paths, one pass), pack, receive and
+release (every item kind, memory merged and rewritten, `file-history/`
+untouched, the retry after a lost answer, a changed source kept), archive
+validation (`..`, absolute paths, hard links, devices, a write through an
+archive symlink, oversize, forbidden names, other sessions' items, a
+checksum mismatch, a truncated stream, another format: nothing left
+behind), `switching.Choose`, the Claude Code version rule and the agent's
+refusal of unregistered dirs; e2e: `transfer` to a host (resumed in its
+tmux session), back with `--host box --to local --no-launch`, and a
+receive whose answer is lost after the commit, then the retry.
 
-- Unit: the path rewrite (JSON escapes, word boundaries, `shop` versus
-  `shop2`, non-ASCII paths, one pass); archive validation (`..`, absolute
-  paths, links, a write through an archive symlink, oversize, forbidden
-  names).
-- e2e: `transfer` in both directions (rewrite count, memory merge, release),
-  a connection killed after the commit and the retry.
-- Never against a real host except read-only probes.
+Never against a real host except read-only probes (and the verification
+above, which the user set up).
 
 ### Out of scope
 
@@ -2069,13 +2107,30 @@ Planned with transfer:
   integration on hosts (forwarding still works there: it never goes through
   the login shell).
 
-### To verify before building transfer
+### Verified before building transfer
 
-With a real Claude Code on a Linux host, in a throwaway config dir signed in
-once: that a transferred, rewritten transcript resumes from the destination
-checkout; whether rewind works after a transfer (checkpoints are named in
-the transcript by file path); and what an older Claude Code does with a newer
-transcript.
+On a Debian host with Claude Code 2.1.303, in a throwaway config dir signed
+in once:
+
+- A transcript moved to another checkout of the same repository, with every
+  path rewritten (the `cwd` fields, prompts, tool input and output, the
+  memory folder path, and the `api-request*` request log, whose content
+  hashes are then stale), resumes from the destination checkout
+  (`claude -p --resume <id>` remembered the conversation and reported the new
+  directory).
+- Rewind works after the move. A checkpoint is
+  `file-history/<id>/<first 16 hex of sha256(absolute file path)>@v<n>`;
+  the transcript's `file-history-snapshot` records name it by
+  `backupFileName`, under the path relative to the project with
+  `realParentDir` set to the absolute directory. Rewritten, `realParentDir`
+  points at the destination while the backup keeps its name; rewinding
+  restored the file in the destination checkout. So `file-history/` travels
+  unchanged and `realParentDir` must be rewritten (it is, as a `.jsonl`
+  field).
+- What an older Claude Code does with a newer transcript was not tested; the
+  user's rule replaces it (see `transfer` step 5).
+- Project folder names start with `-`: shell commands that touch them need
+  `./` or `--`.
 
 ## Worker
 
@@ -2184,7 +2239,8 @@ non-email keys skipped) stay.
   machine's tmux server is never reached), plus a second throwaway home that
   plays a host behind a fake `ssh` (it drops the options and the destination
   and runs the command with `/bin/sh -c` under that home, with a minimal
-  PATH, keeping the pseudo-terminal); manual, not in CI.
+  PATH, keeping the pseudo-terminal; a marker file makes it lose the next
+  `receive`'s answer, for the retry check); manual, not in CI.
 - Release: goreleaser on tags. Deploy-worker workflow unchanged.
 - No secrets in the repo: team token is distributed out of band.
 

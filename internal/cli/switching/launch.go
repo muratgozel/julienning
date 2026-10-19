@@ -220,33 +220,46 @@ func moveLabels(labels map[string]string, s sessions.Session, target config.Conf
 func rows(list []sessions.Session, target config.ConfigDir, labels map[string]string, all bool, now time.Time, loc *time.Location) []tui.Item {
 	items := []tui.Item{{Title: "New session", Meta: "in " + labelOf(labels, target.Name), Pinned: true}}
 	for _, s := range list {
-		prompt := promptPreview(s.FirstPrompt)
-		title, detail := s.Title, prompt
-		if title == "" {
-			title, detail = prompt, ""
+		cwd := ""
+		if all {
+			cwd = shortenHome(s.Cwd)
 		}
-		meta := []string{labelOf(labels, s.ConfigName)}
-		if all && s.Cwd != "" {
-			meta = append(meta, shortenHome(s.Cwd))
-		}
-		meta = append(meta, relTime(s.LastActive, now, loc), s.ShortID())
-		it := tui.Item{
-			Title:  title,
-			Meta:   strings.Join(meta, " · "),
-			Detail: detail,
-			Search: s.ID + " " + s.Cwd,
-		}
-		switch {
-		case s.Live:
-			it.Disabled = true
-			it.Note = "(open in another terminal)"
-		case s.MaybeOpen:
-			it.Note = "(may be open)"
-			it.Muted = true
-		}
-		items = append(items, it)
+		items = append(items, SessionItem(s, labelOf(labels, s.ConfigName), cwd, now, loc))
 	}
 	return items
+}
+
+// SessionItem is one session's picker row: title (or first prompt), the
+// account label, the directory when cwd is given (--all; shortened by the
+// caller, who knows which machine's home it is in), relative last activity,
+// short id; the first prompt as the second line. Open sessions are
+// disabled, possibly open ones muted.
+func SessionItem(s sessions.Session, label, cwd string, now time.Time, loc *time.Location) tui.Item {
+	prompt := promptPreview(s.FirstPrompt)
+	title, detail := s.Title, prompt
+	if title == "" {
+		title, detail = prompt, ""
+	}
+	meta := []string{label}
+	if cwd != "" {
+		meta = append(meta, cwd)
+	}
+	meta = append(meta, relTime(s.LastActive, now, loc), s.ShortID())
+	it := tui.Item{
+		Title:  title,
+		Meta:   strings.Join(meta, " · "),
+		Detail: detail,
+		Search: s.ID + " " + s.Cwd,
+	}
+	switch {
+	case s.Live:
+		it.Disabled = true
+		it.Note = "(open in another terminal)"
+	case s.MaybeOpen:
+		it.Note = "(may be open)"
+		it.Muted = true
+	}
+	return it
 }
 
 // scopeLine says what the picker lists, for its second header line:

@@ -32,7 +32,7 @@ func init() {
 	cli.Register(&cli.Command{
 		Name:    "agent",
 		Summary: "answer another machine's julienning over ssh (see julienning host)",
-		Usage:   "agent hello|bootstrap|inventory|run REQUEST|install-self",
+		Usage:   "agent hello|bootstrap|inventory|run REQUEST|install-self|locate|sessions|choose|export|receive|release|launch REQUEST",
 		Hidden:  true,
 		Run:     runAgent,
 	})
@@ -71,6 +71,47 @@ func runAgent(env cli.Env) error {
 	case "install-self":
 		res, err := agentInstallSelf()
 		return answer(env, res, err)
+	case "locate":
+		var req hosts.LocateRequest
+		if err := readRequest(env.Stdin, &req); err != nil {
+			return answer(env, nil, err)
+		}
+		res, err := agentLocate(req)
+		return answer(env, res, err)
+	case "sessions":
+		var req hosts.SessionsRequest
+		if err := readRequest(env.Stdin, &req); err != nil {
+			return answer(env, nil, err)
+		}
+		res, err := agentSessions(req)
+		return answer(env, res, err)
+	case "choose":
+		var req hosts.ChooseRequest
+		if err := readRequest(env.Stdin, &req); err != nil {
+			return answer(env, nil, err)
+		}
+		res, err := agentChoose(req)
+		return answer(env, res, err)
+	case "export":
+		var req hosts.ExportRequest
+		if err := readRequest(env.Stdin, &req); err != nil {
+			return answer(env, nil, err)
+		}
+		return agentExport(env, req)
+	case "receive":
+		return agentReceive(env)
+	case "release":
+		var req hosts.ReleaseRequest
+		if err := readRequest(env.Stdin, &req); err != nil {
+			return answer(env, nil, err)
+		}
+		res, err := agentRelease(req)
+		return answer(env, res, err)
+	case "launch":
+		if len(args) != 1 {
+			return cli.Usagef("agent launch takes one request argument")
+		}
+		return agentLaunch(env, args[0])
 	}
 	return answer(env, nil, hosts.Errorf(hosts.CodeProto, "julienning %s (agent protocol %d) does not know the agent verb %q", version.Version, hosts.Proto, verb))
 }

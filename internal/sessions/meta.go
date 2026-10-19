@@ -29,6 +29,10 @@ type meta struct {
 	title       string
 	firstPrompt string
 	lastActive  time.Time // zero when no timestamp was found
+	// version and gitBranch are the last ones the transcript records: the
+	// Claude Code that last wrote it, and the branch it was on.
+	version   string
+	gitBranch string
 }
 
 // entry is the subset of a jsonl line we look at. Unknown fields are ignored;
@@ -50,6 +54,8 @@ type entry struct {
 	AITitle     string `json:"aiTitle"`
 	Summary     string `json:"summary"`
 	LastPrompt  string `json:"lastPrompt"`
+	Version     string `json:"version"`
+	GitBranch   string `json:"gitBranch"`
 }
 
 type block struct {
@@ -123,6 +129,12 @@ func readMeta(path string) (meta, error) {
 		if m.cwd == "" && e.Cwd != "" {
 			m.cwd = e.Cwd
 		}
+		if e.Version != "" {
+			m.version = e.Version
+		}
+		if e.GitBranch != "" {
+			m.gitBranch = e.GitBranch
+		}
 		headTitles.observe(e)
 		if m.firstPrompt == "" {
 			m.firstPrompt = promptOf(e)
@@ -147,6 +159,12 @@ func readMeta(path string) (meta, error) {
 		}
 		if m.cwd == "" && e.Cwd != "" {
 			m.cwd = e.Cwd
+		}
+		if e.Version != "" {
+			m.version = e.Version
+		}
+		if e.GitBranch != "" {
+			m.gitBranch = e.GitBranch
 		}
 		tailTitles.observe(e)
 		if e.Type == "last-prompt" && e.LastPrompt != "" {

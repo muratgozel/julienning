@@ -86,7 +86,8 @@ claude or tmux elsewhere on the machine is never used; its rc file ends with
 a provisioning `claude()` function: `host add` with the real installer from
 the fake releases host, `--host` forwarding with the picker on the
 pseudo-terminal, a launch into the host's fake tmux, a minor-version update
-of the host, `uninstall --host`, `host remove`),
+of the host, `transfer` both ways and a retry after `touch $T/drop-receive`
+made the fake ssh lose a receive's answer, `uninstall --host`, `host remove`),
 `forget`, `update` and `uninstall` (its session move into `~/.claude`, with
 an open session left behind, and plain `claude` checked native in a new shell
 and in one that loaded the integration before), and asserts byte-for-byte
@@ -123,6 +124,12 @@ Env overrides are read at runtime and never written to `config.json`.
   (startup-file noise before it is dropped); the team token travels only on
   stdin; this machine's `JULIENNING_*` overrides never reach a host
   (`sshx.sshEnv`). `hosts.json` keeps fields it does not know on save.
+  The transfer archive (`sessions.ArchiveFormat`, header line + gzip'd tar
+  with `MANIFEST.json` last) is part of that contract: `sessions.Pack`,
+  `sessions.Unpack` and `sessions.Release` must agree on the manifest
+  (Release re-packs and compares its SHA-256, so the manifest must stay
+  deterministic: entry order, JSON encoding). `agent receive` takes the
+  controller's request line ahead of the export.
 - CLI to Worker: the Worker section of `docs/SPEC.md`. The team lead deploys
   the Worker by hand and teammates' CLIs auto-update within a day, so a newer
   CLI meets an older Worker and vice versa. New Worker fields are optional,
@@ -182,7 +189,16 @@ Each item names the only package that touches it.
   `file-history/<id>/`, `session-env/<id>/` and `tasks/<id>/` dirs; a move
   carries all of them and merges auto-memory, which is keyed by git root
   (`internal/sessions`). Titles come from `custom-title`, `ai-title`,
-  `last-prompt`, then the legacy `summary` entry.
+  `last-prompt`, then the legacy `summary` entry. Entries carry `version`
+  (the Claude Code that wrote them) and `gitBranch`; transfer reads the last
+  of each.
+- Checkpoints (2.1.303): `file-history/<id>/<first 16 hex of sha256(absolute
+  path)>@v<n>`, named in the transcript's `file-history-snapshot` records by
+  `backupFileName` under the project-relative path with `realParentDir`
+  absolute. A transfer copies `file-history/` unchanged and rewrites
+  `realParentDir`; rewind then restores into the destination (verified on a
+  real host). The `api-request*` records are a hashed request log; rewriting
+  paths in them did not stop a resume.
 - Settings sync (`internal/teamsync` decides, `internal/claudecfg` writes):
   top-level `settings.json` keys `model`, `effortLevel`, `promptCacheTtl`,
   `subagentPromptCacheTtl` (`"5m"`/`"1h"`), `autoContinueAtUsageLimit`,

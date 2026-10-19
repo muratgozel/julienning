@@ -84,7 +84,9 @@ julienning sync              # same model, effort, cache TTLs, theme, editor mod
 Other machines you reach over ssh (a dev server, a VM) can run their own
 julienning against the same team: `julienning host add box` installs and
 sets it up there, then any command takes `--host box` (`julienning use
---host box` picks a session and runs claude on box, on this terminal). See
+--host box` picks a session and runs claude on box, on this terminal), and
+`julienning transfer --to box` moves a conversation there, into box's checkout
+of the same repository, and resumes it. See
 [Other machines](docs/REFERENCE.md#other-machines).
 
 The selection is machine-wide: after `next` or `use`, plain `claude` in any

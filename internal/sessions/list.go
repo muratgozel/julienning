@@ -127,6 +127,9 @@ func List(opts ListOptions) ([]Session, error) {
 			LastActive:  m.lastActive,
 			ModTime:     c.mtime,
 			Size:        c.size,
+
+			ClaudeVersion: m.version,
+			GitBranch:     m.gitBranch,
 		}
 		if s.LastActive.IsZero() {
 			s.LastActive = c.mtime
