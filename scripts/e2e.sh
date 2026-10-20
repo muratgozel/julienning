@@ -131,6 +131,24 @@ account_json() {
     /^    \}/ { collecting = 0; if (index(buf, "\"nickname\": \"" n "\"")) print buf }' || true
 }
 
+# claude_proc_start PID and claude_pid_domain: procStart and pidDomain as
+# Claude Code writes them in sessions/<pid>.json (starttime of
+# /proc/<pid>/stat on Linux, ps's UTC start time on macOS).
+claude_proc_start() {
+  if [ -r "/proc/$1/stat" ]; then
+    sed 's/.*) //' "/proc/$1/stat" | cut -d' ' -f20
+  else
+    TZ=UTC LC_ALL=C ps -o lstart= -p "$1" | sed 's/^ *//;s/ *$//'
+  fi
+}
+claude_pid_domain() {
+  if [ -r /proc/self/ns/pid ]; then
+    printf 'linux:%s:%s' "$(tr -d '[:space:]' </etc/machine-id 2>/dev/null)" "$(readlink /proc/self/ns/pid)"
+  else
+    printf darwin
+  fi
+}
+
 kill_tree() {
   local pid="$1" child
   for child in $(pgrep -P "$pid" 2>/dev/null || true); do kill_tree "$child"; done
@@ -141,10 +159,11 @@ wrangler_pid=""
 host_pid=""
 session_pid=""
 host_session_pid=""
+reused_pid=""
 T=""
 cleanup() {
   local rc=$?
-  for p in "$session_pid" "$host_session_pid" "$host_pid" "$wrangler_pid"; do
+  for p in "$session_pid" "$host_session_pid" "$reused_pid" "$host_pid" "$wrangler_pid"; do
     if [ -n "$p" ]; then kill_tree "$p"; fi
   done
   if [ -z "$T" ]; then return; fi
@@ -642,11 +661,11 @@ expect_contains "accounts --json names the account" '"alpha@example.com"' "$out"
 sleep 600 &
 session_pid=$!
 disown
-proc_start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$session_pid" | sed 's/^ *//;s/ *$//')"
+proc_start="$(claude_proc_start "$session_pid")"
 now_ms="$(($(date +%s) * 1000))"
 mkdir -p "$HOME/.claude-work/sessions"
-printf '{"pid":%d,"sessionId":"e2e-session-1","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","startedAt":%d,"updatedAt":%d}\n' \
-  "$session_pid" "$T/proj" "$proc_start" "$now_ms" "$now_ms" >"$HOME/.claude-work/sessions/$session_pid.json"
+printf '{"pid":%d,"sessionId":"e2e-session-1","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","pidDomain":"%s","startedAt":%d,"updatedAt":%d}\n' \
+  "$session_pid" "$T/proj" "$proc_start" "$(claude_pid_domain)" "$now_ms" "$now_ms" >"$HOME/.claude-work/sessions/$session_pid.json"
 printf '{"session_id":"e2e-session-1","cwd":"%s","source":"startup"}' "$T/proj" |
   CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning hook session-start
 wait_for "a live session claims the account" 15 "in use by you" row alpha
@@ -665,10 +684,21 @@ kill "$session_pid" 2>/dev/null || true
 wait "$session_pid" 2>/dev/null || true
 session_pid=""
 rm -f "$HOME/.claude-work/sessions/"*.json
+# A stale entry whose pid now belongs to a process that started later than
+# the one that registered (pid reuse) must not keep the claim.
+sleep 600 &
+reused_pid=$!
+disown
+if [ -r /proc/self/stat ]; then stale_start=1; else stale_start='Mon Jan  1 00:00:00 2024'; fi
+printf '{"pid":%d,"sessionId":"e2e-stale","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","pidDomain":"%s","startedAt":%d,"updatedAt":%d}\n' \
+  "$reused_pid" "$T/proj" "$stale_start" "$(claude_pid_domain)" "$now_ms" "$now_ms" >"$HOME/.claude-work/sessions/$reused_pid.json"
 printf '{"session_id":"e2e-session-1","reason":"exit"}' |
   CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning hook session-end
-wait_for "ending the session releases the claim" 15 "free" row alpha
+wait_for "ending the session releases the claim, a reused pid's entry notwithstanding" 15 "free" row alpha
 expect_contains "the Worker lists no claim any more" '"claims": []' "$(account_json alpha)"
+kill_tree "$reused_pid"
+reused_pid=""
+rm -f "$HOME/.claude-work/sessions/"*.json
 
 # --- usage: the status line and its detached report ---------------------------------------
 # The status line prints `<model> · ctx N%` and spawns a detached send-usage;
@@ -949,10 +979,10 @@ expect_contains "and still run there" "Now using alpha (alpha@example.com) in ~/
 sleep 600 &
 host_session_pid=$!
 disown
-host_proc_start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$host_session_pid" | sed 's/^ *//;s/ *$//')"
+host_proc_start="$(claude_proc_start "$host_session_pid")"
 mkdir -p "$H/.claude-team/sessions"
-printf '{"pid":%d,"sessionId":"host-session-1","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","startedAt":%d,"updatedAt":%d}\n' \
-  "$host_session_pid" "$H/src/shop/web" "$host_proc_start" "$now_ms" "$now_ms" >"$H/.claude-team/sessions/$host_session_pid.json"
+printf '{"pid":%d,"sessionId":"host-session-1","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","pidDomain":"%s","startedAt":%d,"updatedAt":%d}\n' \
+  "$host_session_pid" "$H/src/shop/web" "$host_proc_start" "$(claude_pid_domain)" "$now_ms" "$now_ms" >"$H/.claude-team/sessions/$host_session_pid.json"
 printf '{"session_id":"host-session-1","cwd":"%s","source":"startup"}' "$H/src/shop/web" |
   on_host env CLAUDE_CONFIG_DIR="$H/.claude-team" "$H/.local/bin/julienning" hook session-start
 wait_for "a claim from the host says it is on the host" 15 "and on box" row alpha
@@ -1068,9 +1098,9 @@ printf 'old decisions\n' >"$HOME/.claude-work/projects/-gone-project/memory/deci
 sleep 600 &
 session_pid=$!
 disown
-proc_start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$session_pid" | sed 's/^ *//;s/ *$//')"
-printf '{"pid":%d,"sessionId":"%s","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","startedAt":%d,"updatedAt":%d}\n' \
-  "$session_pid" "$sid_alpha" "$T/proj" "$proc_start" "$now_ms" "$now_ms" >"$HOME/.claude-work/sessions/$session_pid.json"
+proc_start="$(claude_proc_start "$session_pid")"
+printf '{"pid":%d,"sessionId":"%s","cwd":"%s","name":"","status":"idle","kind":"interactive","procStart":"%s","pidDomain":"%s","startedAt":%d,"updatedAt":%d}\n' \
+  "$session_pid" "$sid_alpha" "$T/proj" "$proc_start" "$(claude_pid_domain)" "$now_ms" "$now_ms" >"$HOME/.claude-work/sessions/$session_pid.json"
 steps=('expect=Move them into ~/.claude?' 'send=\r' 'expect=Terminals already open')
 # shellcheck disable=SC2016 # expanded by the inner shell
 out="$(cd "$T/proj/teamx" && bash -c 'eval "$(julienning shell-init bash)"; "$@" || exit; claude -p open-terminal' _ \

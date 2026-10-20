@@ -192,8 +192,17 @@ Each item names the only package that touches it.
   not the same as unset; launchers unset the variable for the default dir
   (`internal/claudecfg`, `internal/launch`).
 - Live sessions: `<dir>/sessions/<pid>.json` with pid, sessionId, cwd, status
-  and `procStart` as a UTC ctime string, cross-checked against `ps`
-  (`internal/livesess`).
+  and `procStart`, cross-checked against the process (`internal/livesess`).
+  On macOS `procStart` is a UTC ctime string from `ps -o lstart`; on Linux
+  and WSL (2.1.303, 2.1.304) it is the starttime field of `/proc/<pid>/stat`
+  in clock ticks, e.g. `"12098273"`; a zombie (state `Z`/`X`) is gone.
+  `pidDomain` (2.1.302+: `darwin`, or `linux:<trimmed /etc/machine-id>:`
+  followed by `readlink /proc/self/ns/pid`) scopes the pid: an entry from
+  another machine or pid namespace cannot be proven dead and counts as
+  alive, as in Claude Code.
+  Whenever the check cannot tell, the answer is alive: a live session taken
+  for dead gets moved while Claude writes it. Status values seen include
+  `busy`, `idle` and `shell`.
 - Session files: `<dir>/projects/<encoded cwd>/<id>.jsonl` (non-alphanumerics
   become `-`, long paths are truncated and hashed) plus the `<id>/`,
   `file-history/<id>/`, `session-env/<id>/` and `tasks/<id>/` dirs; a move

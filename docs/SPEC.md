@@ -1435,6 +1435,15 @@ not julienning's usage probe: Claude Code registers `claude -p` as kind
 entries with that name are left out)
 count as live sessions for claims.
 
+An entry is live while its process runs (`livesess.Alive`): the pid exists
+and `procStart` matches that process's start, read with `ps` on macOS and from
+`/proc/<pid>/stat` (starttime, clock ticks) on Linux and WSL; a zombie is
+gone. An entry whose `pidDomain` names another machine or pid namespace (a
+container or Flatpak terminal sharing the dir) cannot be checked from here
+and is live, as Claude Code treats it, and so is any entry whose start
+cannot be read or is not in a format julienning knows: taking a live session
+for dead would let a move carry it off while Claude still writes it.
+
 `claim-sync [--starting SESSION_ID] [--ending SESSION_ID | --ending-pid PID]` (detached, network
 allowed; `--starting` waits up to 2 s for the new session to appear in the
 registry). A SessionEnd with reason `clear` spawns nothing, because the

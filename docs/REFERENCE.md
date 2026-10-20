@@ -649,7 +649,9 @@ Now using alpha (claude1@example.com) in ~/.claude-julienning1 — session 4% �
   `in <dir>` under `--all`. While you type it becomes the filter and how many
   sessions match: `Filter: billing · 2 of 100`.
 - `(open in another terminal)`: a running claude has it open; it is dimmed and
-  cannot be picked. `(may be open)`: its dir has no live-session registry and
+  cannot be picked. That includes a claude in a tmux window you are not
+  attached to, and one in a container or Flatpak terminal that shares the
+  dir, which julienning cannot check and counts as open until it exits there. `(may be open)`: its dir has no live-session registry and
   the transcript changed in the last 2 minutes; it is dimmed, and moving it is
   refused.
 - Keys: ↑/↓ (also j/k before you type, Ctrl-P/Ctrl-N), PgUp/PgDn, Home/End,
@@ -1379,7 +1381,9 @@ can have several holders. Claims follow live Claude sessions, not
 Safety nets: the Worker ignores holders older than `CLAIM_TTL_MIN` (720 minutes
 by default), and a usage report re-stamps the reporter's own claim, if it has
 one, once that claim is over an hour old. A dir without a live-session
-registry can keep a claim but never releases it; the TTL does.
+registry can keep a claim but never releases it; the TTL does. So can a
+session left in the registry by a claude in another pid namespace (a
+container or Flatpak terminal sharing the dir), until it exits there.
 
 ## How usage reaches KV
 
