@@ -32,7 +32,7 @@ func init() {
 
 func runAccounts(env cli.Env) error {
 	fs := cli.NewFlagSet("accounts", env)
-	asJSON := fs.Bool("json", false, "print the Worker JSON with local_config and local_configs added per account, plus the syncing accounts")
+	asJSON := fs.Bool("json", false, "print the Worker JSON with local_config, local_configs and signed_out_configs added per account, plus the syncing accounts")
 	if err := fs.Parse(env.Args); err != nil {
 		return err
 	}
@@ -79,16 +79,11 @@ func runAccounts(env cli.Env) error {
 	for _, name := range slices.Sorted(maps.Keys(unreadable)) {
 		warnf(env, "cannot read the account of config %s (%v)", name, unreadable[name])
 	}
-	cur, curOK, err := cfg.Current()
-	if err != nil {
-		return err
-	}
-	isCurrent := func(cd config.ConfigDir) bool { return curOK && cur.Dir == cd.Dir }
 
 	if *asJSON {
-		err = accountsJSON(env, listing, syncRows, local, signedOut, isCurrent)
+		err = accountsJSON(env, cfg, listing, syncRows, local, signedOut)
 	} else {
-		err = accountsTable(env, cfg, listing, syncRows, local, signedOut, isCurrent, n)
+		err = accountsTable(env, cfg, listing, syncRows, local, signedOut, n)
 	}
 	if err != nil {
 		return err
@@ -132,59 +127,45 @@ func syncing(cache *sharedcache.Cache, l *remote.Listing) []syncingAccount {
 	return out
 }
 
-func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syncRows []syncingAccount, local, signedOut map[string][]config.ConfigDir,
-	isCurrent func(config.ConfigDir) bool, n time.Time) error {
+// signedOutHere is appended to STATE when this machine has lost the account:
+// a dir here is signed out of it and no dir here is logged into it.
+const signedOutHere = ", signed out here"
+
+// accountsTable names no local dir: a LOCAL column listed them through
+// 0.13.0 and was dropped on request as confusing (`configs` shows the dirs,
+// --json their config names). What it carried that matters, a sign-out to
+// undo with `login NICKNAME`, went into STATE as signedOutHere.
+func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syncRows []syncingAccount, local, signedOut map[string][]config.ConfigDir, n time.Time) error {
 	if len(listing.Accounts) == 0 && len(syncRows) == 0 {
 		fmt.Fprintln(env.Stdout, "no shared accounts yet (share one: julienning share EMAIL)")
 		return nil
 	}
 	loc := location()
 	v := viewerOf(env, cfg)
+	here := func(email string) string {
+		email = strings.ToLower(email)
+		if len(local[email]) == 0 && len(signedOut[email]) > 0 {
+			return signedOutHere
+		}
+		return ""
+	}
 	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "#\tNICK\tACCOUNT\tSESSION\tWEEK\tSTATE\tLOCAL\tUPDATED")
+	fmt.Fprintln(tw, "#\tNICK\tACCOUNT\tSESSION\tWEEK\tSTATE\tUPDATED")
 	for i := range listing.Accounts {
 		a := &listing.Accounts[i]
 		rank := a.Rank
 		if rank == 0 {
 			rank = i + 1
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			rank, orDash(a.Nickname), a.Email, column(a.Session, n, loc), column(a.Week, n, loc),
-			stateFor(a, v, n, loc), localColumn(local[strings.ToLower(a.Email)], signedOut[strings.ToLower(a.Email)], isCurrent), updated(a, n))
+			stateFor(a, v, n, loc)+here(a.Email), updated(a, n))
 	}
 	// Unranked: the Worker has not listed them yet.
 	for _, s := range syncRows {
-		fmt.Fprintf(tw, "-\t%s\t%s\t-\t-\t%s\t%s\t-\n",
-			orDash(s.nickname), s.email, syncingState, localColumn(local[s.email], signedOut[s.email], isCurrent))
+		fmt.Fprintf(tw, "-\t%s\t%s\t-\t-\t%s\t-\n", orDash(s.nickname), s.email, syncingState+here(s.email))
 	}
 	return tw.Flush()
-}
-
-// localColumn lists every registered dir logged into the account as a
-// home-shortened path, the selected one marked with `*`, then the dirs
-// signed out of it with ` (signed out)`: they still hold the account's
-// sessions. "-" when none. Paths, not config names: users never type dir
-// names, but they do need to know which directory holds the login.
-func localColumn(dirs, signedOut []config.ConfigDir, isCurrent func(config.ConfigDir) bool) string {
-	if len(dirs) == 0 && len(signedOut) == 0 {
-		return "-"
-	}
-	paths := make([]string, 0, len(dirs)+len(signedOut))
-	for _, cd := range dirs {
-		p := shortenHome(cd.Dir)
-		if isCurrent(cd) {
-			p = "*" + p
-		}
-		paths = append(paths, p)
-	}
-	for _, cd := range signedOut {
-		p := shortenHome(cd.Dir) + " (signed out)"
-		if isCurrent(cd) {
-			p = "*" + p
-		}
-		paths = append(paths, p)
-	}
-	return strings.Join(paths, ",")
 }
 
 // orDash renders an empty cell as "-" (records shared before nicknames
@@ -441,7 +422,13 @@ func updated(a *remote.Account, n time.Time) string {
 // upgrade. Syncing accounts go in a top-level "syncing" array (always
 // present), never inside "accounts": they are not ranked and have no Worker
 // record yet.
-func accountsJSON(env cli.Env, l *remote.Listing, syncRows []syncingAccount, local, signedOut map[string][]config.ConfigDir, isCurrent func(config.ConfigDir) bool) error {
+func accountsJSON(env cli.Env, cfg *config.Config, l *remote.Listing, syncRows []syncingAccount, local, signedOut map[string][]config.ConfigDir) error {
+	cur, curOK, err := cfg.Current()
+	if err != nil {
+		return err
+	}
+	isCurrent := func(cd config.ConfigDir) bool { return curOK && cur.Dir == cd.Dir }
+
 	doc, err := l.Object()
 	if err != nil {
 		return err

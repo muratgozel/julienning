@@ -487,12 +487,12 @@ func TestAccountsTable(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "#  NICK   ACCOUNT") || !strings.Contains(lines[0], "UPDATED") {
 		t.Errorf("header = %q", lines[0])
 	}
-	for _, want := range []string{"1", "alpha", email1, "12% → 20:00", "28% → 2026-11-02 18:00", "in use by you", "*~/.claude-sixtynine1,~/.claude-sixtynine9", "2m ago"} {
+	for _, want := range []string{"1", "alpha", email1, "12% → 20:00", "28% → 2026-11-02 18:00", "in use by you", "2m ago"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("row 1 = %q, missing %q", lines[1], want)
 		}
 	}
-	for _, want := range []string{"2  -      " + email2, "50% → 20:00", "in use by ali, can (12m)", " - ", "12m ago"} {
+	for _, want := range []string{"2  -      " + email2, "50% → 20:00", "in use by ali, can (12m)", "12m ago"} {
 		if !strings.Contains(lines[2], want) {
 			t.Errorf("row 2 = %q, missing %q", lines[2], want)
 		}
@@ -753,8 +753,8 @@ func TestAccountsErrors(t *testing.T) {
 
 // --- nicknames ---------------------------------------------------------
 
-// The exact table: NICK from the Worker ("-" for a legacy record), LOCAL as
-// home-shortened dir paths with the selection starred.
+// The exact table: NICK from the Worker ("-" for a legacy record), and no
+// LOCAL column even with dirs here logged in and one selected.
 func TestAccountsTableFormat(t *testing.T) {
 	f := setup(t)
 	cd := f.addConfig("sixtynine1", email1)
@@ -768,19 +768,21 @@ func TestAccountsTableFormat(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     LOCAL                                       UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             *~/.claude-sixtynine1,~/.claude-sixtynine9  2m ago\n" +
-		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  -                                           12m ago\n"
+		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             2m ago\n" +
+		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  12m ago\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}
 }
 
-// LOCAL covers the default dir (~/.claude) and dirs outside $HOME, which keep
-// their absolute path; config names never appear.
-func TestAccountsLocalPaths(t *testing.T) {
+// The table never shows where an account lives here: not the default dir,
+// not a dir outside $HOME, not a signed-out dir, not a config name, not the
+// selection. The signed-out dir's account is logged in through the default
+// dir, so it is not signed out here either.
+func TestAccountsTableHasNoLocalDirs(t *testing.T) {
 	f := setup(t)
-	f.addConfig("default", email1)
+	def := f.addConfig("default", email1)
 	outside := filepath.Join(filepath.Dir(f.home), "elsewhere", ".claude-x")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
 		t.Fatal(err)
@@ -789,20 +791,26 @@ func TestAccountsLocalPaths(t *testing.T) {
 	if err := f.cfg.Add(config.ConfigDir{Name: "julienning7", Dir: outside}); err != nil {
 		t.Fatal(err)
 	}
+	gone := f.addConfig("sixtynine", "")
+	for i := range f.cfg.Configs {
+		if f.cfg.Configs[i].Dir == gone.Dir {
+			f.cfg.Configs[i].LastEmail = email1
+		}
+	}
 	f.save()
+	if err := config.SetCurrent(def); err != nil {
+		t.Fatal(err)
+	}
 	f.fake.Listing = listing()
 
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
-	lines := strings.Split(got.stdout, "\n")
-	if !strings.Contains(lines[1], "  ~/.claude  ") {
-		t.Errorf("default dir row = %q", lines[1])
-	}
-	if !strings.Contains(lines[2], "  "+outside+"  ") {
-		t.Errorf("outside-home row = %q, want %s", lines[2], outside)
-	}
-	if strings.Contains(got.stdout, "julienning7") || strings.Contains(got.stdout, "*") {
-		t.Errorf("config names or a selection marker leaked into LOCAL: %q", got.stdout)
+	// The test emails are @sixtynine.agency, as the signed-out dir's name.
+	table := strings.ReplaceAll(got.stdout, "@sixtynine.agency", "@x")
+	for _, leak := range []string{"LOCAL", "~/", outside, "julienning7", "default", "sixtynine", "signed out", "*"} {
+		if strings.Contains(table, leak) {
+			t.Errorf("%q leaked into the table:\n%s", leak, got.stdout)
+		}
 	}
 }
 
@@ -1125,7 +1133,7 @@ func TestAccountsTableExhausted(t *testing.T) {
 		t.Fatalf("lines = %q", lines)
 	}
 	for _, want := range []string{"3  claude3  claude3@sixtynine.agency", "40% → 23:40", "100% → Fri 10:00",
-		"  exhausted (week resets Fri 10:00), in use by ali  ", "~/.claude-sixtynine3", "5m ago"} {
+		"  exhausted (week resets Fri 10:00), in use by ali  ", "5m ago"} {
 		if !strings.Contains(lines[3], want) {
 			t.Errorf("row = %q, missing %q", lines[3], want)
 		}
@@ -1211,10 +1219,10 @@ func TestAccountsSyncingRows(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     LOCAL                  UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             *~/.claude-sixtynine1  2m ago\n" +
-		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  -                      12m ago\n" +
-		"-  gamma  claude3@sixtynine.agency  -            -                       syncing (just shared)     ~/.claude-sixtynine3   -\n"
+		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             2m ago\n" +
+		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  12m ago\n" +
+		"-  gamma  claude3@sixtynine.agency  -            -                       syncing (just shared)     -\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}
@@ -1249,8 +1257,47 @@ func TestAccountsSyncingRows(t *testing.T) {
 	}
 }
 
-// No local dir and no nickname: "-" in the table, [] and null in JSON; an
-// empty listing still shows the row instead of "no shared accounts yet".
+// ", signed out here" follows every kind of STATE, an exhausted account's and
+// a syncing row's too, and matches the Worker's email case-insensitively.
+func TestAccountsSignedOutHereFollowsEveryState(t *testing.T) {
+	f := setup(t)
+	for _, c := range []struct{ name, email string }{{"ex", "claude3@sixtynine.agency"}, {"new", "claude4@sixtynine.agency"}} {
+		cd := f.addConfig(c.name, "")
+		for i := range f.cfg.Configs {
+			if f.cfg.Configs[i].Dir == cd.Dir {
+				f.cfg.Configs[i].LastEmail = c.email
+			}
+		}
+	}
+	f.save()
+	f.writeLocalAdd("claude4@sixtynine.agency", "delta", time.Now().Add(-time.Minute))
+	l := listing()
+	ex := exhausted("Claude3@Sixtynine.Agency", win(40, lateReset), win(100, friReset), friReset, "ali")
+	ex.Rank, ex.Nickname, ex.CollectedAt = 3, "claude3", ts(nowEpoch-300)
+	l.Accounts = append(l.Accounts, ex)
+	f.fake.Listing = l
+
+	got := f.run("", "accounts")
+	assertCode(t, got, 0)
+	lines := strings.Split(strings.TrimRight(got.stdout, "\n"), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("lines = %q", lines)
+	}
+	if !strings.Contains(lines[3], "  exhausted (week resets Fri 10:00), in use by ali, signed out here  5m ago") {
+		t.Errorf("exhausted row = %q", lines[3])
+	}
+	if !strings.Contains(lines[4], "  syncing (just shared), signed out here  ") || !strings.HasSuffix(lines[4], "  -") {
+		t.Errorf("syncing row = %q", lines[4])
+	}
+	for _, line := range lines[1:3] {
+		if strings.Contains(line, "signed out") {
+			t.Errorf("an account no dir here held is marked: %q", line)
+		}
+	}
+}
+
+// No local dir and no nickname: NICK "-" in the table, [] and null in JSON;
+// an empty listing still shows the row instead of "no shared accounts yet".
 func TestAccountsSyncingOnly(t *testing.T) {
 	f := setup(t)
 	f.save()
@@ -1260,8 +1307,8 @@ func TestAccountsSyncingOnly(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK  ACCOUNT                   SESSION  WEEK  STATE                  LOCAL  UPDATED\n" +
-		"-  -     claude3@sixtynine.agency  -        -     syncing (just shared)  -      -\n"
+		"#  NICK  ACCOUNT                   SESSION  WEEK  STATE                  UPDATED\n" +
+		"-  -     claude3@sixtynine.agency  -        -     syncing (just shared)  -\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}

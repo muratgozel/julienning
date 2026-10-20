@@ -114,10 +114,6 @@ function stateCell(a: RankedAccount, tz: string, now: Date): string {
 
 const HEADERS = ["#", "NICK", "ACCOUNT", "SESSION", "WEEK", "STATE", "UPDATED"] as const;
 
-/**
- * The CLI adds its own LOCAL column; the Worker cannot know which config dirs
- * exist on a machine, so it is absent here.
- */
 export function formatText(res: AccountsResponse, now: Date): string {
   if (res.accounts.length === 0) return "no accounts reported yet\n";
 

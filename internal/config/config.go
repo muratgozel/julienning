@@ -65,9 +65,9 @@ type ConfigDir struct {
 	// RecordLogins). It outlives the login on purpose: when Claude Code signs
 	// a dir out it can clear oauthAccount, and then LastEmail is all that
 	// still ties the dir (and its sessions) to the account, for `accounts`
-	// (shown as signed out) and `login NICKNAME` (which signs in there
-	// again). Never read it as the current login: that is always the
-	// account file, read live.
+	// (STATE ", signed out here", signed_out_configs) and `login NICKNAME`
+	// (which signs in there again). Never read it as the current login:
+	// that is always the account file, read live.
 	LastEmail string `json:"last_email,omitempty"`
 }
 

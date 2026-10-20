@@ -120,10 +120,12 @@ row() {
   julienning accounts 2>/dev/null | awk -v n="$1" '$2 == n' || true
 }
 
-# account_json NICK: that account's object from `accounts --json` (pretty-printed,
-# one account per 4-space-indented object).
+# account_json NICK [ARG...]: that account's object from `accounts --json ARG...`
+# (pretty-printed, one account per 4-space-indented object).
 account_json() {
-  julienning accounts --json 2>/dev/null | awk -v n="$1" '
+  local n="$1"
+  shift
+  julienning accounts --json "$@" 2>/dev/null | awk -v n="$n" '
     /^    \{/ { buf = ""; collecting = 1 }
     collecting { buf = buf $0 "\n" }
     /^    \}/ { collecting = 0; if (index(buf, "\"nickname\": \"" n "\"")) print buf }' || true
@@ -742,7 +744,9 @@ printf 'ok 100 100\n' >"$HOME/.claude-old/fake-usage"
 printf 'signedout\n' >"$HOME/.claude-two/fake-usage"
 run env JULIENNING_NOW_EPOCH=$(($(date +%s) + 1200)) julienning accounts
 expect_contains "a signed-out dir is reported with the way back" "bravo (beta@example.com) is signed out in ~/.claude-two; sign in again with: julienning login bravo" "$out"
-expect_contains "accounts marks the dir signed out" "/.claude-two (signed out)" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+bravo_row="$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+expect_contains "accounts says bravo is signed out on this machine" "free, signed out here" "$bravo_row"
+expect_missing "the accounts table names no dir" "/.claude-two" "$bravo_row"
 expect_contains "a probe at 100% marks the account exhausted" "exhausted" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
 run julienning next --no-launch
 expect_missing "next never picks a signed-out dir" "Now using bravo" "$out"
@@ -751,7 +755,7 @@ expect_contains "next falls back to an exhausted account rather than a signed-ou
 # there again, pre-filled, once Claude Code confirms nobody is signed in.
 printf '{"numStartups":3}' >"$HOME/.claude-two/.claude.json"
 run julienning accounts
-expect_contains "a dir Claude Code signed out still shows under its account" "/.claude-two (signed out)" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+expect_contains "a dir Claude Code signed out still marks its account" ", signed out here" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
 run julienning login bravo
 expect_contains "login signs the dir that held the account in again" "/.claude-two held bravo (beta@example.com) last and has no login now" "$out"
 expect_contains "login reports the account it got" "Signed in: bravo (beta@example.com) in ~/.claude-two." "$out"
@@ -760,7 +764,9 @@ printf '{"oauthAccount":{"emailAddress":"beta@example.com"},"numStartups":3}' >"
 expect_same "bravo's account file is as before the sign-out" "$T/before/two-account.json" "$HOME/.claude-two/.claude.json"
 rm -f "$HOME/.claude-two/fake-usage"
 run julienning accounts
-expect_missing "a verified login drops the signed-out mark" "(signed out)" "$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+bravo_row="$(printf '%s\n' "$out" | awk '$2 == "bravo"')"
+expect_contains "bravo is still listed after the login" "beta@example.com" "$bravo_row"
+expect_missing "a verified login drops the signed-out mark" "signed out" "$bravo_row"
 # gamma back to low numbers for what follows, then the "too old" default.
 rm -rf "$JULIENNING_HOME/probes"
 sleep 1
@@ -894,7 +900,14 @@ expect_contains "julienning's line overrides the provisioning claude function" "
 expect_missing "the provisioning function no longer runs" "PROVISIONED" "$out"
 
 run julienning accounts --host box
-expect_contains "accounts --host shows the host's own dirs" "/.claude-team" "$(printf '%s\n' "$out" | awk '$2 == "alpha"')"
+expect_contains "accounts --host lists the accounts" "alpha" "$out"
+expect_missing "the accounts table has no LOCAL column" "LOCAL" "$out"
+# bravo is signed in here but not on box: the dirs come from box.
+some_local='"local_configs": [
+        "'
+expect_contains "accounts --json lists this machine's dir for bravo" "$some_local" "$(account_json bravo)"
+expect_contains "accounts --host --json lists box's dirs, not this machine's" '"local_configs": []' "$(account_json bravo --host box)"
+expect_contains "accounts --host --json lists box's dir for alpha" "$some_local" "$(account_json alpha --host box)"
 run julienning configs --host box
 expect_contains "configs --host lists the host's registered dirs" " ~/.claude-team" "$out"
 run julienning host list

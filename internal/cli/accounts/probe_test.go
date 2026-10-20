@@ -55,7 +55,9 @@ func TestAccountsShowsTheRefreshedListing(t *testing.T) {
 	}
 }
 
-func TestAccountsShowsSignedOutDirs(t *testing.T) {
+// The table marks an account ", signed out here" only when no dir here is
+// logged into it (beta); alpha still has a login here. --json names the dirs.
+func TestAccountsSignedOutHere(t *testing.T) {
 	f := setup(t)
 	gone := f.addConfig("sixtynine", "")
 	stale := f.addConfig("sixtynine2", email2)
@@ -78,12 +80,12 @@ func TestAccountsShowsSignedOutDirs(t *testing.T) {
 
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
-	lines := strings.Split(got.stdout, "\n")
-	if !strings.Contains(lines[1], "~/.claude-sixtynine1,~/.claude-sixtynine (signed out)") {
-		t.Errorf("alpha row: %q", lines[1])
-	}
-	if !strings.Contains(lines[2], "  ~/.claude-sixtynine2 (signed out)") {
-		t.Errorf("beta row: %q", lines[2])
+	want := "" +
+		"#  NICK   ACCOUNT                   SESSION  WEEK  STATE                  UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  -        -     free                   never\n" +
+		"2  beta   claude2@sixtynine.agency  -        -     free, signed out here  never\n"
+	if got.stdout != want {
+		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}
 
 	got = f.run("", "accounts", "--json")

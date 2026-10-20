@@ -147,8 +147,8 @@ logged in); else one allowlist refresh and a retry as a nickname
 A dir is shown by the nickname of the account it is logged into right now,
 else by its config name (`resolve.Label`); an account as `alpha
 (claude1@x.io)`, or the bare email without a nickname. Nicknames appear in
-setup's Dirs listing, `accounts` (NICK column; LOCAL lists shortened dir
-paths, `*` on the selected one), `configs` (NICK next to NAME), `current`
+setup's Dirs listing, `accounts` (NICK column), `configs` (NICK next to
+NAME), `current`
 (`alpha (claude1@x.io) in ~/.claude-x`), the `next`/`use` summary line
 (`Now using alpha (claude1@x.io) in ~/.claude-x — …`), picker rows, the move
 report, the busy warning and the `next` "none logged in" error. `--json` of
@@ -220,9 +220,9 @@ shared already, or the email is declined; `forget` drops it with the dir.
 reads every registered dir's login, and by `login`). It outlives the login
 on purpose: when Claude Code signs a dir out it can clear `oauthAccount`,
 and `last_email` is then all that still ties the dir (and its sessions) to
-the account. It is never read as the current login. `accounts` lists such a
-dir under that account as signed out, `login NICKNAME` signs in there again,
-and the `NotLocalError` names it. When a refresh finds a dir logged into
+the account. It is never read as the current login. `accounts` shows that
+account `…, signed out here` (unless another dir here holds it), `login
+NICKNAME` signs in there again, and the `NotLocalError` names it. When a refresh finds a dir logged into
 another account than recorded, it records the new one and prints
 `note: ~/.claude-sixtynine was logged into claude2 (claude2@x.io) and is now logged into claude9 (claude9@x.io); the sessions in it stay there, under claude9`
 once. A julienning that predates the field drops it when it saves
@@ -1057,16 +1057,17 @@ error).
 
 ### accounts
 
-Columns `#  NICK  ACCOUNT  SESSION  WEEK  STATE  LOCAL  UPDATED`. As v1
+Columns `#  NICK  ACCOUNT  SESSION  WEEK  STATE  UPDATED`. As v1
 with: NICK is the team nickname (`-` for legacy records); allowlisted
 accounts that never reported show `-` windows; STATE shows every other holder
-(`in use by ali, can (12m)`); LOCAL lists the registered dirs here logged
-into that email as home-shortened paths, comma-separated, `*` on the
-selected one (`*~/.claude-julienning1`), then the dirs signed out of it
-with ` (signed out)` (`usageprobe.SignedOutDirs`: no login but `last_email`
-names the account, or a usage probe found the current login signed out;
-`~/.claude-sixtynine (signed out)`), `-` for none. Rows keep the
-Worker's order (Ranking and state: not exhausted (exhausted ones by
+(`in use by ali, can (12m)`). The table names no local dir (a LOCAL column
+listed them through 0.13.0, dropped as confusing): `configs` shows which
+dir holds which account, and `--json` keeps the config names. STATE ends in
+`, signed out here` (after every state, the exhausted and syncing ones
+too) when a registered dir here is signed out of the account
+(`usageprobe.SignedOutDirs`) and none here is logged into it; with another
+dir still holding it the account works here, so nothing is added. Rows keep
+the Worker's order (Ranking and state: not exhausted (exhausted ones by
 `exhausted_until` asc) → not busy → known before unknown → session asc →
 week asc → session reset asc → email).
 
@@ -1094,7 +1095,7 @@ Syncing rows: after the listing refreshes `shared.json`
 than `LocalAddGrace` on the wall clock), every `local_adds` email the listing
 lacks (case-insensitive) is appended, sorted by email:
 `#` `-`, NICK from `shared.json`, SESSION/WEEK `-`, STATE
-`syncing (just shared)`, LOCAL as above, UPDATED `-`. It goes once the
+`syncing (just shared)`, UPDATED `-`. It goes once the
 listing has the email or the grace is over. When the cache cannot be saved
 (warned) there are none. An empty listing with syncing rows prints the table,
 not `no shared accounts yet`.
@@ -1107,7 +1108,11 @@ local_configs}`; syncing accounts never go under `accounts`. Before listing,
 run claim reconciliation (below) synchronously and refresh `shared.json`.
 `signed_out_configs` (config names, always an array) is added next to
 `local_configs`, in accounts and syncing rows; signed-out dirs are never in
-`local_configs` or `local_config`.
+`local_configs` or `local_config`. A signed-out dir is one
+`usageprobe.SignedOutDirs` names: no login but `last_email` names the
+account, or a usage probe found the current login signed out. A dir whose
+account file cannot be read is in neither and warned about (`cannot read
+the account of config x (…)`), in both modes.
 
 Between the listing and the table, `accounts` refreshes stale usage through
 usage probes and waits for them (see "Usage probes"); the table shows the
@@ -1625,7 +1630,9 @@ request, no quota, no 5-hour window started.
 - **Signed out** (`usageprobe.SignedOutDirs`): a dir without a login whose
   `last_email` names an account, or one whose last probe found its current
   login signed out (the mark is for that login only). `next` (and
-  `transfer`'s pick) skip such dirs, `accounts` lists them ` (signed out)`.
+  `transfer`'s pick) skip such dirs, `accounts` appends `, signed out
+  here` to the account's STATE when no dir here is logged into it, and
+  `--json` lists them in `signed_out_configs`.
   A later `ok` probe, a status line report from the dir or a verified
   `login` drops the mark.
 - **Background round**: claim-sync and the send-usage child, after the
@@ -2035,9 +2042,10 @@ asks for them there, as setup does (`host add` sends them instead).
 `~/.claude`); the entry stays in hosts.json. `use`/`next --host box` switch
 and launch on box, the picker and claude on this terminal through ssh, in
 box's tmux mode when it is on. `accounts --host box` lists the same Worker
-data with box's LOCAL column. `share`/`unshare`/`nick` change the same team
-state anywhere; only `Logged in here as` describes box. The shell's `claude`
-and `claude-<nick>` functions are local and never take `--host`.
+data after syncing box's claims and probing box's logins.
+`share`/`unshare`/`nick` change the same team state anywhere; only `Logged
+in here as` describes box. The shell's `claude` and `claude-<nick>`
+functions are local and never take `--host`.
 
 `accounts` here also says where your own claims come from (see
 "accounts": `in use by you on box`).
@@ -2486,7 +2494,7 @@ effective session asc → effective week asc → session reset asc → email asc
 shared within `sharedcache.LocalAddGrace` that the listing does not show yet. JSON: `claims` always an array,
 `busy_by` always an array. `nickname` is always present (null for legacy
 records). Text columns: `#  NICK  ACCOUNT  SESSION  WEEK  STATE  UPDATED`
-(NICK `-` when null; the CLI adds LOCAL). Text STATE: `free`,
+(NICK `-` when null; the CLI's table has the same columns). Text STATE: `free`,
 `in use by ali (12m)`, `claimed by ali, can`, `exhausted (week resets Tue
 20:00)`, `exhausted (week)` when the reset is unknown.
 

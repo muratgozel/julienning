@@ -861,13 +861,13 @@ refreshes the usage of stale accounts logged in here through Claude Code
 (see [Usage probes](#usage-probes)) and prints the ranking:
 
 ```
-#  NICK     ACCOUNT              SESSION      WEEK              STATE                              LOCAL                   UPDATED
-1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               *~/.claude-julienning1  2m ago
-2  claude3  claude3@example.com  -            -                 free                               -                       never
-3  delta    claude4@example.com  -            -                 free                               ~/.claude-work          never
-4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           -                       12m ago
-5  gamma    claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  ~/.claude-julienning2   5m ago
--  epsilon  claude6@example.com  -            -                 syncing (just shared)              ~/.claude-julienning5   -
+#  NICK     ACCOUNT              SESSION      WEEK              STATE                              UPDATED
+1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               2m ago
+2  claude3  claude3@example.com  -            -                 free                               never
+3  delta    claude4@example.com  -            -                 free                               never
+4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           12m ago
+5  gamma    claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
+-  epsilon  claude6@example.com  -            -                 syncing (just shared)              -
 ```
 
 - NICK: the team nickname; `-` for an account shared before nicknames that
@@ -891,16 +891,17 @@ refreshes the usage of stale accounts logged in here through Claude Code
   [How exhaustion is detected](#how-exhaustion-is-detected)). Exhausted wins
   over the other states; anyone else on the account follows,
   `exhausted (week resets Fri 10:00), in use by ali`.
+  Any state ends in `, signed out here` (`free, signed out here`) when a
+  dir on this machine held the account and is signed out of it, and no
+  other dir here is logged into it: Claude Code signed the dir out, or a
+  usage probe found its login gone. Its sessions are still there;
+  `julienning login NICKNAME` signs in again. The table names no dirs:
+  `julienning configs` lists them.
 - `syncing (just shared)`: an account shared from this machine in the last
   10 minutes that the Worker's listing does not show yet (its listings lag
   writes by up to a minute). The row has no rank (`-`), no usage and
   UPDATED `-`; it disappears once the listing has the account, or after the
   10 minutes.
-- LOCAL: the registered dirs here logged into that account, as paths, `*` on
-  the selected one, then the dirs signed out of it marked ` (signed out)`
-  (Claude Code signed the dir out, or a usage probe found its login gone;
-  its sessions are still there: `julienning login NICKNAME` signs in again),
-  `-` for none.
 - UPDATED: the age of the numbers, from a status line report or a
   [usage probe](#usage-probes), whichever is newer.
 - Order: not exhausted first (exhausted accounts last, the one that frees up
@@ -1149,7 +1150,7 @@ this machine, then run any command there with `--host NAME`.
 
 ```sh
 julienning host add box devbox.example.com   # install julienning there and give it this machine's team settings
-julienning accounts --host box                # the same accounts, with box's dirs in LOCAL
+julienning accounts --host box                # the same accounts, as box sees them
 julienning use alpha --host box               # switch on box, pick a session there, run claude there, on this terminal
 julienning host list                          # every host, its versions, accounts and status
 julienning host remove box                    # forget it here; julienning on box stays
@@ -1437,9 +1438,10 @@ reports to the Worker, which then shows it to the whole team.
   showing or ranking anything.
 - It needs Claude Code 2.1.301 or newer and a Worker deployed with this
   release.
-- When Claude Code has no login in a dir, the account is shown as signed out
-  there (`accounts` LOCAL `(signed out)`), `next` skips that dir, and you are
-  told how to sign in again:
+- When Claude Code has no login in a dir, `next` skips that dir, `accounts`
+  shows the account `…, signed out here` (unless another dir here holds it)
+  and `--json` lists the dir in `signed_out_configs`. The probe that finds
+  the login gone says how to sign in again:
 
 ```
 julienning: warning: beta (claude2@example.com) is signed out in ~/.claude-sixtynine; sign in again with: julienning login beta
@@ -1656,7 +1658,8 @@ generated 2026-09-29 20:28 (UTC)
   (`UTC`). An invalid one is a 400.
 - `dev=` ranks as that dev: their own claims and reports do not count as busy.
   Without it, every dev counts. The text STATE for claims is
-  `claimed by ali, can` (no age); there is no LOCAL column.
+  `claimed by ali, can` (no age); the columns are those of
+  `julienning accounts`.
 - GET requests may pass `?token=<token>` instead of the header (it ends up in
   browser history and logs).
 

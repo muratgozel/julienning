@@ -40,7 +40,7 @@ when none can take it.
 ## Daily use
 
 ```sh
-julienning accounts          # every shared account: usage, who is on it, which dir here has it
+julienning accounts          # every shared account: usage and who is on it
 julienning next              # switch to the best free account, then pick a session
 julienning use [nickname]    # switch to that account (none: stay), then pick a session
 claude                       # runs on the selected account, in any terminal
@@ -53,15 +53,17 @@ julienning login <nickname>  # sign that account in here (a new dir, or again af
 
 ```
 $ julienning accounts
-#  NICK   ACCOUNT              SESSION      WEEK              STATE                              LOCAL                   UPDATED
-1  alpha  claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               *~/.claude-julienning1  2m ago
-2  beta   claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           -                       12m ago
-3  gamma  claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  ~/.claude-work          5m ago
+#  NICK   ACCOUNT              SESSION      WEEK              STATE                              UPDATED
+1  alpha  claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               2m ago
+2  beta   claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           12m ago
+3  gamma  claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
 ```
 
-SESSION and WEEK are the used % and reset time in your local zone; LOCAL is
-the dir here logged into the account (`*` marks your selection). `next` takes
-the best-ranked account logged in on this machine.
+SESSION and WEEK are the used % and reset time in your local zone. STATE
+ends in `, signed out here` when this machine lost an account's login
+(`julienning login <nickname>` signs it in again). `next` takes the
+best-ranked account logged in on this machine; `julienning configs` shows
+which dir here holds which account.
 
 In a terminal, `next` and `use` then list recent sessions of the current
 project from all your shared accounts (`--all` for every project). Picking one
