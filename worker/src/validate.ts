@@ -198,11 +198,16 @@ function validateReporter(raw: unknown): Reporter {
   return validateIdentity(raw, "reporter");
 }
 
+/**
+ * PUT usage body `{week, collected_at, reporter}`. A `session` field (sent by
+ * CLIs from before the five-hour window was dropped, and present in records
+ * they stored) is ignored without being validated: a window Claude no longer
+ * has must not fail the report or hide the record.
+ */
 export function validateUsageBody(body: unknown): UsageRecord {
   if (!isRecord(body))
     throw new ValidationError("body", "body must be a JSON object");
   return {
-    session: validateWindow(body.session, "session"),
     week: validateWindow(body.week, "week"),
     collected_at: validateTimestamp(body.collected_at, "collected_at"),
     reporter: validateReporter(body.reporter),
@@ -233,9 +238,10 @@ export interface ProbeReport {
 }
 
 /**
- * POST /probes body: `{reporter, reports: [{email, session, week,
- * collected_at}]}`, one report per account (duplicates are a 400, so a
- * client bug cannot write the same key twice in one request).
+ * POST /probes body: `{reporter, reports: [{email, week, collected_at}]}`,
+ * one report per account (duplicates are a 400, so a client bug cannot write
+ * the same key twice in one request). A report's `session` (older CLIs) is
+ * ignored without being validated, as in validateUsageBody.
  */
 export function validateProbesBody(body: unknown): ProbeReport[] {
   if (!isRecord(body))
@@ -260,7 +266,6 @@ export function validateProbesBody(body: unknown): ProbeReport[] {
     return {
       email,
       record: {
-        session: validateProbeWindow(r.session, `${field}.session`),
         week: validateProbeWindow(r.week, `${field}.week`),
         collected_at: validateTimestamp(r.collected_at, `${field}.collected_at`),
         reporter,
@@ -269,10 +274,15 @@ export function validateProbesBody(body: unknown): ProbeReport[] {
   });
 }
 
+/**
+ * "week" is the only window. "session" is accepted and read as "week": CLIs
+ * from before the five-hour window was dropped still send it for refusals,
+ * and the refusal is real (the account cannot take work until its reset), and
+ * records the previous Worker stored with it still parse.
+ */
 export function validateWindowName(raw: unknown, field = "window"): WindowName {
-  if (raw !== "session" && raw !== "week")
-    throw new ValidationError(field, `${field} must be 'session' or 'week'`);
-  return raw;
+  if (raw === "week" || raw === "session") return "week";
+  throw new ValidationError(field, `${field} must be 'week'`);
 }
 
 /** Absent and null both mean "unknown"; anything else must be a timestamp. */
@@ -511,7 +521,6 @@ export function parseUsageRecord(raw: unknown): UsageRecord | null {
 
 export function parseProbeRecord(raw: unknown): ProbeRecord | null {
   return parseRecord(raw, (v) => ({
-    session: validateProbeWindow(v.session, "session"),
     week: validateProbeWindow(v.week, "week"),
     collected_at: validateTimestamp(v.collected_at, "collected_at"),
     reporter: validateReporter(v.reporter),

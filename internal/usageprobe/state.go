@@ -22,8 +22,9 @@ type State struct {
 	Email    string    `json:"email"` // the dir's login when probed, lowercased
 	Outcome  Outcome   `json:"outcome"`
 	ProbedAt time.Time `json:"probed_at"`
-	Session  *Window   `json:"session,omitempty"` // OK only
-	Week     *Window   `json:"week,omitempty"`    // OK only
+	// Week is set for OK only. Files written while the five-hour window
+	// existed also hold "session"; decoding drops it.
+	Week *Window `json:"week,omitempty"`
 }
 
 // StatePath is the state file of a config dir. Named by a hash like the
@@ -54,7 +55,7 @@ func LoadState(dir string) *State {
 	}
 	switch s.Outcome {
 	case OK:
-		if s.Session == nil || s.Week == nil {
+		if s.Week == nil {
 			return nil
 		}
 	case SignedOut, Failed:
@@ -103,8 +104,8 @@ func SaveState(s State) error {
 func stateOf(r Result, email string) State {
 	s := State{Dir: filepath.Clean(r.Dir), Email: strings.ToLower(email), Outcome: r.Outcome, ProbedAt: r.At.UTC()}
 	if r.Outcome == OK {
-		session, week := r.Session, r.Week
-		s.Session, s.Week = &session, &week
+		week := r.Week
+		s.Week = &week
 	}
 	return s
 }

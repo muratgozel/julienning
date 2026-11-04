@@ -18,15 +18,15 @@ import (
 )
 
 const (
-	nowEpoch  = 1789482657 // 2026-09-15T14:30:57Z = 17:30:57 in Europe/Istanbul (+03:00)
-	fiveReset = 1789491600 // 2026-09-15T17:00:00Z = 20:00 local
-	weekReset = 1789750800 // 2026-09-18T17:00:00Z = Fri 20:00 local
-	email1    = "claude1@x.io"
-	email2    = "claude2@x.io"
-	personal  = "me@personal.io"
-	sidA      = "0b7f6c1e-2a4d-4e8b-9f10-1c2d3e4f5a6b"
-	sidB      = "1c8a7d2f-3b5e-4f9c-8a21-2d3e4f5a6b7c"
-	sidC      = "2d9b8e30-4c6f-4a0d-9b32-3e4f5a6b7c8d"
+	nowEpoch   = 1789482657 // 2026-09-15T14:30:57Z = 17:30:57 in Europe/Istanbul (+03:00)
+	todayReset = 1789491600 // 2026-09-15T17:00:00Z = 20:00 local
+	weekReset  = 1789750800 // 2026-09-18T17:00:00Z = Fri 20:00 local
+	email1     = "claude1@x.io"
+	email2     = "claude2@x.io"
+	personal   = "me@personal.io"
+	sidA       = "0b7f6c1e-2a4d-4e8b-9f10-1c2d3e4f5a6b"
+	sidB       = "1c8a7d2f-3b5e-4f9c-8a21-2d3e4f5a6b7c"
+	sidC       = "2d9b8e30-4c6f-4a0d-9b32-3e4f5a6b7c8d"
 )
 
 var nowT = time.Unix(nowEpoch, 0).UTC()
@@ -242,6 +242,6 @@ func listing(accts ...remote.Account) *remote.Listing {
 	return &remote.Listing{GeneratedAt: nowT, TZ: "Europe/Istanbul", Accounts: accts}
 }
 
-func acct(email string, session, week float64) remote.Account {
-	return remote.Account{Email: email, Session: win(session, fiveReset), Week: win(week, weekReset), State: "free", Claims: []remote.Claim{}, BusyBy: []string{}}
+func acct(email string, week float64) remote.Account {
+	return remote.Account{Email: email, Week: win(week, weekReset), State: "free", Claims: []remote.Claim{}, BusyBy: []string{}}
 }

@@ -55,7 +55,7 @@ const (
 type Outcome string
 
 const (
-	// OK: Claude Code reported the session and weekly windows.
+	// OK: Claude Code reported the weekly window.
 	OK Outcome = "ok"
 	// SignedOut: Claude Code has no usable login in the dir (no usage
 	// report, and `claude auth status` says not logged in), whatever the
@@ -77,7 +77,6 @@ type Window struct {
 type Result struct {
 	Dir     string
 	Outcome Outcome
-	Session Window // OK only
 	Week    Window // OK only
 	At      time.Time
 	// Err says what went wrong (Failed only). It never quotes claude's
@@ -209,12 +208,12 @@ func Run(ctx context.Context, dir string, now time.Time) Result {
 			return fail(errors.New("Claude Code is signed in but reported no plan usage (not a Claude subscription login?)"))
 		}
 	}
-	session, week, shape, err := parseReport(ans.report)
+	week, shape, err := parseReport(ans.report)
 	if err != nil {
 		r.Shape = shape
 		return fail(err)
 	}
-	r.Outcome, r.Session, r.Week = OK, session, week
+	r.Outcome, r.Week = OK, week
 	return r
 }
 
@@ -361,25 +360,27 @@ func newEnough(v string) bool {
 }
 
 // parseReport reads usage_report.rate_limits.limits: the row of kind
-// "session" is the five-hour window, "weekly_all" the weekly one. Rows are
+// "weekly_all" is the weekly window, the only one julienning uses. Rows are
 // classified on `kind`, never on their label (the schema says so). Model
-// scoped rows (weekly_scoped) are ignored. A row missing, or a shape not
-// seen before, is an error with a signature for errors.log, never a guess:
-// a wrong 0% would rank the account as the emptiest.
-func parseReport(report map[string]json.RawMessage) (session, week Window, shape string, err error) {
+// scoped rows (weekly_scoped) are ignored, and so is a "session" row: Claude
+// dropped the five-hour window around 2026-10-31 (Claude Code 2.1.318 sends
+// only weekly_all and weekly_scoped). The row missing, or a shape not seen
+// before, is an error with a signature for errors.log, never a guess: a
+// wrong 0% would rank the account as the emptiest.
+func parseReport(report map[string]json.RawMessage) (week Window, shape string, err error) {
 	var rl struct {
 		Limits json.RawMessage `json:"limits"`
 	}
 	raw, ok := report["rate_limits"]
 	if !ok || string(raw) == "null" || json.Unmarshal(raw, &rl) != nil || len(rl.Limits) == 0 || string(rl.Limits) == "null" {
 		// rate_limits is null while Claude Code cannot fetch the usage.
-		return session, week, "", errors.New("Claude Code could not fetch the usage (offline, or the usage endpoint refused this login)")
+		return week, "", errors.New("Claude Code could not fetch the usage (offline, or the usage endpoint refused this login)")
 	}
 	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal(rl.Limits, &rows); err != nil {
-		return session, week, "limits=" + jsonType(rl.Limits), errors.New("unexpected usage report from Claude Code")
+		return week, "limits=" + jsonType(rl.Limits), errors.New("unexpected usage report from Claude Code")
 	}
-	byKind := map[string]map[string]json.RawMessage{}
+	var weekly map[string]json.RawMessage
 	var kinds []string
 	for _, row := range rows {
 		var kind string
@@ -387,27 +388,20 @@ func parseReport(report map[string]json.RawMessage) (session, week Window, shape
 			continue
 		}
 		kinds = append(kinds, kind)
-		if _, dup := byKind[kind]; !dup {
-			byKind[kind] = row
+		if kind == "weekly_all" && weekly == nil {
+			weekly = row
 		}
 	}
-	sort.Strings(kinds)
-	sig := func() string {
-		parts := []string{"kinds=[" + strings.Join(kinds, " ") + "]"}
-		for _, k := range []string{"session", "weekly_all"} {
-			if row, ok := byKind[k]; ok {
-				parts = append(parts, k+"={percent:"+jsonType(row["percent"])+",resets_at:"+jsonType(row["resets_at"])+"}")
-			}
+	week, ok = parseRow(weekly)
+	if !ok {
+		sort.Strings(kinds)
+		sig := "kinds=[" + strings.Join(kinds, " ") + "]"
+		if weekly != nil {
+			sig += " weekly_all={percent:" + jsonType(weekly["percent"]) + ",resets_at:" + jsonType(weekly["resets_at"]) + "}"
 		}
-		return strings.Join(parts, " ")
+		return Window{}, sig, errors.New("unexpected usage report from Claude Code")
 	}
-	var ok1, ok2 bool
-	session, ok1 = parseRow(byKind["session"])
-	week, ok2 = parseRow(byKind["weekly_all"])
-	if !ok1 || !ok2 {
-		return Window{}, Window{}, sig(), errors.New("unexpected usage report from Claude Code")
-	}
-	return session, week, "", nil
+	return week, "", nil
 }
 
 // parseRow reads one limits row. percent is 0-100 (more once a limit is

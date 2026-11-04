@@ -14,8 +14,15 @@ export interface UsageWindow {
   resets_at: string;
 }
 
-/** The two rate-limit windows: Claude Code's `five_hour` and `seven_day`. */
-export type WindowName = "session" | "week";
+/**
+ * The rate-limit window a refusal or an exhausted account is about: Claude
+ * Code's `seven_day`, the only window Claude accounts have since the five-hour
+ * session window was dropped (around 2026-10-31). Kept as a name, not a
+ * boolean, because `window` and `exhausted_window` are part of the CLI
+ * contract; un-updated CLIs may still send "session", which validate.ts maps
+ * to "week".
+ */
+export type WindowName = "week";
 
 /** Who did something: a developer on one machine. */
 export interface Identity {
@@ -41,9 +48,12 @@ export interface ShareRecord {
   nickname?: string;
 }
 
-/** Metadata of `usage:<email>`: the latest snapshot, `collected_at` clamped to the Worker's clock. */
+/**
+ * Metadata of `usage:<email>`: the latest snapshot, `collected_at` clamped to
+ * the Worker's clock. Records written before the session window was dropped
+ * also carry `session`; parsing ignores it.
+ */
 export interface UsageRecord {
-  session: UsageWindow;
   week: UsageWindow;
   collected_at: string;
   reporter: Reporter;
@@ -63,10 +73,10 @@ export interface ProbeWindow {
  * Metadata of `probe:<email>`: the latest usage probe, read from Claude's
  * usage endpoint by a CLI with a local login, whoever used the account. It is
  * never activity: probing is not using the account, so it makes nobody busy
- * and refreshes no claim.
+ * and refreshes no claim. Probes from before the session window was dropped
+ * also carry `session`; parsing ignores it.
  */
 export interface ProbeRecord {
-  session: ProbeWindow;
   week: ProbeWindow;
   collected_at: string;
   reporter: Reporter;
@@ -97,7 +107,7 @@ export interface ExhaustedReport extends Identity, ExhaustedRecord {}
 
 /**
  * The logical account assembled from its `share:`, `usage:`, `probe:`,
- * `claim:` and `exhausted:` keys (see src/store.ts). `session`/`week`/
+ * `claim:` and `exhausted:` keys (see src/store.ts). `week`/
  * `collected_at`/`reporter` are the status line's `usage:` record, absent
  * until its first valid report; `probe` is the `probe:` record, absent until
  * the first probe. `added_by`/`added_at` are optional only so ranking and
@@ -109,7 +119,6 @@ export interface StoredAccount {
   nickname?: string;
   added_by?: Identity;
   added_at?: string;
-  session?: UsageWindow;
   week?: UsageWindow;
   collected_at?: string;
   reporter?: Reporter;
@@ -138,11 +147,10 @@ export interface RankedAccount {
   added_by?: Identity;
   added_at?: string;
   /**
-   * `session`/`week` are the newer of the status line report and the probe,
-   * `numbers_at` when they were read and `source` which record it was (all
+   * `week` is the newer of the status line report and the probe,
+   * `numbers_at` when it was read and `source` which record it was (all
    * absent with neither).
    */
-  session?: RankedWindow;
   week?: RankedWindow;
   numbers_at?: string;
   source?: UsageSource;
@@ -159,20 +167,19 @@ export interface RankedAccount {
   /** Sorted, unique, never the querying dev; empty when nobody else is on it. Populated in every state. */
   busy_by: string[];
   /**
-   * A present window is at 100% effective usage, or a live `exhausted:` record
-   * says Claude refused a request for a limit (src/exhausted.ts). Always present.
+   * The week is at 100% effective usage, or a live `exhausted:` record says
+   * Claude refused a request for a limit (src/exhausted.ts). Always present.
    */
   exhausted: boolean;
   /**
    * When the account takes work again: the latest known reset among the
-   * windows at 100% and the live refusal records (all of them must reset).
+   * week at 100% and the live refusal records (all of them must reset).
    * null when not exhausted, or exhausted with no known reset. Always present.
    */
   exhausted_until: string | null;
   /**
-   * The window `exhausted_until` belongs to (week on a tie); with no known
-   * reset, the refused window (week when both were). null only when not
-   * exhausted. Always present.
+   * The window the account waits on: always "week" while exhausted (the
+   * only window left), null only when not exhausted. Always present.
    */
   exhausted_window: WindowName | null;
 }

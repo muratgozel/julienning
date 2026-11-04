@@ -174,8 +174,8 @@ func holds(dirs []config.ConfigDir, cd config.ConfigDir) bool {
 
 // sameRank compares the Worker's sort keys except the final email
 // tie-breaker (SPEC "Ranking and state"): exhausted (and, between two
-// exhausted accounts, exhausted_until), busy, known usage, session %, week %,
-// session reset.
+// exhausted accounts, exhausted_until), busy, known usage, week %, week
+// reset.
 func sameRank(a, b *remote.Account) bool {
 	if a.IsExhausted() != b.IsExhausted() {
 		return false
@@ -183,7 +183,6 @@ func sameRank(a, b *remote.Account) bool {
 	if a.IsExhausted() && !sameTime(a.ExhaustedUntil, b.ExhaustedUntil) {
 		return false
 	}
-	known := func(x *remote.Account) bool { return x.Session != nil || x.Week != nil }
 	reset := func(w *remote.Window) int64 {
 		if w == nil || w.ResetPassed || w.ResetsAt == nil {
 			return 0
@@ -191,10 +190,9 @@ func sameRank(a, b *remote.Account) bool {
 		return w.ResetsAt.Unix()
 	}
 	return (len(a.BusyBy) > 0) == (len(b.BusyBy) > 0) &&
-		known(a) == known(b) &&
-		a.Session.Percent() == b.Session.Percent() &&
+		(a.Week != nil) == (b.Week != nil) &&
 		a.Week.Percent() == b.Week.Percent() &&
-		reset(a.Session) == reset(b.Session)
+		reset(a.Week) == reset(b.Week)
 }
 
 func sameTime(a, b *time.Time) bool {

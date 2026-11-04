@@ -75,7 +75,6 @@ func parseListing(body []byte) (*Listing, error) {
 func (c *httpClient) PostProbes(ctx context.Context, reporter Identity, dev string, reports []ProbeReport, listing bool) (*ProbeResult, error) {
 	out := make([]ProbeReport, len(reports))
 	for i, r := range reports {
-		r.Session.ResetsAt = truncUTC(r.Session.ResetsAt)
 		r.Week.ResetsAt = truncUTC(r.Week.ResetsAt)
 		r.CollectedAt = r.CollectedAt.UTC().Truncate(time.Second)
 		out[i] = r
@@ -150,7 +149,6 @@ func (c *httpClient) GetAccount(ctx context.Context, email, dev string) (*Accoun
 }
 
 func (c *httpClient) PutUsage(ctx context.Context, email string, r UsageReport) error {
-	r.Session.ResetsAt = r.Session.ResetsAt.UTC().Truncate(time.Second)
 	r.Week.ResetsAt = r.Week.ResetsAt.UTC().Truncate(time.Second)
 	r.CollectedAt = r.CollectedAt.UTC().Truncate(time.Second)
 	_, err := c.do(ctx, http.MethodPut, accountPath(email)+"/usage", nil, r)

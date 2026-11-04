@@ -25,7 +25,7 @@ func TestParseRefusalReset(t *testing.T) {
 		{"weekly, dated", istNow, weekly, "2026-10-13T17:00:00Z"},
 		{"dated with minutes", istNow, "You've hit your weekly limit · resets Oct 13 at 8:30pm (Europe/Istanbul)", "2026-10-13T17:30:00Z"},
 		{"error type appended", istNow, weekly + " (error type rate_limit, request req_011)", "2026-10-13T17:00:00Z"},
-		{"five-hour, later today", istNow, "You've hit your limit · resets 3pm (Europe/Istanbul)", "2026-10-08T12:00:00Z"},
+		{"time-only form, later today", istNow, "You've hit your limit · resets 3pm (Europe/Istanbul)", "2026-10-08T12:00:00Z"},
 		{"time with minutes, passed today: tomorrow", istNow, "You've hit your limit · resets 3:15am (Europe/Istanbul)", "2026-10-09T00:15:00Z"},
 		{"12am is midnight", istNow, "resets 12am (Europe/Istanbul)", "2026-10-08T21:00:00Z"},
 		{"12pm equal to now: tomorrow", istNow, "resets 12pm (Europe/Istanbul)", "2026-10-09T09:00:00Z"},
@@ -76,61 +76,28 @@ func TestParseRefusalReset(t *testing.T) {
 	}
 }
 
-// The window: a refusal naming the week is the weekly limit; otherwise the
-// last report sent from here decides (higher usage, session on a tie), with
-// a window whose reset has passed counting as empty.
-func TestRefusalWindow(t *testing.T) {
-	now := time.Unix(nowEpoch, 0)
-	sent := func(session, week float64) *Sent {
-		return &Sent{Payload: Payload{SessionUsed: session, SessionResets: fiveReset, WeekUsed: week, WeekResets: weekReset}}
-	}
+// The text's reset wins; otherwise the last sent report's weekly reset,
+// while it is still ahead. Every refusal is about the week, the only window
+// left, whatever the text names ("You've hit your Opus limit").
+func TestRefusalReset(t *testing.T) {
+	now := time.Unix(nowEpoch, 0) // 2026-09-15T14:30:57Z
+	sent := &Sent{Payload: Payload{WeekUsed: 50, WeekResets: weekReset}}
 	cases := []struct {
 		name, text string
 		sent       *Sent
-		want       string
+		want       int64 // 0 = none
 	}{
-		{"weekly text", "You've hit your weekly limit · resets Oct 13 at 8pm (Europe/Istanbul)", sent(100, 10), "week"},
-		{"week in another case", "WEEK limit reached", nil, "week"},
-		{"week in the details only", "rate_limit: seven-day (week) window", sent(90, 10), "week"},
-		{"five-hour text, no cache", "You've hit your limit · resets 3pm (Europe/Istanbul)", nil, "session"},
-		{"cache: week higher", "You've hit your limit", sent(40, 100), "week"},
-		{"cache: session higher", "You've hit your limit", sent(100, 40), "session"},
-		{"cache: tie", "You've hit your limit", sent(100, 100), "session"},
-		{"cache without a week window", "You've hit your limit", &Sent{Payload: Payload{SessionUsed: 10, SessionResets: fiveReset, WeekUsed: 90}}, "session"},
-		{"nothing at all", "", nil, "session"},
-		{"cache: session reset passed", "You've hit your limit", &Sent{Payload: Payload{SessionUsed: 100, SessionResets: nowEpoch - 60, WeekUsed: 93, WeekResets: weekReset}}, "week"},
-		{"cache: both resets passed", "You've hit your limit", &Sent{Payload: Payload{SessionUsed: 10, SessionResets: nowEpoch - 60, WeekUsed: 90, WeekResets: nowEpoch - 1}}, "session"},
+		{"text wins", "resets 8pm (Europe/Istanbul)", sent, utc(t, "2026-09-15T17:00:00Z").Unix()},
+		{"week from the cache", "You've hit your weekly limit", sent, weekReset},
+		{"model limit from the cache", "You've hit your Opus limit", sent, weekReset},
+		{"unparseable zone falls back", "resets 8pm (Nowhere/Zone)", sent, weekReset},
+		{"cached reset passed", "You've hit your limit", &Sent{Payload: Payload{WeekResets: nowEpoch - 1}}, 0},
+		{"cached reset is now", "You've hit your limit", &Sent{Payload: Payload{WeekResets: nowEpoch}}, 0},
+		{"no cache", "You've hit your limit", nil, 0},
+		{"empty cache entry", "You've hit your limit", &Sent{}, 0},
 	}
 	for _, tc := range cases {
-		if got := RefusalWindow(tc.text, tc.sent, now); got != tc.want {
-			t.Errorf("%s: window = %q, want %q", tc.name, got, tc.want)
-		}
-	}
-}
-
-// The text's reset wins; otherwise the last sent report's reset for that
-// window, while it is still ahead.
-func TestRefusalReset(t *testing.T) {
-	now := time.Unix(nowEpoch, 0) // 2026-09-15T14:30:57Z
-	sent := &Sent{Payload: Payload{SessionUsed: 100, SessionResets: fiveReset, WeekUsed: 50, WeekResets: weekReset}}
-	cases := []struct {
-		name, text, window string
-		sent               *Sent
-		want               int64 // 0 = none
-	}{
-		{"text wins", "resets 8pm (Europe/Istanbul)", "session", sent, utc(t, "2026-09-15T17:00:00Z").Unix()},
-		{"session from the cache", "You've hit your limit", "session", sent, fiveReset},
-		{"week from the cache", "You've hit your weekly limit", "week", sent, weekReset},
-		{"unparseable zone falls back", "resets 8pm (Nowhere/Zone)", "week", sent, weekReset},
-		{"cached reset passed", "You've hit your limit", "session",
-			&Sent{Payload: Payload{SessionResets: nowEpoch - 1, WeekResets: weekReset}}, 0},
-		{"cached reset is now", "You've hit your limit", "session",
-			&Sent{Payload: Payload{SessionResets: nowEpoch, WeekResets: weekReset}}, 0},
-		{"no cache", "You've hit your limit", "session", nil, 0},
-		{"empty cache entry", "You've hit your limit", "week", &Sent{}, 0},
-	}
-	for _, tc := range cases {
-		got, ok := RefusalReset(tc.text, tc.window, tc.sent, now)
+		got, ok := RefusalReset(tc.text, tc.sent, now)
 		switch {
 		case tc.want == 0 && ok:
 			t.Errorf("%s: got %v, want none", tc.name, got.UTC())

@@ -38,7 +38,6 @@ function resetMs(w: RankedWindow | undefined): number {
 }
 
 export interface Numbers {
-  session: ProbeWindow;
   week: ProbeWindow;
   collected_at: string;
   reporter: Reporter;
@@ -54,8 +53,8 @@ export interface Numbers {
  */
 export function numbers(a: StoredAccount): Numbers | undefined {
   const status: Numbers | undefined =
-    a.session !== undefined && a.week !== undefined && a.collected_at !== undefined && a.reporter !== undefined
-      ? { session: a.session, week: a.week, collected_at: a.collected_at, reporter: a.reporter, source: "statusline" }
+    a.week !== undefined && a.collected_at !== undefined && a.reporter !== undefined
+      ? { week: a.week, collected_at: a.collected_at, reporter: a.reporter, source: "statusline" }
       : undefined;
   const probe: Numbers | undefined = a.probe !== undefined ? { ...a.probe, source: "probe" } : undefined;
   if (status === undefined || probe === undefined) return status ?? probe;
@@ -75,25 +74,12 @@ interface BlockingWindow {
 }
 
 /**
- * The window at 100% an account is waiting on, or undefined when none is.
- * With both windows at 100% this is the one that resets LAST: the account
- * stays unusable until every exhausted window has reset. Ties go to week.
+ * The week when it is at 100% and still running, else undefined. A window
+ * that is not running has nothing used, so it never blocks.
  */
-function blockingWindow(
-  session: RankedWindow | undefined,
-  week: RankedWindow | undefined,
-): BlockingWindow | undefined {
-  let blocking: BlockingWindow | undefined;
-  for (const [name, w] of [
-    ["session", session],
-    ["week", week],
-  ] as const) {
-    // A window that is not running has nothing used, so it never blocks.
-    if (!w || w.resets_at === null || w.effective < EXHAUSTED_AT) continue;
-    if (!blocking || resetMs(w) >= resetMs(blocking.window))
-      blocking = { name, window: w };
-  }
-  return blocking;
+function blockingWindow(week: RankedWindow | undefined): BlockingWindow | undefined {
+  if (!week || week.resets_at === null || week.effective < EXHAUSTED_AT) return undefined;
+  return { name: "week", window: week };
 }
 
 interface Exhaustion {
@@ -102,11 +88,11 @@ interface Exhaustion {
 }
 
 /**
- * Why the account cannot take work, or undefined when it can: a window at
+ * Why the account cannot take work, or undefined when it can: the week at
  * 100% and/or live refusal records (src/exhausted.ts). `until` is the latest
- * known reset among all of them, since every one must pass, and `window` the
- * window it belongs to (week on a tie). When none has a known reset, `until`
- * is null and `window` is the refused window, week when both were. format.ts
+ * known reset among all of them, since every one must pass, null when none
+ * has a known reset. `window` is always "week", the only window; it stays a
+ * field because `exhausted_window` is part of the CLI contract. format.ts
  * renders these fields, so the text STATE and the JSON always agree.
  */
 function exhaustion(
@@ -120,12 +106,11 @@ function exhaustion(
   let latest: { window: WindowName; until: string; ms: number } | undefined;
   for (const k of known) {
     const ms = Date.parse(k.until);
-    if (!latest || ms > latest.ms || (ms === latest.ms && k.window === "week"))
-      latest = { ...k, ms };
+    if (!latest || ms > latest.ms) latest = { ...k, ms };
   }
   if (latest) return { window: latest.window, until: latest.until };
   if (refusals.length === 0) return undefined;
-  return { window: refusals.some((r) => r.window === "week") ? "week" : "session", until: null };
+  return { window: "week", until: null };
 }
 
 interface Scored {
@@ -138,7 +123,6 @@ interface Scored {
   until: number;
   busy: boolean;
   known: boolean;
-  session: number;
   week: number;
   resets: number;
 }
@@ -148,13 +132,14 @@ interface Scored {
  * Ordering: not exhausted (an account at 100% or refused for a limit sinks
  * below every usable one, whatever its usage says), then within the exhausted
  * band the earliest `exhausted_until`, unknown last; then not busy, known
- * usage, effective session %, effective week %, earliest session reset, email.
+ * usage, effective week %, earliest week reset (its remaining quota expires
+ * first; a window not running or unknown sorts last), email. The week is the
+ * only window since Claude dropped the five-hour session window.
  */
 export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccount[] {
   const nowMs = opts.now.getTime();
   const scored: Scored[] = accounts.map((a) => {
     const nums = numbers(a);
-    const session = rankWindow(nums?.session, nowMs);
     const week = rankWindow(nums?.week, nowMs);
 
     // Activity is the status line's alone: a probe is not someone using
@@ -172,8 +157,8 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
 
     const busy_by = [...new Set([...(activeDev ? [activeDev] : []), ...claimingDevs])].sort();
     const exhausted = exhaustion(
-      blockingWindow(session, week),
-      liveExhausted(a.exhausted ?? [], { session: nums?.session, week: nums?.week, at: nums?.collected_at }, nowMs),
+      blockingWindow(week),
+      liveExhausted(a.exhausted ?? [], { week: nums?.week, at: nums?.collected_at }, nowMs),
     );
     // Exhaustion beats everything: nobody can use it, whoever is on it. busy_by
     // stays populated so clients still see who is. Activity beats a claim:
@@ -192,7 +177,6 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
       nickname: a.nickname ?? null,
       ...(a.added_by !== undefined ? { added_by: a.added_by } : {}),
       ...(a.added_at !== undefined ? { added_at: a.added_at } : {}),
-      ...(session ? { session } : {}),
       ...(week ? { week } : {}),
       ...(nums !== undefined ? { numbers_at: nums.collected_at, source: nums.source } : {}),
       ...(a.collected_at !== undefined ? { collected_at: a.collected_at } : {}),
@@ -213,10 +197,9 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
           ? Date.parse(exhausted.until)
           : Number.POSITIVE_INFINITY,
       busy: busy_by.length > 0,
-      known: session !== undefined || week !== undefined,
-      session: session?.effective ?? Number.POSITIVE_INFINITY,
+      known: week !== undefined,
       week: week?.effective ?? Number.POSITIVE_INFINITY,
-      resets: resetMs(session),
+      resets: resetMs(week),
     };
   });
 
@@ -225,7 +208,6 @@ export function rank(accounts: StoredAccount[], opts: RankOptions): RankedAccoun
     if (x.exhausted && x.until !== y.until) return x.until - y.until;
     if (x.busy !== y.busy) return x.busy ? 1 : -1;
     if (x.known !== y.known) return x.known ? -1 : 1;
-    if (x.session !== y.session) return x.session - y.session;
     if (x.week !== y.week) return x.week - y.week;
     if (x.resets !== y.resets) return x.resets - y.resets;
     return x.account.email < y.account.email ? -1 : x.account.email > y.account.email ? 1 : 0;

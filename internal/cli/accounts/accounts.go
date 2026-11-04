@@ -150,20 +150,20 @@ func accountsTable(env cli.Env, cfg *config.Config, listing *remote.Listing, syn
 		return ""
 	}
 	tw := tabwriter.NewWriter(env.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "#\tNICK\tACCOUNT\tSESSION\tWEEK\tSTATE\tUPDATED")
+	fmt.Fprintln(tw, "#\tNICK\tACCOUNT\tWEEK\tSTATE\tUPDATED")
 	for i := range listing.Accounts {
 		a := &listing.Accounts[i]
 		rank := a.Rank
 		if rank == 0 {
 			rank = i + 1
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			rank, orDash(a.Nickname), a.Email, column(a.Session, n, loc), column(a.Week, n, loc),
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n",
+			rank, orDash(a.Nickname), a.Email, column(a.Week, n, loc),
 			stateFor(a, v, n, loc)+here(a.Email), updated(a, n))
 	}
 	// Unranked: the Worker has not listed them yet.
 	for _, s := range syncRows {
-		fmt.Fprintf(tw, "-\t%s\t%s\t-\t-\t%s\t-\n", orDash(s.nickname), s.email, syncingState+here(s.email))
+		fmt.Fprintf(tw, "-\t%s\t%s\t-\t%s\t-\n", orDash(s.nickname), s.email, syncingState+here(s.email))
 	}
 	return tw.Flush()
 }

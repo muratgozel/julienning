@@ -227,7 +227,9 @@ unset CLAUDE_CONFIG_DIR XDG_DATA_HOME XDG_CONFIG_HOME JULIENNING_REMOTE_URL JULI
 # A claude that reports which config dir it was started with (and a version,
 # which transfer compares between machines). For the usage probe it answers
 # `-p /usage` from <config dir>/fake-usage, logging "probe <dir>|" to
-# $T/probes.log: "ok S W" is a report with those percentages, "signedout" no
+# $T/probes.log: "ok W" is a report with that weekly percentage (the rows
+# Claude sends since the five-hour window went away: weekly_all and a model's
+# weekly_scoped, no session row), "signedout" no
 # report (and `auth status` says logged out); without the file it is a
 # Claude Code too old to report, so every other check keeps the Worker's
 # numbers. `auth login --email E` signs E in the way Claude Code writes it.
@@ -245,7 +247,7 @@ case " \$* " in
   ok\ *)
     set -- \$mode
     printf '{"type":"system","subtype":"init","claude_code_version":"2.1.303"}\\n'
-    printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Current session"}]},"usage_report":{"rate_limits":{"limits":[{"kind":"session","percent":%s,"resets_at":"2099-01-01T04:59:59.6+00:00"},{"kind":"weekly_all","percent":%s,"resets_at":"2099-01-05T05:00:00.2+00:00"}]}}}\\n' "\$2" "\$3"
+    printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Current week"}]},"usage_report":{"rate_limits":{"limits":[{"kind":"weekly_all","percent":%s,"resets_at":"2099-01-05T04:59:59.6+00:00"},{"kind":"weekly_scoped","percent":3,"resets_at":"2099-01-05T05:00:00.2+00:00","scope":{"model":{"display_name":"Fable"}}}]}}}\\n' "\$2"
     ;;
   signedout) printf '{"type":"system","subtype":"init","claude_code_version":"2.1.303"}\\n' ;;
   *) printf '{"type":"system","subtype":"init","claude_code_version":"2.1.200"}\\n' ;;
@@ -703,9 +705,11 @@ rm -f "$HOME/.claude-work/sessions/"*.json
 # --- usage: the status line and its detached report ---------------------------------------
 # The status line prints `<model> · ctx N%` and spawns a detached send-usage;
 # the numbers show up in `accounts` once that child has reached the Worker.
+# rate_limits has seven_day only, as Claude Code sends it since the five-hour
+# window went away (~2026-10-31).
 now="$(date +%s)"
-sl_input="$(printf '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42},"rate_limits":{"five_hour":{"used_percentage":23,"resets_at":%d},"seven_day":{"used_percentage":40,"resets_at":%d}}}' \
-  $((now + 3600)) $((now + 86400)))"
+sl_input="$(printf '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":42},"rate_limits":{"seven_day":{"used_percentage":23,"resets_at":%d}}}' \
+  $((now + 86400)))"
 out="$(printf '%s' "$sl_input" | CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning statusline 2>&1)"
 expect_contains "status line renders model and context" "Opus · ctx 42%" "$out"
 expect_missing "status line shows no error row" "julienning:" "$out"
@@ -746,7 +750,7 @@ expect_contains "other StopFailure errors change nothing" "free" "$(row bravo)"
 # The commands above already probed both (and failed: too old); dropping the
 # probe state stands in for the 5-minute cache window passing.
 rm -rf "$JULIENNING_HOME/probes"
-printf 'ok 61 72\n' >"$HOME/.claude-old/fake-usage"
+printf 'ok 61\n' >"$HOME/.claude-old/fake-usage"
 : >"$T/probes.log"
 run julienning accounts
 expect_contains "accounts probes a stale account and shows Claude's numbers" "61% → 2099" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
@@ -770,7 +774,7 @@ expect_contains "the cached numbers are still shown" "61%" "$(printf '%s\n' "$ou
 # re-probe in the same second would read as a resend.
 rm -rf "$JULIENNING_HOME/probes"
 sleep 1
-printf 'ok 100 100\n' >"$HOME/.claude-old/fake-usage"
+printf 'ok 100\n' >"$HOME/.claude-old/fake-usage"
 printf 'signedout\n' >"$HOME/.claude-two/fake-usage"
 run env JULIENNING_NOW_EPOCH=$(($(date +%s) + 1200)) julienning accounts
 expect_contains "a signed-out dir is reported with the way back" "bravo (beta@example.com) is signed out in ~/.claude-two; sign in again with: julienning login bravo" "$out"
@@ -800,7 +804,7 @@ expect_missing "a verified login drops the signed-out mark" "signed out" "$bravo
 # gamma back to low numbers for what follows, then the "too old" default.
 rm -rf "$JULIENNING_HOME/probes"
 sleep 1
-printf 'ok 1 1\n' >"$HOME/.claude-old/fake-usage"
+printf 'ok 1\n' >"$HOME/.claude-old/fake-usage"
 run env JULIENNING_NOW_EPOCH=$(($(date +%s) + 1200)) julienning accounts
 expect_contains "a newer probe replaces the previous one" "1% → 2099" "$(printf '%s\n' "$out" | awk '$2 == "gamma"')"
 rm -f "$HOME/.claude-old/fake-usage"

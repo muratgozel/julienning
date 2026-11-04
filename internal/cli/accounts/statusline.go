@@ -63,7 +63,7 @@ func (s *statusline) run() {
 	// reset, so there is no error row; the throttled log line (shape only,
 	// never numbers) is what explains a "usage pending" that never clears.
 	if !in.Complete() {
-		s.logThrottled(usage.CodeUsagePending, "status line input lacks a rate limit window; usage is not reported until both are there "+in.RateLimitsSignature())
+		s.logThrottled(usage.CodeUsagePending, "status line input lacks the weekly rate limit window; usage is not reported until it is there "+in.RateLimitsSignature())
 		s.printf("%s · %s\n", s.line, usage.Pending)
 		return
 	}
@@ -144,8 +144,6 @@ func (s *statusline) spawn(email string, in usage.Input) error {
 	return spawner(self(), []string{
 		"send-usage",
 		"--email", email,
-		"--session-used", usage.FormatPercent(in.Session.Used),
-		"--session-resets", strconv.FormatInt(in.Session.ResetsAt, 10),
 		"--week-used", usage.FormatPercent(in.Week.Used),
 		"--week-resets", strconv.FormatInt(in.Week.ResetsAt, 10),
 		"--collected-at", strconv.FormatInt(s.now.Unix(), 10),

@@ -20,7 +20,7 @@ const listingJSON = `{
     {"rank":1,"email":"claude1@sixtynine.agency","nickname":"alpha",
      "added_by":{"dev":"murat","machine_id":"3fa9c2d1e07b"},"added_at":"2026-09-10T08:00:00Z",
      "session":{"used":50,"effective":50,"resets_at":"2026-09-16T14:30:00+02:00","reset_passed":false},
-     "week":{"used":28,"effective":28,"resets_at":"2026-09-22T18:00:00Z","reset_passed":false},
+     "week":{"used":28,"effective":28,"resets_at":"2026-09-22T20:00:00+02:00","reset_passed":false},
      "collected_at":"2026-09-16T12:18:57Z",
      "reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"},
      "claims":[],"state":"free","busy_by":[],"future_field":"keep me"},
@@ -74,17 +74,22 @@ func TestListAccountsParsesAndNormalizes(t *testing.T) {
 	if a.Nickname != "alpha" || l.Accounts[1].Nickname != "" {
 		t.Errorf("nicknames = %q, %q", a.Nickname, l.Accounts[1].Nickname)
 	}
-	if a.Session.ResetsAt.Location() != time.UTC {
-		t.Errorf("resets_at not normalized to UTC: %v", a.Session.ResetsAt)
+	if a.Week.ResetsAt.Location() != time.UTC {
+		t.Errorf("resets_at not normalized to UTC: %v", a.Week.ResetsAt)
 	}
-	if want := "2026-09-16T12:30:00Z"; a.Session.ResetsAt.Format(time.RFC3339) != want {
-		t.Errorf("resets_at = %s, want %s", a.Session.ResetsAt.Format(time.RFC3339), want)
+	if want := "2026-09-22T18:00:00Z"; a.Week.ResetsAt.Format(time.RFC3339) != want {
+		t.Errorf("resets_at = %s, want %s", a.Week.ResetsAt.Format(time.RFC3339), want)
+	}
+	// An older Worker still lists the five-hour window: not decoded, but
+	// --json passes it through.
+	if !strings.Contains(string(a.Raw), `"session"`) {
+		t.Errorf("raw lost the older Worker's session: %s", a.Raw)
 	}
 	if len(a.BusyBy) != 0 || len(a.Claims) != 0 {
 		t.Errorf("empty busy_by/claims should be empty: %v %v", a.BusyBy, a.Claims)
 	}
 	b := l.Accounts[1]
-	if b.Session != nil {
+	if b.Week != nil {
 		t.Errorf("absent window should be nil")
 	}
 	if strings.Join(b.BusyBy, ",") != "ali,can" {
@@ -134,7 +139,6 @@ func TestPutUsageBody(t *testing.T) {
 	c, got := newServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	loc := time.FixedZone("IST", 3*3600)
 	err := c.PutUsage(context.Background(), "claude1@sixtynine.agency", UsageReport{
-		Session:     UsageWindow{Used: 23.5, ResetsAt: time.Unix(1789491600, 0).In(loc)},
 		Week:        UsageWindow{Used: 41, ResetsAt: time.Unix(1793631600, 0).In(loc)},
 		CollectedAt: time.Unix(1789482657, 500).In(loc),
 		Reporter:    Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"},
@@ -145,8 +149,7 @@ func TestPutUsageBody(t *testing.T) {
 	if got.method != http.MethodPut || got.path != "/accounts/claude1@sixtynine.agency/usage" {
 		t.Errorf("request = %s %s", got.method, got.path)
 	}
-	want := `{"session":{"used":23.5,"resets_at":"2026-09-15T17:00:00Z"},` +
-		`"week":{"used":41,"resets_at":"2026-11-02T15:00:00Z"},` +
+	want := `{"week":{"used":41,"resets_at":"2026-11-02T15:00:00Z"},` +
 		`"collected_at":"2026-09-15T14:30:57Z",` +
 		`"reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"}}`
 	if got.body != want {
@@ -173,10 +176,10 @@ func TestPutExhaustedBody(t *testing.T) {
 	}
 
 	// Unknown reset: null, not a zero time.
-	if err := c.PutExhausted(context.Background(), "a@x.com", ExhaustedReport{Window: WindowSession, Reporter: id}); err != nil {
+	if err := c.PutExhausted(context.Background(), "a@x.com", ExhaustedReport{Window: WindowWeek, Reporter: id}); err != nil {
 		t.Fatalf("PutExhausted: %v", err)
 	}
-	want = `{"window":"session","resets_at":null,"reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"}}`
+	want = `{"window":"week","resets_at":null,"reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"}}`
 	if got.body != want {
 		t.Errorf("body =\n%s\nwant\n%s", got.body, want)
 	}
@@ -396,7 +399,7 @@ func TestStatusMapping(t *testing.T) {
 	}{
 		{"unauthorized", 401, `{"error":"unauthorized"}`, "401 unauthorized"},
 		{"not found", 404, `{"error":"not found"}`, "404 not found"},
-		{"validation", 400, `{"error":"used must be a number in [0,100]","field":"session.used"}`, "400 used must be a number in [0,100] (field: session.used)"},
+		{"validation", 400, `{"error":"used must be a number in [0,100]","field":"week.used"}`, "400 used must be a number in [0,100] (field: week.used)"},
 		{"server error, no json", 503, `<html>oops</html>`, "503 service unavailable"},
 	}
 	for _, tc := range cases {
@@ -664,13 +667,13 @@ func TestExhaustedDecoding(t *testing.T) {
 
 	c, _ = newServer(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"email":"a@x.com","state":"exhausted","exhausted":true,"exhausted_until":"2026-09-16T23:40:00+03:00",
-		  "session":{"used":100,"resets_at":"2026-09-16T23:40:00+03:00"}}`)
+		  "week":{"used":100,"resets_at":"2026-09-16T23:40:00+03:00"}}`)
 	})
 	one, err := c.GetAccount(context.Background(), "a@x.com", "murat")
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
-	if one.ExhaustedUntil == nil || one.ExhaustedUntil.Location() != time.UTC || one.ExhaustedWindow() != "session" {
+	if one.ExhaustedUntil == nil || one.ExhaustedUntil.Location() != time.UTC || one.ExhaustedWindow() != "week" {
 		t.Errorf("GetAccount = %+v (window %q)", one, one.ExhaustedWindow())
 	}
 
@@ -682,15 +685,15 @@ func TestExhaustedDecoding(t *testing.T) {
 	}
 }
 
-// exhausted_window: present wins over the inference, null and absent (an
-// older Worker) fall back to it, and exhausted_until may be null while
-// exhausted is true.
+// exhausted_window: present wins over the inference, null, absent (an
+// older Worker) and an unknown value (an older Worker's "session") fall back
+// to it, and exhausted_until may be null while exhausted is true.
 func TestExhaustedWindowField(t *testing.T) {
 	body := `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","accounts":[
 	  {"email":"a@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":"week"},
 	  {"email":"b@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":"session",
 	   "session":{"used":40,"resets_at":"2026-09-16T23:40:00Z"},"week":{"used":100,"resets_at":"2026-09-16T23:40:00Z"}},
-	  {"email":"c@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":null,
+	  {"email":"c@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":"session",
 	   "session":{"used":100,"resets_at":"2026-09-16T23:40:00Z"}},
 	  {"email":"d@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null},
 	  {"email":"e@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":"opus"},
@@ -700,7 +703,7 @@ func TestExhaustedWindowField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
-	want := map[string]string{"a@x.com": "week", "b@x.com": "session", "c@x.com": "session", "d@x.com": "", "e@x.com": "", "f@x.com": ""}
+	want := map[string]string{"a@x.com": "week", "b@x.com": "week", "c@x.com": "", "d@x.com": "", "e@x.com": "", "f@x.com": ""}
 	for _, a := range l.Accounts {
 		if got := a.ExhaustedWindow(); got != want[a.Email] {
 			t.Errorf("%s: ExhaustedWindow = %q, want %q", a.Email, got, want[a.Email])
@@ -722,7 +725,7 @@ func TestExhaustedWindow(t *testing.T) {
 		}
 		return &v
 	}
-	sessionReset, weekReset := at("2026-09-16T20:40:00Z"), at("2026-09-18T07:00:00Z")
+	otherReset, weekReset := at("2026-09-16T20:40:00Z"), at("2026-09-18T07:00:00Z")
 	full := func(r *time.Time) *Window { return &Window{Used: 100, ResetsAt: r} }
 	half := func(r *time.Time) *Window { return &Window{Used: 50, ResetsAt: r} }
 	cases := []struct {
@@ -730,16 +733,15 @@ func TestExhaustedWindow(t *testing.T) {
 		a    Account
 		want string
 	}{
-		{"session", Account{Exhausted: true, ExhaustedUntil: sessionReset, Session: full(sessionReset), Week: half(weekReset)}, "session"},
-		{"week", Account{Exhausted: true, ExhaustedUntil: weekReset, Session: half(sessionReset), Week: full(weekReset)}, "week"},
-		{"both: the later reset", Account{Exhausted: true, ExhaustedUntil: weekReset, Session: full(sessionReset), Week: full(weekReset)}, "week"},
-		{"both reset together: week", Account{Exhausted: true, ExhaustedUntil: weekReset, Session: full(weekReset), Week: full(weekReset)}, "week"},
-		{"state only", Account{State: "exhausted", ExhaustedUntil: sessionReset, Session: full(sessionReset)}, "session"},
-		{"no window matches", Account{Exhausted: true, ExhaustedUntil: weekReset, Session: full(sessionReset)}, ""},
-		{"until unknown", Account{Exhausted: true, Session: full(sessionReset)}, ""},
-		{"window reset passed", Account{Exhausted: true, ExhaustedUntil: sessionReset,
-			Session: &Window{Used: 100, ResetsAt: sessionReset, ResetPassed: true}}, ""},
-		{"not exhausted", Account{ExhaustedUntil: sessionReset, Session: full(sessionReset)}, ""},
+		{"week", Account{Exhausted: true, ExhaustedUntil: weekReset, Week: full(weekReset)}, "week"},
+		{"state only", Account{State: "exhausted", ExhaustedUntil: weekReset, Week: full(weekReset)}, "week"},
+		{"week not full", Account{Exhausted: true, ExhaustedUntil: weekReset, Week: half(weekReset)}, ""},
+		{"until is another reset", Account{Exhausted: true, ExhaustedUntil: otherReset, Week: full(weekReset)}, ""},
+		{"until unknown", Account{Exhausted: true, Week: full(weekReset)}, ""},
+		{"no week", Account{Exhausted: true, ExhaustedUntil: weekReset}, ""},
+		{"window reset passed", Account{Exhausted: true, ExhaustedUntil: weekReset,
+			Week: &Window{Used: 100, ResetsAt: weekReset, ResetPassed: true}}, ""},
+		{"not exhausted", Account{ExhaustedUntil: weekReset, Week: full(weekReset)}, ""},
 	}
 	for _, tc := range cases {
 		if got := tc.a.ExhaustedWindow(); got != tc.want {
@@ -753,7 +755,6 @@ func TestPostProbes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","probes":true,"not_shared":["gone@x.io"],
 		  "accounts":[{"rank":1,"email":"a@x.io","source":"probe","numbers_at":"2026-09-16T12:19:00Z",
-		    "session":{"used":0,"effective":0,"resets_at":null,"reset_passed":false},
 		    "week":{"used":40,"effective":40,"resets_at":"2026-09-20T10:00:00Z","reset_passed":false},
 		    "collected_at":"2026-09-16T15:10:00+03:00","reporter":{"dev":"ali","machine_id":"aaaaaaaaaaaa"},
 		    "claims":[],"state":"in_use","busy_by":["ali"]}]}`)
@@ -762,7 +763,6 @@ func TestPostProbes(t *testing.T) {
 	reset := time.Date(2026, 9, 20, 13, 0, 0, 345468000, ist)
 	res, err := c.PostProbes(context.Background(), Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"}, "murat", []ProbeReport{{
 		Email:       "a@x.io",
-		Session:     ProbeWindow{Used: 0},
 		Week:        ProbeWindow{Used: 40, ResetsAt: &reset},
 		CollectedAt: time.Date(2026, 9, 16, 15, 19, 0, 900000000, ist),
 	}}, true)
@@ -773,7 +773,7 @@ func TestPostProbes(t *testing.T) {
 		t.Fatalf("request: %+v", got)
 	}
 	want := `{"reporter":{"dev":"murat","machine_id":"3fa9c2d1e07b"},"reports":[{"email":"a@x.io",` +
-		`"session":{"used":0,"resets_at":null},"week":{"used":40,"resets_at":"2026-09-20T10:00:00Z"},` +
+		`"week":{"used":40,"resets_at":"2026-09-20T10:00:00Z"},` +
 		`"collected_at":"2026-09-16T12:19:00Z"}]}`
 	if got.body != want {
 		t.Fatalf("body:\n got %s\nwant %s", got.body, want)
@@ -782,7 +782,7 @@ func TestPostProbes(t *testing.T) {
 		t.Fatalf("not_shared: %v", res.NotShared)
 	}
 	a := res.Listing.Accounts[0]
-	if a.Source != "probe" || a.Session.ResetsAt != nil || a.Week.ResetsAt == nil || len(a.Raw) == 0 || !res.Listing.Probes {
+	if a.Source != "probe" || a.Week.ResetsAt == nil || len(a.Raw) == 0 || !res.Listing.Probes {
 		t.Fatalf("account: %+v", a)
 	}
 	if !a.UsageAt().Equal(time.Date(2026, 9, 16, 12, 19, 0, 0, time.UTC)) {

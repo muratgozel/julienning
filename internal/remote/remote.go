@@ -65,9 +65,11 @@ type UsageWindow struct {
 	ResetsAt time.Time `json:"resets_at"`
 }
 
-// UsageReport is the PUT /accounts/:email/usage body.
+// UsageReport is the PUT /accounts/:email/usage body. The weekly window is
+// the only one: Claude dropped the five-hour window around 2026-10-31, and a
+// Worker deployed before that change rejects a body without "session" (it
+// needs a redeploy).
 type UsageReport struct {
-	Session     UsageWindow `json:"session"`
 	Week        UsageWindow `json:"week"`
 	CollectedAt time.Time   `json:"collected_at"`
 	Reporter    Identity    `json:"reporter"`
@@ -84,7 +86,6 @@ type ProbeWindow struct {
 // `/usage` said for a login on this machine.
 type ProbeReport struct {
 	Email       string      `json:"email"`
-	Session     ProbeWindow `json:"session"`
 	Week        ProbeWindow `json:"week"`
 	CollectedAt time.Time   `json:"collected_at"`
 }
@@ -97,12 +98,11 @@ type ProbeResult struct {
 	NotShared []string
 }
 
-// Exhausted window names, as the Worker spells them in ExhaustedReport and in
-// the listing's exhausted_window.
-const (
-	WindowSession = "session"
-	WindowWeek    = "week"
-)
+// WindowWeek is the exhausted window name, as the Worker spells it in
+// ExhaustedReport and in the listing's exhausted_window. It is the only one
+// left; a Worker deployed before the five-hour window went away can still
+// answer "session", which ExhaustedWindow does not recognise.
+const WindowWeek = "week"
 
 // ExhaustedReport is the PUT /accounts/:email/exhausted body: Claude refused
 // a request for a usage limit. ResetsAt nil (sent as null) means the reset is
@@ -146,16 +146,18 @@ type Claim struct {
 
 // Account is one account in the Worker's JSON response.
 type Account struct {
-	Rank     int     `json:"rank,omitempty"`
-	Email    string  `json:"email"`
-	Nickname string  `json:"nickname,omitempty"` // team-wide; "" for records created before nicknames existed
-	Session  *Window `json:"session,omitempty"`
-	Week     *Window `json:"week,omitempty"`
+	Rank     int    `json:"rank,omitempty"`
+	Email    string `json:"email"`
+	Nickname string `json:"nickname,omitempty"` // team-wide; "" for records created before nicknames existed
+	// Week is the only usage window. A Worker deployed before the five-hour
+	// window went away still lists "session"; it is not decoded (Raw keeps
+	// it for --json).
+	Week *Window `json:"week,omitempty"`
 	// CollectedAt and Reporter are the latest status line report (only that
 	// means someone is on the account; see Activity), from every Worker.
 	CollectedAt *time.Time `json:"collected_at,omitempty"`
 	Reporter    *Identity  `json:"reporter,omitempty"`
-	// Source says where Session/Week came from: the newer of the status
+	// Source says where Week came from: the newer of the status
 	// line report ("statusline") and a usage probe ("probe"), and NumbersAt
 	// when they were read. Both absent from a Worker that predates probes;
 	// read the time through UsageAt.
@@ -165,13 +167,13 @@ type Account struct {
 	State     string     `json:"state"`
 	BusyBy    []string   `json:"busy_by"` // other devs holding or actively using it, in every state
 
-	// Exhausted: a window is at 100%, or Claude refused a request for a
+	// Exhausted: the week is at 100%, or Claude refused a request for a
 	// limit, so it refuses work until a reset. ExhaustedUntil is the reset
-	// after which the account is usable again (with both windows at 100%, the
-	// later one); nil when not known, also while Exhausted is true.
-	// ExhaustedWin is the Worker's exhausted_window ("session", "week", or
-	// null); read it through ExhaustedWindow, which falls back to inferring
-	// it. Workers from before these fields omit them, which reads as
+	// after which the account is usable again; nil when not known, also
+	// while Exhausted is true. ExhaustedWin is the Worker's exhausted_window
+	// ("week", or null; "session" from a Worker not redeployed since the
+	// five-hour window went away); read it through ExhaustedWindow, which
+	// falls back to inferring it. Workers from before these fields omit them, which reads as
 	// false/nil.
 	Exhausted      bool       `json:"exhausted"`
 	ExhaustedUntil *time.Time `json:"exhausted_until"`
@@ -195,7 +197,7 @@ func (a *Account) Activity() (dev, machineID string, at time.Time, ok bool) {
 	return dev, machineID, *a.CollectedAt, true
 }
 
-// UsageAt is when Session/Week were read: NumbersAt, or CollectedAt from a
+// UsageAt is when Week was read: NumbersAt, or CollectedAt from a
 // Worker that predates probes (there the numbers are always the status
 // line's). nil when nothing was ever read.
 func (a *Account) UsageAt() *time.Time {
@@ -212,32 +214,25 @@ func (a *Account) IsExhausted() bool {
 	return a.Exhausted || a.State == "exhausted"
 }
 
-// ExhaustedWindow names the window the account waits on: "session" or
-// "week". The Worker's exhausted_window wins; a Worker without it (or with a
-// value this binary does not know) leaves the window inferred: the one at
-// 100% whose reset is ExhaustedUntil (week on a tie, as the Worker decides).
+// ExhaustedWindow names the window the account waits on: "week", the only
+// one. The Worker's exhausted_window wins; a Worker without it (or with a
+// value this binary does not know, such as an old Worker's "session") leaves
+// the window inferred: week when it is at 100% and resets at ExhaustedUntil.
 // "" when the account is not exhausted or the window cannot be told.
 func (a *Account) ExhaustedWindow() string {
 	if !a.IsExhausted() {
 		return ""
 	}
-	if w := a.ExhaustedWin; w != nil && (*w == WindowSession || *w == WindowWeek) {
+	if w := a.ExhaustedWin; w != nil && *w == WindowWeek {
 		return *w
 	}
 	if a.ExhaustedUntil == nil {
 		return ""
 	}
-	blocks := func(w *Window) bool {
-		return w != nil && w.ResetsAt != nil && w.Percent() >= 100 && w.ResetsAt.Equal(*a.ExhaustedUntil)
-	}
-	switch {
-	case blocks(a.Week):
+	if w := a.Week; w != nil && w.ResetsAt != nil && w.Percent() >= 100 && w.ResetsAt.Equal(*a.ExhaustedUntil) {
 		return WindowWeek
-	case blocks(a.Session):
-		return WindowSession
-	default:
-		return ""
 	}
+	return ""
 }
 
 // Listing is GET /accounts?format=json.
@@ -346,7 +341,6 @@ func (a *Account) normalize() {
 	utcPtr(&a.CollectedAt)
 	utcPtr(&a.NumbersAt)
 	utcPtr(&a.ExhaustedUntil)
-	a.Session.normalize()
 	a.Week.normalize()
 	for i := range a.Claims {
 		a.Claims[i].At = a.Claims[i].At.UTC()

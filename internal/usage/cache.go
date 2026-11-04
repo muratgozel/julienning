@@ -24,11 +24,11 @@ const (
 )
 
 // Payload is the set of numbers a report carries; equality drives the debounce.
+// Files written before the five-hour window went away also hold
+// session_used/session_resets; decoding drops them.
 type Payload struct {
-	SessionUsed   float64 `json:"session_used"`
-	SessionResets int64   `json:"session_resets"`
-	WeekUsed      float64 `json:"week_used"`
-	WeekResets    int64   `json:"week_resets"`
+	WeekUsed   float64 `json:"week_used"`
+	WeekResets int64   `json:"week_resets"`
 }
 
 // Sent is one entry of the sent/<hash>.json debounce cache. It records the
@@ -169,7 +169,7 @@ func ShouldSend(prev *Sent, cur Payload, now time.Time, minInterval time.Duratio
 	if prev == nil {
 		return true
 	}
-	if cur.SessionResets != prev.SessionResets || cur.WeekResets != prev.WeekResets {
+	if cur.WeekResets != prev.WeekResets {
 		return true
 	}
 	if cur == prev.Payload && !prev.SentAt.IsZero() && since(now, prev.SentAt) < RepeatWindow {

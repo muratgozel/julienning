@@ -14,13 +14,11 @@ import (
 )
 
 func probedListing(used float64) *remote.Listing {
-	reset := time.Unix(fiveReset, 0).UTC()
-	week := time.Unix(friReset, 0).UTC()
+	week := time.Unix(todayReset, 0).UTC()
 	at := time.Unix(nowEpoch, 0).UTC()
 	return &remote.Listing{Accounts: []remote.Account{{
 		Rank: 1, Email: email1, Nickname: "alpha", State: "free", Source: "probe",
-		Session:     &remote.Window{Used: used, ResetsAt: &reset},
-		Week:        &remote.Window{Used: 3, ResetsAt: &week},
+		Week:        &remote.Window{Used: used, ResetsAt: &week},
 		CollectedAt: &at,
 	}}}
 }
@@ -81,9 +79,9 @@ func TestAccountsSignedOutHere(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK   ACCOUNT                   SESSION  WEEK  STATE                  UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  -        -     free                   never\n" +
-		"2  beta   claude2@sixtynine.agency  -        -     free, signed out here  never\n"
+		"#  NICK   ACCOUNT                   WEEK  STATE                  UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  -     free                   never\n" +
+		"2  beta   claude2@sixtynine.agency  -     free, signed out here  never\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}

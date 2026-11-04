@@ -322,10 +322,10 @@ async function handlePutExhausted(ctx: RouteContext): Promise<Response> {
  *   PUT    /accounts/:email             share {added_by, nickname}: 201 new, 204 existed, 409 nickname taken
  *   DELETE /accounts/:email             unshare (idempotent)
  *   PUT    /accounts/:email/nickname    rename {nickname}: 204, 404 not shared, 409 taken
- *   PUT    /accounts/:email/usage       usage report {session, week, collected_at, reporter}: 204, 404 not shared
+ *   PUT    /accounts/:email/usage       usage report {week, collected_at, reporter}: 204, 404 not shared
  *   PUT    /accounts/:email/claim       claim {dev, machine_id}: 204, 404 not shared
  *   DELETE /accounts/:email/claim       release ?dev=&machine_id= (idempotent, no share check)
- *   PUT    /accounts/:email/exhausted   refusal {window, resets_at?, reporter}: 204, 404 not shared
+ *   PUT    /accounts/:email/exhausted   refusal {window: "week", resets_at?, reporter}: 204, 404 not shared
  *   POST   /probes                      usage probes {reporter, reports[]}: 200 ranked listing + not_shared (?dev, ?tz; ?listing=0: not_shared only)
  *
  * Bodies are validated before the share check, so a bad body is a 400 even

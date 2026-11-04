@@ -10,7 +10,6 @@ const FIXTURE: StoredAccount[] = [
   {
     email: "claude1@sixtynine.agency",
     nickname: "alpha",
-    session: { used: 50, resets_at: "2026-10-31T18:00:00Z" },
     week: { used: 28, resets_at: "2026-11-02T18:00:00Z" },
     collected_at: "2026-10-31T11:58:00Z",
     reporter: { dev: "murat", machine_id: "3fa9c2d1e07b" },
@@ -18,8 +17,7 @@ const FIXTURE: StoredAccount[] = [
   },
   {
     email: "claude2@sixtynine.agency",
-    session: { used: 91.5, resets_at: "2026-10-31T10:00:00Z" },
-    week: { used: 12, resets_at: "2026-12-01T18:00:00Z" },
+    week: { used: 91.5, resets_at: "2026-10-31T10:00:00Z" },
     collected_at: "2026-10-31T11:20:00Z",
     reporter: { dev: "ali", machine_id: "aabbccddeeff" },
     claims: [{ dev: "ali", machine_id: "aabbccddeeff", at: "2026-10-31T11:57:00Z" }],
@@ -81,9 +79,9 @@ describe("text table", () => {
   it("aligns columns and renders Europe/Istanbul times", () => {
     expect(render("Europe/Istanbul")).toBe(
       [
-        "#  NICK   ACCOUNT                   SESSION      WEEK                    STATE           UPDATED",
-        "1  alpha  claude1@sixtynine.agency  50% → 21:00  28% → Mon 21:00         free            2m ago",
-        "2  -      claude2@sixtynine.agency  0% → reset   12% → 2026-12-01 21:00  claimed by ali  40m ago",
+        "#  NICK   ACCOUNT                   WEEK             STATE           UPDATED",
+        "1  alpha  claude1@sixtynine.agency  28% → Mon 21:00  free            2m ago",
+        "2  -      claude2@sixtynine.agency  0% → reset       claimed by ali  40m ago",
         "",
         "generated 2026-10-31 15:00 (Europe/Istanbul)",
         "",
@@ -94,9 +92,9 @@ describe("text table", () => {
   it("aligns columns and renders America/New_York times across the DST boundary", () => {
     expect(render("America/New_York")).toBe(
       [
-        "#  NICK   ACCOUNT                   SESSION      WEEK                    STATE           UPDATED",
-        "1  alpha  claude1@sixtynine.agency  50% → 14:00  28% → Mon 13:00         free            2m ago",
-        "2  -      claude2@sixtynine.agency  0% → reset   12% → 2026-12-01 13:00  claimed by ali  40m ago",
+        "#  NICK   ACCOUNT                   WEEK             STATE           UPDATED",
+        "1  alpha  claude1@sixtynine.agency  28% → Mon 13:00  free            2m ago",
+        "2  -      claude2@sixtynine.agency  0% → reset       claimed by ali  40m ago",
         "",
         "generated 2026-10-31 08:00 (America/New_York)",
         "",
@@ -154,14 +152,15 @@ describe("text table", () => {
 
   it("shows one decimal only when the percentage has one", () => {
     const out = render("Europe/Istanbul", [
-      { ...FIXTURE[0]!, session: { used: 91.5, resets_at: "2026-10-31T18:00:00Z" } },
+      { ...FIXTURE[0]!, week: { used: 91.5, resets_at: "2026-11-02T18:00:00Z" } },
     ]);
-    expect(out).toContain("91.5% → 21:00");
+    expect(out).toContain("91.5% → Mon 21:00");
   });
 
   it("renders windowless and never-reported accounts", () => {
     const out = render("Europe/Istanbul", [{ email: "fresh@x.io", claims: [] }]);
-    expect(out.split("\n")[1]).toBe("1  -     fresh@x.io  -        -     free   never");
+    expect(out.split("\n")[0]).toBe("#  NICK  ACCOUNT     WEEK  STATE  UPDATED");
+    expect(out.split("\n")[1]).toBe("1  -     fresh@x.io  -     free   never");
   });
 
   describe("exhausted", () => {
@@ -173,51 +172,23 @@ describe("text table", () => {
         {
           ...FIXTURE[0]!,
           email: "weekout@x.io",
-          session: { used: 0, resets_at: "2026-10-31T18:00:00Z" },
           week: { used: 100, resets_at: "2026-11-02T18:00:00Z" },
         },
         {
           ...FIXTURE[0]!,
-          session: { used: 4, resets_at: "2026-10-31T18:00:00Z" },
           week: { used: 13, resets_at: "2026-11-02T18:00:00Z" },
         },
       ]);
       expect(out).toBe(
         [
-          "#  NICK   ACCOUNT                   SESSION     WEEK              STATE                              UPDATED",
-          "1  alpha  claude1@sixtynine.agency  4% → 21:00  13% → Mon 21:00   free                               2m ago",
-          "2  alpha  weekout@x.io              0% → 21:00  100% → Mon 21:00  exhausted (week resets Mon 21:00)  2m ago",
+          "#  NICK   ACCOUNT                   WEEK              STATE                              UPDATED",
+          "1  alpha  claude1@sixtynine.agency  13% → Mon 21:00   free                               2m ago",
+          "2  alpha  weekout@x.io              100% → Mon 21:00  exhausted (week resets Mon 21:00)  2m ago",
           "",
           "generated 2026-10-31 15:00 (Europe/Istanbul)",
           "",
         ].join("\n"),
       );
-    });
-
-    it("names the session window and its reset", () => {
-      const out = render("Europe/Istanbul", [
-        { ...FIXTURE[0]!, session: { used: 100, resets_at: "2026-10-31T18:00:00Z" } },
-      ]);
-      expect(stateOf(out, "claude1@")).toContain("  exhausted (session resets 21:00)  ");
-    });
-
-    it("names the later reset when both windows are at 100%", () => {
-      const weekLater = render("Europe/Istanbul", [
-        {
-          ...FIXTURE[0]!,
-          session: { used: 100, resets_at: "2026-10-31T18:00:00Z" },
-          week: { used: 100, resets_at: "2026-11-02T18:00:00Z" },
-        },
-      ]);
-      expect(stateOf(weekLater, "claude1@")).toContain("exhausted (week resets Mon 21:00)");
-      const sessionLater = render("Europe/Istanbul", [
-        {
-          ...FIXTURE[0]!,
-          session: { used: 100, resets_at: "2026-10-31T18:00:00Z" },
-          week: { used: 100, resets_at: "2026-10-31T14:00:00Z" },
-        },
-      ]);
-      expect(stateOf(sessionLater, "claude1@")).toContain("exhausted (session resets 21:00)");
     });
 
     it("renders a far reset as a full date and follows the tz across DST", () => {
@@ -237,18 +208,18 @@ describe("text table", () => {
     it("says exhausted, not in use or claimed, when someone else is on it", () => {
       const week = { used: 100, resets_at: "2026-11-02T18:00:00Z" };
       const out = render("Europe/Istanbul", [
-        // Claimed by ali, session reset passed (0%).
+        // Claimed by ali.
         { ...FIXTURE[1]!, email: "claimedout@x.io", week },
-        // can reported 2 minutes ago: in use, session 50%.
+        // can reported 2 minutes ago: in use.
         { ...FIXTURE[0]!, email: "activeout@x.io", week, reporter: { dev: "can", machine_id: "111111111111" } },
-        // murat's own report: free, session 50%.
+        // murat's own report: free.
         { ...FIXTURE[0]!, week },
       ]);
-      // Same exhausted_until: the free one before both busy ones, despite its higher session.
+      // Same exhausted_until: the free one before both busy ones, which tie down to the email.
       const lines = out.split("\n");
       expect(lines[1]).toContain("claude1@sixtynine.agency");
-      expect(lines[2]).toContain("claimedout@x.io");
-      expect(lines[3]).toContain("activeout@x.io");
+      expect(lines[2]).toContain("activeout@x.io");
+      expect(lines[3]).toContain("claimedout@x.io");
       for (const line of lines.slice(1, 4)) {
         expect(line).toContain("  exhausted (week resets Mon 21:00)  ");
         expect(line).not.toMatch(/in use by|claimed by/);
@@ -256,35 +227,37 @@ describe("text table", () => {
     });
 
     describe("from refusal records", () => {
-      const refused = (window: "session" | "week", resets_at: string | null, extra: Partial<StoredAccount> = {}) => ({
+      const refused = (resets_at: string | null, extra: Partial<StoredAccount> = {}) => ({
         ...FIXTURE[0]!,
         ...extra,
-        exhausted: [{ dev: "ali", machine_id: "aabbccddeeff", window, resets_at, at: "2026-10-31T11:50:00Z" }],
+        exhausted: [
+          { dev: "ali", machine_id: "aabbccddeeff", window: "week" as const, resets_at, at: "2026-10-31T11:50:00Z" },
+        ],
       });
 
       it("names the refused window and its reset while usage looks fine", () => {
-        // Usage stale at 50% for the refused session window.
-        const line = stateOf(render("Europe/Istanbul", [refused("session", "2026-10-31T18:00:00Z")]), "claude1@");
-        expect(line).toContain("50% → 21:00");
-        expect(line).toContain("  exhausted (session resets 21:00)  ");
+        // Usage stale at 28% for the refused week.
+        const line = stateOf(render("Europe/Istanbul", [refused("2026-11-02T18:00:00Z")]), "claude1@");
+        expect(line).toContain("28% → Mon 21:00");
+        expect(line).toContain("  exhausted (week resets Mon 21:00)  ");
       });
 
       it("says exhausted (week) when the reset is unknown", () => {
-        const out = render("Europe/Istanbul", [refused("week", null)]);
+        const out = render("Europe/Istanbul", [refused(null)]);
         expect(stateOf(out, "claude1@")).toMatch(/ {2}exhausted \(week\) {2}/);
       });
 
-      it("shows the later of a window at 100% and a record, as in the JSON", () => {
-        const acc = refused("week", "2026-11-02T18:00:00Z", {
-          session: { used: 100, resets_at: "2026-10-31T18:00:00Z" },
+      it("shows the later of the week at 100% and a record, as in the JSON", () => {
+        const acc = refused("2026-11-02T18:30:00Z", {
+          week: { used: 100, resets_at: "2026-11-02T18:00:00Z" },
         });
         const res: AccountsResponse = {
           generated_at: NOW.toISOString(),
           tz: "America/New_York",
           accounts: rank([acc], { now: NOW, dev: "murat", claimTtlMin: 720, activityTtlMin: 15 }),
         };
-        expect(res.accounts[0]).toMatchObject({ exhausted_window: "week", exhausted_until: "2026-11-02T18:00:00Z" });
-        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("exhausted (week resets Mon 13:00)");
+        expect(res.accounts[0]).toMatchObject({ exhausted_window: "week", exhausted_until: "2026-11-02T18:30:00Z" });
+        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("exhausted (week resets Mon 13:30)");
       });
 
       it("renders only the ranked fields, not the windows", () => {
@@ -298,16 +271,16 @@ describe("text table", () => {
           })),
         };
         expect(stateOf(formatText(res, NOW), "claude1@")).toMatch(/ {2}exhausted {2}/);
-        res.accounts[0]!.exhausted_window = "session";
-        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("  exhausted (session)  ");
+        res.accounts[0]!.exhausted_window = "week";
+        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("  exhausted (week)  ");
         res.accounts[0]!.exhausted_until = "2026-10-31T20:00:00Z";
-        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("  exhausted (session resets 20:00)  ");
+        expect(stateOf(formatText(res, NOW), "claude1@")).toContain("  exhausted (week resets 20:00)  ");
       });
     });
 
-    it("leaves a reset-passed 100% window alone", () => {
+    it("leaves a reset-passed 100% week alone", () => {
       const out = render("Europe/Istanbul", [
-        { ...FIXTURE[0]!, session: { used: 100, resets_at: "2026-10-31T10:00:00Z" } },
+        { ...FIXTURE[0]!, week: { used: 100, resets_at: "2026-10-31T10:00:00Z" } },
       ]);
       const line = stateOf(out, "claude1@");
       expect(line).toContain("0% → reset");

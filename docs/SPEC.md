@@ -182,7 +182,7 @@ integration"); dir-name aliases no longer exist.
 | `update.lock` | selfupdate | auto-update lock (O_EXCL, stale after 10 min) |
 | `errors.log` | usage | diagnostics, never contains emails |
 | `sent/` | usage | send-usage debounce cache + in-flight markers, named by a short hash of the email (no addresses in file names) |
-| `probes/` | usageprobe | the last usage probe of each registered dir, `<hash of the dir path>.json`: `{dir, email, outcome, probed_at, session?, week?}` (outcome `ok`, `signed_out` or `failed`; the windows only with `ok`); the cache window, the numbers re-sent while the Worker's listing lags, and the signed-out mark (see "Usage probes") |
+| `probes/` | usageprobe | the last usage probe of each registered dir, `<hash of the dir path>.json`: `{dir, email, outcome, probed_at, week?}` (outcome `ok`, `signed_out` or `failed`; the week only with `ok`; a `session` from an older julienning is ignored); the cache window, the numbers re-sent while the Worker's listing lags, and the signed-out mark (see "Usage probes") |
 | `claim-sync.lock`, `.claims-reconciled` | claims | per-machine lock (stale after 60 s), 10-minute reconcile marker |
 | `.last-<CODE>` | usage | error-log throttle markers (email-free names) |
 
@@ -1057,10 +1057,11 @@ error).
 
 ### accounts
 
-Columns `#  NICK  ACCOUNT  SESSION  WEEK  STATE  UPDATED`. As v1
+Columns `#  NICK  ACCOUNT  WEEK  STATE  UPDATED` (no SESSION column since
+Claude dropped the five-hour window). As v1
 with: NICK is the team nickname (`-` for legacy records); allowlisted
-accounts that never reported show `-` windows; STATE shows every other holder
-(`in use by ali, can (12m)`). The table names no local dir (a LOCAL column
+accounts that never reported show `-` for the week; STATE shows every other
+holder (`in use by ali, can (12m)`). The table names no local dir (a LOCAL column
 listed them through 0.13.0, dropped as confusing): `configs` shows which
 dir holds which account, and `--json` keeps the config names. STATE ends in
 `, signed out here` (after every state, the exhausted and syncing ones
@@ -1068,8 +1069,8 @@ too) when a registered dir here is signed out of the account
 (`usageprobe.SignedOutDirs`) and none here is logged into it; with another
 dir still holding it the account works here, so nothing is added. Rows keep
 the Worker's order (Ranking and state: not exhausted (exhausted ones by
-`exhausted_until` asc) → not busy → known before unknown → session asc →
-week asc → session reset asc → email).
+`exhausted_until` asc) → not busy → known before unknown → week asc →
+week reset asc → email).
 
 Your own use (claims and usage reports of your dev, which the Worker leaves
 out of `state`/`busy_by`) reads `in use by you` when every claim and recent
@@ -1081,20 +1082,21 @@ passes the Worker document through unchanged.
 
 STATE of an exhausted account (`exhausted` true or `state` `exhausted`;
 wins over every other state): `exhausted (<window> resets <time>)`, the
-window being the one at ≥ 100% whose `resets_at` equals `exhausted_until`
-(`Account.ExhaustedWindow`: week on a tie, which with both full is the later
-reset, matching the Worker's text), `<time>` in local time via
+window being the Worker's `exhausted_window` (`week`), else the week when it
+is at ≥ 100% with `resets_at` equal to `exhausted_until`
+(`Account.ExhaustedWindow`; an older Worker's `session` is not shown),
+`<time>` in local time via
 `usage.FormatReset`; `exhausted (resets <time>)` when no window matches,
 `exhausted` when `exhausted_until` is null, `(… has reset)` when the local
 clock is already past it. A non-empty `busy_by` appends
 `, in use by ali, can` (no age). Examples: `exhausted (week resets Fri 10:00)`,
-`exhausted (session resets 23:40), in use by ali`.
+`exhausted (week resets Fri 10:00), in use by ali`.
 
 Syncing rows: after the listing refreshes `shared.json`
 (`sharedcache.FromListing`, which keeps this machine's `local_adds` younger
 than `LocalAddGrace` on the wall clock), every `local_adds` email the listing
 lacks (case-insensitive) is appended, sorted by email:
-`#` `-`, NICK from `shared.json`, SESSION/WEEK `-`, STATE
+`#` `-`, NICK from `shared.json`, WEEK `-`, STATE
 `syncing (just shared)`, UPDATED `-`. It goes once the
 listing has the email or the grace is over. When the cache cannot be saved
 (warned) there are none. An empty listing with syncing rows prints the table,
@@ -1139,10 +1141,11 @@ the current selection without re-ranking; nothing selected → same as
    picker shows it. It picks the first shared account
    with a registered, logged-in local dir that is not signed out
    (`usageprobe.SignedOutDirs`; prefer the current dir on ties:
-   `sameRank` compares every Worker sort key but the email, exhausted and
-   `exhausted_until` included). The Worker sinks exhausted accounts, so the
-   first local one is exhausted only when all are; guarded anyway: a usable
-   local account ranked lower wins over an exhausted one. When the winner is
+   `sameRank` compares every Worker sort key but the email: exhausted and
+   `exhausted_until`, busy, known, week %, week reset). The Worker sinks
+   exhausted accounts, so the first local one is exhausted only when all
+   are; guarded anyway: a usable local account ranked lower wins over an
+   exhausted one. When the winner is
    exhausted, `next` still switches and warns on stderr before the summary
    (and before the busy warning):
    `every usable shared account on this machine is exhausted; claude3 becomes usable at Fri 10:00`
@@ -1191,13 +1194,14 @@ the current selection without re-ranking; nothing selected → same as
    Worker's account object plus `config` (config name) and `nickname` (null
    when none); for an account the Worker did not list, `{config, email,
    nickname}`. Summary line (`summaryLine`), with a nickname:
-   `Now using alpha (claude1@x.io) in ~/.claude-x — session 12% → 17:30, week 28% → Tue 21:00.`
+   `Now using alpha (claude1@x.io) in ~/.claude-x — week 28% → Tue 21:00.`
    / `Staying on alpha (claude1@x.io) in ~/.claude-x (best available) — …`;
    without one, the config name in the v1 form:
    `Now using julienning3 (claude3@x.io) — …` /
    `Staying on julienning3 (best available) — …` (not logged in:
    `Now using julienning3.`). The usage part is `no usage reported yet` when
-   the account never reported and absent when the Worker did not list it.
+   the account never reported (`week unknown` when the Worker sent no week)
+   and absent when the Worker did not list it.
    The same line heads the picker; the line under it says what is listed
    (`scopeLine`): `100 most recent sessions in ~/Code/shop · type to filter`
    when the limit was reached, `3 sessions in ~/Code/shop · type to filter`
@@ -1502,17 +1506,16 @@ and output are ignored by Claude Code.
 
 The hook does nothing unless `error` is `rate_limit`, gates like
 `session-start` (set up, registered, logged in, email in `shared.json`; a
-pending share is not enough), decides the window and the reset locally, spawns
-a detached `julienning send-exhausted --email E --window session|week
-[--resets EPOCH]` and exits 0 within 100 ms, without network.
+pending share is not enough), decides the reset locally, spawns a detached
+`julienning send-exhausted --email E [--resets EPOCH]` and exits 0 within
+100 ms, without network.
 
-- Window: the refusal text (`error_details` + `last_assistant_message`)
-  contains "week" (case-insensitive) → `week`; else the window with the higher
-  `used` in the local sent cache (`~/.julienning/sent/<hash>.json`), where a
-  window whose reset has passed since that report counts as 0 (the session
-  rolls over every five hours while the week keeps filling); ties → `session`;
-  no usable cache → `session` (`usage.RefusalWindow`).
-- Reset: parsed from the text, best effort, forms `resets Oct 13 at 8pm
+- Window: always `week`, the only window since Claude dropped the five-hour
+  one (~2026-10-31). A refusal for a model's own weekly limit (`You've hit
+  your Opus limit`) is reported the same way: the account is exhausted until
+  that reset. `send-exhausted` has no `--window` flag any more.
+- Reset: parsed from the refusal text (`error_details` +
+  `last_assistant_message`), best effort, forms `resets Oct 13 at 8pm
   (Europe/Istanbul)`, `resets Oct 13 at 8:30pm (…)`, `resets 3pm (…)`, `resets
   3:15am (…)`; the zone in parentheses is loaded with `time.LoadLocation`
   (unknown zone → no reset). The dated form takes the current year (next year
@@ -1521,9 +1524,10 @@ a detached `julienning send-exhausted --email E --window session|week
   after now and at most 32 days ahead (a "resets Dec 31" read on Jan 2 must
   not pin an account for a year). Built with `time.Date` in the zone, never by
   adding hours (DST). `usage.ParseRefusalReset`, `usage.RefusalReset`.
-  When parsing fails, the sent cache's reset for that window if still in the
-  future; else no reset (the Worker falls back to its own usage record, then
-  to a window-length TTL).
+  When parsing fails, the week reset of the last report this machine sent
+  for the account (`~/.julienning/sent/<hash>.json`) if still in the future;
+  else no reset (the Worker falls back to its own usage record, then to a
+  one-week TTL).
 
 `send-exhausted` validates its flags, re-checks the allowlist, and
 `PUT /accounts/<email>/exhausted` with a 5 s timeout. Failures go to
@@ -1543,10 +1547,16 @@ account file via `claudecfg.AccountFileForEnv` (an explicitly exported
 status-line error code is log-throttled. A `used_percentage` above 100 is
 clamped to 100 at parse time and again in `send-usage` (Claude Code reports
 more than 100 once a limit is exceeded; v0.6 and earlier rejected such
-payloads as malformed, which hid exactly the exhausted accounts). A payload
-with a window missing still renders `usage pending` and now also logs
-`USAGE_PENDING` (throttled, hourly) with the shape signature, never numbers,
-so a silent run can be diagnosed afterwards. The
+payloads as malformed, which hid exactly the exhausted accounts). Only
+`rate_limits.seven_day` is read: Claude stopped sending `five_hour`
+(~2026-10-31), and one that shows up again is ignored, malformed or not
+(through 0.13.2 the status line waited for both and so reported nothing once
+it was gone). The child is `send-usage --email E --week-used P --week-resets
+EPOCH --collected-at EPOCH [--now]`. A payload without a usable `seven_day`
+still renders `usage pending` and now also logs `USAGE_PENDING` (throttled,
+hourly) with the shape signature, never numbers (`seven_day=absent
+other=[five_hour]`: the week's shape, then the names of any other
+`rate_limits` keys), so a silent run can be diagnosed afterwards. The
 send-usage child refreshes `shared.json` when stale and runs claim
 reconciliation at most every 10 minutes; when it did either, it then runs
 the daily update check / auto-update outside the claim-sync lock. A 404 `account is not shared` from
@@ -1565,7 +1575,7 @@ Code fetch the account's usage from Claude's usage endpoint with its own
 login. julienning never reads credentials; it reads the structured
 `usage_report` Claude Code prints next to the /usage text and throws the
 text away (it describes local sessions). /usage is a local command: no model
-request, no quota, no 5-hour window started.
+request, no quota used.
 
 - **Command** (`usageprobe.Args`): `claude -p /usage --safe-mode
   --no-session-persistence --name julienning-usage-probe --output-format
@@ -1584,9 +1594,11 @@ request, no quota, no 5-hour window started.
   like `launch.Env` (unset for the default dir).
 - **Answer**: one JSON message per line; the `system`/`init` message's
   `claude_code_version` and the first `assistant` message's
-  `usage_report.rate_limits.limits[]`. The row of `kind` `session` is the
-  session window, `weekly_all` the week (classified on `kind`, never on a
-  label; `weekly_scoped` rows are ignored). `percent` is clamped to 100 and
+  `usage_report.rate_limits.limits[]`. The row of `kind` `weekly_all` is the
+  week, the only row read (classified on `kind`, never on a label;
+  `weekly_scoped` rows, per model, are ignored, and so is a `session` row:
+  Claude stopped sending it ~2026-10-31, and through 0.13.2 its absence failed
+  every probe). `percent` is clamped to 100 and
   rounded to one decimal; `resets_at` (ISO 8601, fractional seconds, jitter
   of up to a second around the real boundary) is rounded to the nearest
   second, or null for a window that is not running, which is accepted only
@@ -1599,8 +1611,10 @@ request, no quota, no 5-hour window started.
   answer within 10s`, `claude exited with status N`, `Claude Code could not
   fetch the usage …` (`rate_limits` or `limits` null), `Claude Code is signed
   in but reported no plan usage …`, or `unexpected usage report from Claude
-  Code` with a shape signature (kinds and JSON types, never values) for
-  errors.log. A missing row is never read as 0%.
+  Code` with a shape signature (kinds and JSON types, never values:
+  `kinds=[weekly_all weekly_scoped] weekly_all={percent:null,resets_at:string}`,
+  the `weekly_all` part only when that row exists) for errors.log. A missing
+  `weekly_all` row is never read as 0%.
 - **Refresh** (`usageprobe.Refresh`, given the listing just fetched): reads
   every registered dir's login and records it (`last_email`, see
   config.json). For every registered dir logged into an account on the
@@ -1609,7 +1623,7 @@ request, no quota, no 5-hour window started.
   (`usageprobe.CacheWindow`, whatever the outcome; an `ok` result is
   re-sent instead, because the listing can lag the write by a minute, and
   a `signed_out` one is reported again), and probes when the account has
-  no numbers, a window whose reset has passed, numbers older than 15
+  no week, a week whose reset has passed, numbers older than 15
   minutes (`accounts`, `next`, `use`; `usageprobe.InteractiveStale`) or an
   hour (the background round), or when the dir is marked signed out. Each
   result is saved in `probes/`. One dir per account is probed (the first
@@ -2159,7 +2173,7 @@ move and needs a terminal`. SOURCE is `--host` (default this machine).
    of the shared accounts is logged in on box; sign one in: julienning
    login NICKNAME --host box`. The summary line names the machine and heads the
    next picker: `Moving into alpha (claude1@x.io) in ~/.claude-x on box —
-   session 12% → 17:30, week 28% → Tue 21:00.` (`on this machine` when local).
+   week 28% → Tue 21:00.` (`on this machine` when local).
 4. Session, on the source (`agent sessions`, or in process): listed like
    `use`'s picker (`sharedSources` of the source: dirs logged into shared
    accounts only, so personal sessions never appear; the source's checkout of
@@ -2406,10 +2420,19 @@ listing needs no per-key reads):
 | Key | Written by | Metadata |
 |-----|-----------|----------|
 | `share:<email>` | share / nickname rename / unshare only | `{added_by, added_at, nickname}` (nickname absent on records from before nicknames; read as null) |
-| `usage:<email>` | PUT usage (only if `share:` exists) | `{session, week, collected_at, reporter}`; `expirationTtl` 8 days |
-| `probe:<email>` | POST /probes (only if `share:` exists, and only a newer `collected_at` than the stored probe) | `{session, week, collected_at, reporter}`, a window's `resets_at` null when the window is not running (then `used` is 0); `expirationTtl` 8 days |
+| `usage:<email>` | PUT usage (only if `share:` exists) | `{week, collected_at, reporter}`; `expirationTtl` 8 days |
+| `probe:<email>` | POST /probes (only if `share:` exists, and only a newer `collected_at` than the stored probe) | `{week, collected_at, reporter}`, the week's `resets_at` null when the window is not running (then `used` is 0); `expirationTtl` 8 days |
 | `claim:<email>:<dev>:<machine_id>` | PUT/DELETE claim of that holder; usage refresh by the same reporter when the claim is older than 1 h (KV write budget) | `{at}`; `expirationTtl` = CLAIM_TTL_MIN (min 60 s) |
-| `exhausted:<email>:<dev>:<machine_id>` | PUT exhausted of that reporter | `{window, resets_at, at}` (`window` `session`/`week`, `resets_at` ISO or null, `at` server-stamped); `expirationTtl` = until `resets_at` when known (min 60 s), else 5 h for `session`, 7 d for `week` |
+| `exhausted:<email>:<dev>:<machine_id>` | PUT exhausted of that reporter | `{window, resets_at, at}` (`window` `week`, `resets_at` ISO or null, `at` server-stamped); `expirationTtl` = until `resets_at` when known (min 60 s), else 7 d |
+
+The week is the only usage window. Claude dropped the five-hour session
+window (~2026-10-31); records written before carry a `session` window,
+which still reads and is ignored (a stored `exhausted:` record with window
+`session` reads as `week`). A CLI that predates this sends `session` in its
+usage and probe bodies: accepted and ignored without validation. An older
+Worker requires `session` in those bodies and rejects a newer CLI's reports
+(400, logged as `SEND_FAILED`/`PROBE_FAILED`), so redeploy the Worker before
+CLIs update to this release.
 
 An email is shared iff `share:<email>` exists. The listing shows only shared
 emails; orphaned `usage:`/`probe:`/`claim:` keys (written by a request that
@@ -2428,7 +2451,6 @@ Logical account view (as returned):
   "nickname": "claude1",
   "added_by": { "dev": "murat", "machine_id": "3fa9c2d1e07b" },
   "added_at": "2026-09-29T10:00:00Z",
-  "session": { "used": 50, "resets_at": "…" },
   "week": { "used": 28, "resets_at": "…" },
   "numbers_at": "…",
   "source": "statusline",
@@ -2438,16 +2460,17 @@ Logical account view (as returned):
 }
 ```
 
-`session`/`week` are the newer of the `usage:` record (status line) and the
+`week` is the newer of the `usage:` record (status line) and the
 `probe:` record (the probe on a tie), `numbers_at` when they were read and
 `source` which record it was (`statusline` or `probe`; both absent with
 neither). `collected_at`/`reporter` keep their meaning: the latest status
 line report (absent before the first), the only sign that someone is on the
 account, so they, never a probe, drive `in_use`, its age and a CLI's "in use
 by you". A CLI that predates probes shows UPDATED from `collected_at`
-(older than the numbers when a probe is newer, never newer). A window with
-`resets_at` null comes only from a probe: the window is not running, `used`
-and `effective` are 0 and `reset_passed` is false. Every listing (and the
+(older than the numbers when a probe is newer, never newer). There is no
+`session` any more; a CLI from before reads it as absent and shows `-`. A
+week with `resets_at` null comes only from a probe: the window is not
+running, `used` and `effective` are 0 and `reset_passed` is false. Every listing (and the
 POST /probes answer) carries `"probes": true`, the CLI's sign that this
 Worker takes probes.
 
@@ -2461,48 +2484,46 @@ Routes:
 | PUT | `/accounts/:email` | `{nickname, added_by}` | 201 created / 204 existed (share; nickname required on create, else 400 `nickname is required to share a new account`; ignored when the email exists; 409 `nickname is taken` with `nickname` and `by`) |
 | PUT | `/accounts/:email/nickname` | `{nickname}` | 204 (rename; 404 not shared; 409 taken) |
 | DELETE | `/accounts/:email` | – | 204 (unshare; idempotent) |
-| PUT | `/accounts/:email/usage` | as v1 | 204; 404 `account is not shared`; stale `collected_at` ignored; refreshes `at` of the claim held by the same reporter dev+machine |
+| PUT | `/accounts/:email/usage` | `{week: {used, resets_at}, collected_at, reporter}` (`session` from an older CLI ignored) | 204; 404 `account is not shared`; stale `collected_at` ignored; refreshes `at` of the claim held by the same reporter dev+machine |
 | PUT | `/accounts/:email/claim` | `{dev, machine_id}` | 204 upsert own holder; 404 when not shared |
 | DELETE | `/accounts/:email/claim` | `?dev=&machine_id=` (both required) | 204 remove own holder (idempotent) |
-| PUT | `/accounts/:email/exhausted` | `{window: "session"\|"week", resets_at?: ISO\|null, reporter}` | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first |
-| POST | `/probes` | `{reporter, reports: [{email, session: {used, resets_at}, week: {used, resets_at}, collected_at}]}` (1–32 reports, one per email; body up to 16 KiB); `dev`, `tz`, `listing` | 200: the GET /accounts JSON document ranked for `dev` (default the reporter's dev) with the batch merged in, plus `not_shared` (reported emails not on the allowlist, nothing stored for them); with `listing=0` only `{"probes": true, "not_shared": […]}`, without the list operation; 400 on a bad body (a `resets_at` null with `used` above 0 included); Bearer only. Each shared report writes `probe:<email>` when its clamped `collected_at` is newer than the stored probe's (an equal one is a resend). The batch is merged over the listing before ranking because listings lag writes |
+| PUT | `/accounts/:email/exhausted` | `{window: "week", resets_at?: ISO\|null, reporter}` (`"session"` from an older CLI is stored as `week`) | 204; 404 when not shared; 400 on a bad window, timestamp or reporter; Bearer only (`?token=` is 401). `resets_at` is resolved at write time (see the exhausted rules below). One record per reporter: a second report replaces the first |
+| POST | `/probes` | `{reporter, reports: [{email, week: {used, resets_at}, collected_at}]}` (`session` from an older CLI ignored) (1–32 reports, one per email; body up to 16 KiB); `dev`, `tz`, `listing` | 200: the GET /accounts JSON document ranked for `dev` (default the reporter's dev) with the batch merged in, plus `not_shared` (reported emails not on the allowlist, nothing stored for them); with `listing=0` only `{"probes": true, "not_shared": […]}`, without the list operation; 400 on a bad body (a `resets_at` null with `used` above 0 included); Bearer only. Each shared report writes `probe:<email>` when its clamped `collected_at` is newer than the stored probe's (an equal one is a resend). The batch is merged over the listing before ranking because listings lag writes |
 
-Ranking and state: the windows are the account's numbers above (the newer of
+Ranking and state: the week is the account's numbers above (the newer of
 the `usage:` and `probe:` records). Holders with `at` older than
 `CLAIM_TTL_MIN` are ignored. `busy_by` = sorted unique devs ≠ querying `dev`
 that hold a fresh claim or sent a status line report within
 `ACTIVITY_TTL_MIN` (all such devs when no `dev` query); probes never count
 and never refresh a claim.
-`exhausted`: any present window with effective usage ≥ 100 (Claude refuses
-work until it resets), or an `exhausted:` record that still counts
+`exhausted`: a week with effective usage ≥ 100 (Claude refuses work until
+it resets), or an `exhausted:` record that still counts
 (`worker/src/exhausted.ts`). A record's stored `resets_at` is the reported
-one when believable, else the reset of the same window in the account's
-numbers (the newer of the usage and probe records) when believable, else
-null; believable means in the future and at most one window
-length plus an hour away (a misparsed far-future date must not pin an
-account). A record counts until its `resets_at`, or until `at` plus one
-window length (5 h / 7 d) when the reset is unknown, and is superseded
-earlier when the usage window of the same name resets more than an hour
-after that end (a new window started; the hour absorbs the refusal message's
+one when believable, else the week's reset in the account's numbers (the
+newer of the usage and probe records) when believable, else null;
+believable means in the future and at most a week plus an hour away (a
+misparsed far-future date must not pin an account). A record counts until
+its `resets_at`, or until `at` plus a week when the reset is unknown, and
+is superseded earlier when the week resets more than an hour after that
+end (a new window started; the hour absorbs the refusal message's
 minute precision against the status line's seconds). A newer usage report
 under 100% never clears a record, because Claude Code keeps feeding
 pre-refusal numbers after a refusal. `exhausted_until` =
-the latest known reset among the windows at 100% and the valid records (null
-when none is known); `exhausted_window` = `session`/`week` of that reset, or
-of the records when no reset is known (`week` when both), null when not
-exhausted. A window that is not running never blocks, and sorts like an
-unknown session reset; numbers read after a record (a probe) that show its
-window not running end the record (nothing in that window can be refused),
-earlier ones do not. `state`: `exhausted` first, else `in_use`
-when another dev reported within the activity TTL, `claimed` when only fresh
-claims by others exist, else `free`; `busy_by` is populated in every state.
+the latest known reset among the week at 100% and the valid records (null
+when none is known); `exhausted_window` = `week` when exhausted, null when
+not. A week that is not running never blocks, and sorts like an unknown
+reset; numbers read after a record (a probe) that show the week not running
+end the record (nothing in it can be refused), earlier ones do not.
+`state`: `exhausted` first, else `in_use` when another dev reported within
+the activity TTL, `claimed` when only fresh claims by others exist, else
+`free`; `busy_by` is populated in every state.
 Sort: not exhausted first → not busy first → known usage before unknown →
-effective session asc → effective week asc → session reset asc → email asc
+effective week asc → week reset asc → email asc
 (exhausted accounts order by `exhausted_until` asc first, unknown last). The CLI's
 `accounts` also appends `syncing (just shared)` rows for emails this machine
 shared within `sharedcache.LocalAddGrace` that the listing does not show yet. JSON: `claims` always an array,
 `busy_by` always an array. `nickname` is always present (null for legacy
-records). Text columns: `#  NICK  ACCOUNT  SESSION  WEEK  STATE  UPDATED`
+records). Text columns: `#  NICK  ACCOUNT  WEEK  STATE  UPDATED`
 (NICK `-` when null; the CLI's table has the same columns). Text STATE: `free`,
 `in use by ali (12m)`, `claimed by ali, can`, `exhausted (week resets Tue
 20:00)`, `exhausted (week)` when the reset is unknown.

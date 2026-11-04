@@ -204,14 +204,14 @@ func sharedLogin(logf func(code, message string), envDir string, pending bool) (
 
 // exhaustedArgs is the send-exhausted argv for a usage-limit refusal of
 // email, decided here from local state only (the hook has no time for the
-// network): the window and reset come from the refusal text, else from the
-// last report this machine sent for the account (sent/ under home).
+// network): the reset comes from the refusal text, else from the last report
+// this machine sent for the account (sent/ under home). send-exhausted always
+// reports the week, the only window left (see usage.RefusalReset).
 func exhaustedArgs(home, email string, in hookInput, now time.Time) []string {
 	text := in.ErrorDetails + "\n" + in.LastAssistantMessage
 	sent, _ := usage.LoadSent(home, email) // nil when missing or corrupt
-	window := usage.RefusalWindow(text, sent, now)
-	args := []string{"send-exhausted", "--email", email, "--window", window}
-	if reset, ok := usage.RefusalReset(text, window, sent, now); ok {
+	args := []string{"send-exhausted", "--email", email}
+	if reset, ok := usage.RefusalReset(text, sent, now); ok {
 		args = append(args, "--resets", strconv.FormatInt(reset.Unix(), 10))
 	}
 	return args

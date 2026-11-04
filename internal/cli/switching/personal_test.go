@@ -61,7 +61,7 @@ const personalLine = "Using me@personal.io in ~/.claude (personal; your selectio
 // account in the unregistered default dir, each with a session in f.proj.
 func personalFixture(t *testing.T) (f *fixture, team, def config.ConfigDir) {
 	f, team, other := launchFixture(t)
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 50, 60))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "beta", 60))
 	def = f.personalDir(".claude", personal)
 	f.setCurrent(team)
 	f.writeSession(team, sidA, "Team here", "a", time.Hour)
@@ -197,7 +197,7 @@ func TestUsePersonalErrors(t *testing.T) {
 		t.Errorf("current = %q", f.current())
 	}
 	// A team account keeps the team path and its error.
-	f.fake.Listing = listing(nacct(email1, "alpha", 1, 1), nacct("claude7@x.io", "seven", 1, 1))
+	f.fake.Listing = listing(nacct(email1, "alpha", 1), nacct("claude7@x.io", "seven", 1))
 	got = f.run("use", "claude7@x.io")
 	assertCode(t, got, cli.ExitError)
 	if !strings.Contains(got.stderr, "seven (claude7@x.io) is shared but not logged in on this machine") {
@@ -237,7 +237,7 @@ func TestUseFollowsPins(t *testing.T) {
 	f.pin(filepath.Join(f.home, "Code", "shop"), email2)
 	got = f.run("use")
 	assertCode(t, got, 0)
-	if want := "~/Code/shop is pinned to beta (claude2@x.io).\nNow using beta (claude2@x.io) in ~/.claude-sixtynine — session 50% → 20:00, week 60% → Fri 20:00.\n"; got.stdout != want {
+	if want := "~/Code/shop is pinned to beta (claude2@x.io).\nNow using beta (claude2@x.io) in ~/.claude-sixtynine — week 60% → Fri 20:00.\n"; got.stdout != want {
 		t.Errorf("stdout = %q\nwant %q", got.stdout, want)
 	}
 	if f.current() != other.Dir {
@@ -271,7 +271,7 @@ func TestUseBrokenPinStops(t *testing.T) {
 	}
 
 	f.pin(shop, "claude7@x.io") // a team account not logged in here
-	f.fake.Listing = listing(nacct(email1, "alpha", 1, 1), nacct("claude7@x.io", "seven", 1, 1))
+	f.fake.Listing = listing(nacct(email1, "alpha", 1), nacct("claude7@x.io", "seven", 1))
 	got = f.run("use")
 	assertCode(t, got, cli.ExitError)
 	if !strings.Contains(got.stderr, "~/Code/shop is pinned to claude7@x.io, which cannot be opened: seven (claude7@x.io) is shared but not logged in") {

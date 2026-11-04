@@ -16,10 +16,10 @@ import (
 	"github.com/muratgozel/julienning/internal/tui"
 )
 
-const usage12 = " — session 12% → 20:00, week 28% → Fri 20:00.\n"
+const usage12 = " — week 28% → Fri 20:00.\n"
 
-func nacct(email, nick string, session, week float64) remote.Account {
-	a := acct(email, session, week)
+func nacct(email, nick string, week float64) remote.Account {
+	a := acct(email, week)
 	a.Nickname = nick
 	return a
 }
@@ -40,7 +40,7 @@ func TestUseResolvesNicknameEmailAndDirName(t *testing.T) {
 	j2 := f.addConfig("julienning2", email2)
 	f.save()
 	// email2 is a legacy record without a nickname.
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "", 12, 28))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "", 28))
 
 	alpha := "Now using alpha (claude1@x.io) in ~/.claude-julienning1" + usage12
 	legacy := "Now using julienning2 (claude2@x.io)" + usage12
@@ -80,7 +80,7 @@ func TestUseNotLocal(t *testing.T) {
 	f := setup(t)
 	f.addConfig("julienning1", email1)
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 1, 1), nacct(email2, "beta", 1, 1))
+	f.fake.Listing = listing(nacct(email1, "alpha", 1), nacct(email2, "beta", 1))
 	want := "julienning: beta (claude2@x.io) is shared but not logged in on this machine; sign it in here with: julienning login beta\n"
 	for _, arg := range []string{"beta", email2} {
 		got := f.run("use", arg)
@@ -100,7 +100,7 @@ func TestUseNicknameWinsOverConfigName(t *testing.T) {
 	clash := f.addConfig("alpha", email2)
 	j1 := f.addConfig("julienning1", email1)
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 12, 28))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "beta", 28))
 
 	got := f.run("use", "alpha")
 	assertCode(t, got, 0)
@@ -121,7 +121,7 @@ func TestUseAccountPrefersCurrentDir(t *testing.T) {
 	a := f.addConfig("a", email1)
 	b := f.addConfig("b", email1)
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28))
 	assertCode(t, f.run("use", "alpha"), 0)
 	if f.current() != a.Dir {
 		t.Errorf("without a selection the first name wins: %q", f.current())
@@ -145,7 +145,7 @@ func TestUseRefreshesStaleCacheOnce(t *testing.T) {
 	if _, err := sharedcache.SaveEntries([]sharedcache.Entry{{Email: email1, Nickname: "old"}}, nowT); err != nil {
 		t.Fatal(err)
 	}
-	f.fake.Listing = listing(nacct(email1, "gamma", 12, 28))
+	f.fake.Listing = listing(nacct(email1, "gamma", 28))
 	got := f.run("use", "gamma")
 	assertCode(t, got, 0)
 	if want := "Now using gamma (claude1@x.io) in ~/.claude-julienning1" + usage12; got.stdout != want || f.current() != j1.Dir {
@@ -198,7 +198,7 @@ func TestUseWithoutNameShowsNickname(t *testing.T) {
 	j1 := f.addConfig("julienning1", email1)
 	f.save()
 	f.setCurrent(j1)
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28))
 	got := f.run("use")
 	assertCode(t, got, 0)
 	if want := "Now using alpha (claude1@x.io) in ~/.claude-julienning1" + usage12; got.stdout != want {
@@ -210,7 +210,7 @@ func TestNextNicknameOutput(t *testing.T) {
 	f := setup(t)
 	j1 := f.addConfig("julienning1", email1)
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28))
 	got := f.run("next")
 	assertCode(t, got, 0)
 	if want := "Now using alpha (claude1@x.io) in ~/.claude-julienning1" + usage12; got.stdout != want {
@@ -225,7 +225,7 @@ func TestNextNicknameOutput(t *testing.T) {
 		t.Errorf("stdout = %q\nwant     %q", got.stdout, want)
 	}
 
-	busy := nacct(email1, "alpha", 12, 28)
+	busy := nacct(email1, "alpha", 28)
 	busy.BusyBy = []string{"ali"}
 	f.fake.Listing = listing(busy)
 	got = f.run("next")
@@ -234,7 +234,7 @@ func TestNextNicknameOutput(t *testing.T) {
 		t.Errorf("stderr = %q", got.stderr)
 	}
 
-	f.fake.Listing = listing(nacct(email2, "beta", 1, 1))
+	f.fake.Listing = listing(nacct(email2, "beta", 1))
 	got = f.run("next")
 	assertCode(t, got, cli.ExitError)
 	if !strings.Contains(got.stderr, "(best ranked: beta (claude2@x.io))") {
@@ -248,7 +248,7 @@ func TestJSONNickname(t *testing.T) {
 	f.addConfig("julienning2", email2)
 	f.addConfig("fresh", "")
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "", 50, 60))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "", 60))
 	decode := func(r result) map[string]any {
 		t.Helper()
 		assertCode(t, r, 0)
@@ -284,14 +284,14 @@ func TestLaunchPickerUsesNicknames(t *testing.T) {
 	// A shared legacy account (no nickname) is labelled by its config name.
 	legacy := f.addConfig("legacy", "claude9@x.io")
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 50, 60), nacct("claude9@x.io", "", 1, 1))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "beta", 60), nacct("claude9@x.io", "", 1))
 	f.writeSession(other, sidA, "Checkout fix", "fix checkout", 2*time.Hour)
 	f.writeSession(legacy, sidB, "Side project", "p", 3*time.Hour)
 
 	f.pick = func([]tui.Item) (int, error) { return 0, tui.ErrCanceled }
 	got := f.run("use", "alpha")
 	assertCode(t, got, 0)
-	if want := "Now using alpha (claude1@x.io) in ~/.claude-julienning3 — session 12% → 20:00, week 28% → Fri 20:00."; f.pickHdr != want {
+	if want := "Now using alpha (claude1@x.io) in ~/.claude-julienning3 — week 28% → Fri 20:00."; f.pickHdr != want {
 		t.Errorf("header = %q\nwant     %q", f.pickHdr, want)
 	}
 	if !strings.Contains(got.stdout, "Not starting claude; alpha stays selected.") {

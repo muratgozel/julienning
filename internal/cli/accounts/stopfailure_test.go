@@ -15,10 +15,12 @@ import (
 )
 
 // Refusal texts as Claude shows them. The fixture's clock is Tue
-// 2026-09-15 17:30:57 in Istanbul.
+// 2026-09-15 17:30:57 in Istanbul. Every refusal is reported against the
+// week, the only window since Claude dropped the five-hour one (~2026-10-31),
+// so the text matters only for its reset.
 const (
-	weeklyRefusal   = "You've hit your weekly limit · resets Sep 18 at 10am (Europe/Istanbul)" // friReset
-	fiveHourRefusal = "You've hit your limit · resets 8pm (Europe/Istanbul)"                   // fiveReset
+	weeklyRefusal = "You've hit your weekly limit · resets Sep 18 at 10am (Europe/Istanbul)" // friReset
+	modelRefusal  = "You've hit your Opus limit · resets 8pm (Europe/Istanbul)"              // todayReset
 )
 
 // stopFailureInput is a StopFailure payload; details goes to error_details
@@ -36,11 +38,11 @@ func stopFailureInput(errType, details string) string {
 func TestHookStopFailureSpawnsSendExhausted(t *testing.T) {
 	cases := map[string]struct{ details, want string }{
 		"weekly": {weeklyRefusal,
-			fmt.Sprintf("send-exhausted --email %s --window week --resets %d", email1, friReset)},
-		"five-hour": {fiveHourRefusal,
-			fmt.Sprintf("send-exhausted --email %s --window session --resets %d", email1, fiveReset)},
+			fmt.Sprintf("send-exhausted --email %s --resets %d", email1, friReset)},
+		"a model's limit": {modelRefusal,
+			fmt.Sprintf("send-exhausted --email %s --resets %d", email1, todayReset)},
 		"nothing to go on": {"API Error: Rate limited",
-			"send-exhausted --email " + email1 + " --window session"},
+			"send-exhausted --email " + email1},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -60,37 +62,26 @@ func TestHookStopFailureSpawnsSendExhausted(t *testing.T) {
 	}
 }
 
-// Without a window or reset in the text, the last report this machine sent
-// for the account decides.
+// Without a reset in the text, the weekly reset of the last report this
+// machine sent for the account is used while it is still ahead.
 func TestHookStopFailureFallsBackToTheSentCache(t *testing.T) {
 	cases := map[string]struct {
 		details string
 		sent    usage.Payload
 		want    string
 	}{
-		"week is fuller": {"API Error: Rate limited",
-			usage.Payload{SessionUsed: 60, SessionResets: fiveReset, WeekUsed: 100, WeekResets: weekReset},
-			fmt.Sprintf("--window week --resets %d", weekReset)},
-		"session is fuller": {"API Error: Rate limited",
-			usage.Payload{SessionUsed: 100, SessionResets: fiveReset, WeekUsed: 70, WeekResets: weekReset},
-			fmt.Sprintf("--window session --resets %d", fiveReset)},
-		"tie: session": {"API Error: Rate limited",
-			usage.Payload{SessionUsed: 100, SessionResets: fiveReset, WeekUsed: 100, WeekResets: weekReset},
-			fmt.Sprintf("--window session --resets %d", fiveReset)},
-		// The session window rolled over since the last report: the refusal is
-		// about the week, however full the session was back then.
-		"cached session reset passed": {"API Error: Rate limited",
-			usage.Payload{SessionUsed: 100, SessionResets: nowEpoch - 60, WeekUsed: 10, WeekResets: weekReset},
-			fmt.Sprintf("--window week --resets %d", weekReset)},
-		"both cached resets passed": {"API Error: Rate limited",
-			usage.Payload{SessionUsed: 100, SessionResets: nowEpoch - 60, WeekUsed: 10, WeekResets: nowEpoch - 1},
-			"--window session"},
-		"text names the week, cache has its reset": {"You've hit your weekly limit",
-			usage.Payload{SessionUsed: 100, SessionResets: fiveReset, WeekUsed: 10, WeekResets: weekReset},
-			fmt.Sprintf("--window week --resets %d", weekReset)},
-		"text reset wins over the cache": {fiveHourRefusal,
-			usage.Payload{SessionUsed: 100, SessionResets: fiveReset + 3600, WeekUsed: 10, WeekResets: weekReset},
-			fmt.Sprintf("--window session --resets %d", fiveReset)},
+		"cached week reset": {"API Error: Rate limited",
+			usage.Payload{WeekUsed: 100, WeekResets: weekReset},
+			fmt.Sprintf("--resets %d", weekReset)},
+		"cached week reset, week not full": {"You've hit your Opus limit",
+			usage.Payload{WeekUsed: 10, WeekResets: weekReset},
+			fmt.Sprintf("--resets %d", weekReset)},
+		"cached reset passed": {"API Error: Rate limited",
+			usage.Payload{WeekUsed: 100, WeekResets: nowEpoch - 1},
+			""},
+		"text reset wins over the cache": {modelRefusal,
+			usage.Payload{WeekUsed: 10, WeekResets: weekReset},
+			fmt.Sprintf("--resets %d", todayReset)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -99,7 +90,7 @@ func TestHookStopFailureFallsBackToTheSentCache(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertSilent(t, f, f.run(stopFailureInput("rate_limit", tc.details), "hook", "stop-failure"))
-			want := "send-exhausted --email " + email1 + " " + tc.want
+			want := strings.TrimSpace("send-exhausted --email " + email1 + " " + tc.want)
 			if spawn.calls != 1 || strings.Join(spawn.args, " ") != want {
 				t.Errorf("argv = %v, want %s", spawn.args, want)
 			}
@@ -251,7 +242,7 @@ func TestHookStopFailureGate(t *testing.T) {
 // --- send-exhausted ----------------------------------------------------
 
 func exhaustedArgv(extra ...string) []string {
-	return append([]string{"send-exhausted", "--email", email1, "--window", "week"}, extra...)
+	return append([]string{"send-exhausted", "--email", email1}, extra...)
 }
 
 func TestSendExhaustedReports(t *testing.T) {
@@ -281,9 +272,9 @@ func TestSendExhaustedReports(t *testing.T) {
 	// Without --resets the reset is unknown (null), and the email is
 	// lowercased.
 	f.fake.Reset()
-	assertCode(t, f.run("", "send-exhausted", "--email", "Claude1@SixtyNine.agency", "--window", "session"), 0)
+	assertCode(t, f.run("", "send-exhausted", "--email", "Claude1@SixtyNine.agency"), 0)
 	calls = f.fake.CallsFor("exhausted")
-	if len(calls) != 1 || calls[0].Email != email1 || calls[0].Exhausted.Window != "session" || calls[0].Exhausted.ResetsAt != nil {
+	if len(calls) != 1 || calls[0].Email != email1 || calls[0].Exhausted.Window != "week" || calls[0].Exhausted.ResetsAt != nil {
 		t.Errorf("calls = %+v", calls)
 	}
 }
@@ -294,10 +285,8 @@ func TestSendExhaustedValidation(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"missing email", []string{"send-exhausted", "--window", "week"}, "--email must be a valid email address"},
-		{"bad email", []string{"send-exhausted", "--email", "nope", "--window", "week"}, "--email must be a valid email address"},
-		{"missing window", []string{"send-exhausted", "--email", email1}, "--window must be session or week"},
-		{"bad window", []string{"send-exhausted", "--email", email1, "--window", "five_hour"}, "--window must be session or week"},
+		{"missing email", []string{"send-exhausted"}, "--email must be a valid email address"},
+		{"bad email", []string{"send-exhausted", "--email", "nope"}, "--email must be a valid email address"},
 		{"zero reset", exhaustedArgv("--resets", "0"), "--resets must be positive"},
 		{"negative reset", exhaustedArgv("--resets", "-5"), "--resets must be positive"},
 		{"positional", exhaustedArgv("extra"), "no positional arguments"},

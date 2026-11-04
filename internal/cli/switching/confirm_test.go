@@ -50,7 +50,7 @@ func newMoveFixture(t *testing.T) *moveFixture {
 	m.target = f.addConfig("julienning3", email1)
 	m.other = f.addConfig("sixtynine", email2)
 	f.save()
-	f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 50, 60))
+	f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "beta", 60))
 	m.src = f.writeSession(m.other, sidA, flakyTitle, "the clock tests flake on CI", 2*time.Hour)
 	f.writeSession(m.target, sidB, "Here already", "p", 3*time.Hour)
 	body, err := os.ReadFile(m.src)

@@ -26,11 +26,11 @@ func TestNextPicksBestLocalAccount(t *testing.T) {
 	f.addConfig("personal", personal)
 	f.save()
 	// email1 ranks first but has no dir here.
-	f.fake.Listing = listing(acct(email1, 12, 28), acct(email2, 50, 60))
+	f.fake.Listing = listing(acct(email1, 28), acct(email2, 60))
 
 	got := f.run("next")
 	assertCode(t, got, 0)
-	if want := "Now using julienning2 (claude2@x.io) — session 50% → 20:00, week 60% → Fri 20:00.\n"; got.stdout != want {
+	if want := "Now using julienning2 (claude2@x.io) — week 60% → Fri 20:00.\n"; got.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", got.stdout, want)
 	}
 	if got.stderr != "" {
@@ -56,10 +56,10 @@ func TestNextStaysOnCurrent(t *testing.T) {
 	cd := f.addConfig("julienning1", email1)
 	f.save()
 	f.setCurrent(cd)
-	f.fake.Listing = listing(acct(email1, 12, 28))
+	f.fake.Listing = listing(acct(email1, 28))
 	got := f.run("next")
 	assertCode(t, got, 0)
-	if want := "Staying on julienning1 (best available) — session 12% → 20:00, week 28% → Fri 20:00.\n"; got.stdout != want {
+	if want := "Staying on julienning1 (best available) — week 28% → Fri 20:00.\n"; got.stdout != want {
 		t.Errorf("stdout = %q", got.stdout)
 	}
 }
@@ -69,7 +69,7 @@ func TestNextPrefersCurrentDirForTheSameEmail(t *testing.T) {
 	f.addConfig("a", email1)
 	b := f.addConfig("b", email1)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 12, 28))
+	f.fake.Listing = listing(acct(email1, 28))
 
 	got := f.run("next")
 	assertCode(t, got, 0)
@@ -92,18 +92,29 @@ func TestNextStaysOnCurrentWhenTied(t *testing.T) {
 	two := f.addConfig("two", email2)
 	f.save()
 	f.setCurrent(two)
-	f.fake.Listing = listing(acct(email1, 0, 0), acct(email2, 0, 0))
+	f.fake.Listing = listing(acct(email1, 0), acct(email2, 0))
 	got := f.run("next")
 	assertCode(t, got, 0)
 	if !strings.HasPrefix(got.stdout, "Staying on two ") {
 		t.Errorf("stdout = %q", got.stdout)
 	}
 	// A real difference moves.
-	f.fake.Listing = listing(acct(email1, 0, 0), acct(email2, 5, 0))
+	f.fake.Listing = listing(acct(email1, 0), acct(email2, 5))
 	got = f.run("next")
 	assertCode(t, got, 0)
 	if !strings.HasPrefix(got.stdout, "Now using one ") {
 		t.Errorf("stdout = %q", got.stdout)
+	}
+	// Same week %, but the first resets sooner (the Worker's next sort key
+	// after week %): that is a difference too.
+	f.setCurrent(two)
+	sooner := acct(email1, 30)
+	sooner.Week = win(30, weekReset-3600)
+	f.fake.Listing = listing(sooner, acct(email2, 30))
+	got = f.run("next")
+	assertCode(t, got, 0)
+	if !strings.HasPrefix(got.stdout, "Now using one ") {
+		t.Errorf("an earlier week reset must move: stdout = %q", got.stdout)
 	}
 }
 
@@ -111,7 +122,7 @@ func TestNextWarnsWhenOthersUseIt(t *testing.T) {
 	f := setup(t)
 	f.addConfig("one", email1)
 	f.save()
-	a := acct(email1, 10, 10)
+	a := acct(email1, 10)
 	a.BusyBy = []string{"ali", "can"}
 	f.fake.Listing = listing(a)
 	got := f.run("next")
@@ -122,13 +133,14 @@ func TestNextWarnsWhenOthersUseIt(t *testing.T) {
 }
 
 // exhaustedAcct is an account at 100% in its week window (exhausted until
-// Fri 20:00 local), or in its session window (until 20:00) when session.
-func exhaustedAcct(email, nick string, session bool, busy ...string) remote.Account {
-	a := acct(email, 40, 100)
+// Fri 20:00 local), or, when soon, one refused for a limit (a model's weekly
+// limit) that frees up at 20:00 today while its week is at 40%.
+func exhaustedAcct(email, nick string, soon bool, busy ...string) remote.Account {
+	a := acct(email, 100)
 	a.ExhaustedUntil = ts(weekReset)
-	if session {
-		a = acct(email, 100, 40)
-		a.ExhaustedUntil = ts(fiveReset)
+	if soon {
+		a = acct(email, 40)
+		a.ExhaustedUntil = ts(todayReset)
 	}
 	a.Nickname, a.State, a.Exhausted = nick, "exhausted", true
 	if len(busy) > 0 {
@@ -145,7 +157,7 @@ func TestNextWarnsWhenEveryLocalAccountIsExhausted(t *testing.T) {
 	cd := f.addConfig("three", "claude3@x.io")
 	f.save()
 	f.fake.Listing = listing(
-		acct("free@x.io", 0, 0), // usable, but not logged in here
+		acct("free@x.io", 0), // usable, but not logged in here
 		exhaustedAcct("claude3@x.io", "claude3", true, "ali"),
 		exhaustedAcct(email1, "alpha", false),
 	)
@@ -156,7 +168,7 @@ func TestNextWarnsWhenEveryLocalAccountIsExhausted(t *testing.T) {
 	if got.stderr != want {
 		t.Errorf("stderr = %q\nwant     %q", got.stderr, want)
 	}
-	if want := "Now using claude3 (claude3@x.io) in ~/.claude-three — session 100% → 20:00, week 40% → Fri 20:00.\n"; got.stdout != want {
+	if want := "Now using claude3 (claude3@x.io) in ~/.claude-three — week 40% → Fri 20:00.\n"; got.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", got.stdout, want)
 	}
 	if f.current() != cd.Dir {
@@ -195,7 +207,7 @@ func TestNextSkipsExhaustedWhenAUsableLocalAccountExists(t *testing.T) {
 	two := f.addConfig("two", email2)
 	f.save()
 	f.setCurrent(one)
-	f.fake.Listing = listing(exhaustedAcct(email1, "alpha", false), acct(email2, 90, 90))
+	f.fake.Listing = listing(exhaustedAcct(email1, "alpha", false), acct(email2, 90))
 	got := f.run("next")
 	assertCode(t, got, 0)
 	if !strings.HasPrefix(got.stdout, "Now using two (claude2@x.io)") || f.current() != two.Dir {
@@ -217,7 +229,7 @@ func TestSameRankExhausted(t *testing.T) {
 	if sameRank(&a, &c) {
 		t.Error("a later exhausted_until must not tie")
 	}
-	d := acct(email2, 40, 100)
+	d := acct(email2, 100)
 	if sameRank(&a, &d) {
 		t.Error("exhausted and usable must not tie")
 	}
@@ -227,7 +239,7 @@ func TestNextJSON(t *testing.T) {
 	f := setup(t)
 	f.addConfig("one", email1)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 12, 28))
+	f.fake.Listing = listing(acct(email1, 28))
 	f.fake.Listing.Accounts[0].Raw = json.RawMessage(`{"email":"claude1@x.io","state":"free","future_field":7}`)
 	f.tty = true // --json never launches
 	got := f.run("next", "--json")
@@ -264,7 +276,7 @@ func TestNextErrors(t *testing.T) {
 		f.addConfig("fresh", "")
 		f.addConfig("personal", personal)
 		f.save()
-		f.fake.Listing = listing(acct(email1, 1, 1))
+		f.fake.Listing = listing(acct(email1, 1))
 		got := f.run("next")
 		assertCode(t, got, cli.ExitError)
 		if !strings.Contains(got.stderr, "(best ranked: "+email1+"); sign it in here with: julienning login "+email1) {
@@ -315,10 +327,10 @@ func TestUseSwitchesWithUsageLine(t *testing.T) {
 	f := setup(t)
 	cd := f.addConfig("julienning1", email1)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 12, 28))
+	f.fake.Listing = listing(acct(email1, 28))
 	got := f.run("use", "julienning1")
 	assertCode(t, got, 0)
-	if want := "Now using julienning1 (claude1@x.io) — session 12% → 20:00, week 28% → Fri 20:00.\n"; got.stdout != want {
+	if want := "Now using julienning1 (claude1@x.io) — week 28% → Fri 20:00.\n"; got.stdout != want {
 		t.Errorf("stdout = %q", got.stdout)
 	}
 	if got.stderr != "" || f.current() != cd.Dir {
@@ -364,7 +376,7 @@ func TestUseNotShared(t *testing.T) {
 	f := setup(t)
 	f.addConfig("personal", personal)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 1, 1))
+	f.fake.Listing = listing(acct(email1, 1))
 	got := f.run("use", "personal")
 	assertCode(t, got, 0)
 	if got.stdout != "Now using personal (me@personal.io).\n" {
@@ -446,7 +458,7 @@ func launchFixture(t *testing.T) (f *fixture, target, other config.ConfigDir) {
 	target = f.addConfig("julienning3", email1)
 	other = f.addConfig("sixtynine", email2)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 12, 28), acct(email2, 50, 60))
+	f.fake.Listing = listing(acct(email1, 28), acct(email2, 60))
 	return f, target, other
 }
 
@@ -459,7 +471,7 @@ func TestLaunchNewSession(t *testing.T) {
 	if len(f.execs) != 1 || f.execs[0].dir != target.Dir || len(f.execs[0].args) != 0 || f.execs[0].chdir != "" {
 		t.Fatalf("execs = %+v", f.execs)
 	}
-	if !strings.HasPrefix(f.pickHdr, "Now using julienning3 (claude1@x.io) — session 12%") {
+	if !strings.HasPrefix(f.pickHdr, "Now using julienning3 (claude1@x.io) — week 28%") {
 		t.Errorf("header = %q", f.pickHdr)
 	}
 }
@@ -668,7 +680,7 @@ func TestLaunchIntoDefaultDir(t *testing.T) {
 	def := f.addConfig("default", email1)
 	other := f.addConfig("sixtynine", email2)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 1, 1), acct(email2, 50, 60))
+	f.fake.Listing = listing(acct(email1, 1), acct(email2, 60))
 	f.writeSession(other, sidA, "Checkout fix", "fix", time.Hour)
 	f.pick = func([]tui.Item) (int, error) { return 1, nil }
 	f.confirm = acceptMoves
@@ -829,7 +841,7 @@ func TestUseWithoutNameUsesCurrent(t *testing.T) {
 	one := f.addConfig("one", email1)
 	f.addConfig("two", email2)
 	f.save()
-	f.fake.Listing = listing(acct(email2, 1, 1), acct(email1, 90, 90)) // two ranks first
+	f.fake.Listing = listing(acct(email2, 1), acct(email1, 90)) // two ranks first
 	if err := config.SetCurrent(one); err != nil {
 		t.Fatal(err)
 	}
@@ -845,7 +857,7 @@ func TestUseWithoutNameFallsBackToNext(t *testing.T) {
 	f.addConfig("one", email1)
 	two := f.addConfig("two", email2)
 	f.save()
-	f.fake.Listing = listing(acct(email2, 1, 1), acct(email1, 90, 90))
+	f.fake.Listing = listing(acct(email2, 1), acct(email1, 90))
 	got := f.run("use", "--no-launch")
 	assertCode(t, got, 0)
 	if f.current() != two.Dir || !strings.Contains(got.stdout, "Now using two (") {

@@ -14,11 +14,12 @@ import (
 // Epochs shared with the bash predecessor's test suite.
 const (
 	nowEpoch   = 1789482657 // 2026-09-15T14:30:57Z
-	fiveReset  = 1789491600 // 2026-09-15T17:00:00Z
+	todayReset = 1789491600 // 2026-09-15T17:00:00Z
 	weekReset  = 1793631600 // 2026-11-02T15:00:00Z, after US DST ends
+	// fullSample is the payload Claude Code sends since the five-hour window
+	// went away (~2026-10-31): seven_day only.
 	fullSample = `{"model":{"id":"claude-opus-5","display_name":"Opus 5"},"context_window":{"used_percentage":8.4},` +
-		`"rate_limits":{"five_hour":{"used_percentage":23.54,"resets_at":1789491600},` +
-		`"seven_day":{"used_percentage":41,"resets_at":1793631600}}}`
+		`"rate_limits":{"seven_day":{"used_percentage":41.04,"resets_at":1793631600}}}`
 )
 
 func parse(t *testing.T, s string) Input {
@@ -36,19 +37,32 @@ func TestParseCompletePayload(t *testing.T) {
 		t.Errorf("status line = %q", got)
 	}
 	if !in.Complete() || in.Invalid() {
-		t.Fatalf("windows = %+v %+v", in.Session, in.Week)
-	}
-	if in.Session.Used != 23.5 || in.Session.ResetsAt != fiveReset {
-		t.Errorf("session = %+v", in.Session)
+		t.Fatalf("week = %+v", in.Week)
 	}
 	if in.Week.Used != 41 || in.Week.ResetsAt != weekReset {
 		t.Errorf("week = %+v", in.Week)
 	}
-	if got := FormatPercent(in.Session.Used); got != "23.5" {
-		t.Errorf("session pct = %q", got)
-	}
 	if got := FormatPercent(in.Week.Used); got != "41" {
 		t.Errorf("week pct = %q", got)
+	}
+}
+
+// Regression: Claude dropped the five-hour window around 2026-10-31 and the
+// status line waited for it forever ("usage pending", nothing reported).
+// five_hour is now ignored, whatever its shape, so it can neither hold back
+// nor invalidate the weekly report.
+func TestParseIgnoresFiveHour(t *testing.T) {
+	week := `"seven_day":{"used_percentage":41,"resets_at":1793631600}`
+	for name, fiveHour := range map[string]string{
+		"valid":     `"five_hour":{"used_percentage":23.54,"resets_at":1789491600},`,
+		"null":      `"five_hour":null,`,
+		"malformed": `"five_hour":"x",`,
+		"negative":  `"five_hour":{"used_percentage":-1,"resets_at":"soon"},`,
+	} {
+		in := parse(t, `{"rate_limits":{`+fiveHour+week+`}}`)
+		if !in.Complete() || in.Invalid() || in.Week.Used != 41 || in.Week.ResetsAt != weekReset {
+			t.Errorf("%s five_hour: week = %+v, complete %v, invalid %v", name, in.Week, in.Complete(), in.Invalid())
+		}
 	}
 }
 
@@ -64,8 +78,9 @@ func TestParseAbsentWindows(t *testing.T) {
 	cases := map[string]string{
 		"no rate_limits":    `{"model":{"display_name":"Opus 5"}}`,
 		"null rate_limits":  `{"model":{"display_name":"Opus 5"},"rate_limits":null}`,
-		"missing seven_day": `{"model":{"display_name":"Opus 5"},"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":1789491600}}}`,
-		"null five_hour":    `{"model":{"display_name":"Opus 5"},"rate_limits":{"five_hour":null,"seven_day":null}}`,
+		"empty rate_limits": `{"model":{"display_name":"Opus 5"},"rate_limits":{}}`,
+		"only five_hour":    `{"model":{"display_name":"Opus 5"},"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":1789491600}}}`,
+		"null seven_day":    `{"model":{"display_name":"Opus 5"},"rate_limits":{"seven_day":null}}`,
 	}
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -85,16 +100,14 @@ func TestParseAbsentWindows(t *testing.T) {
 
 func TestParseInvalidWindows(t *testing.T) {
 	for _, bad := range []string{`"abc"`, "-1", "-0.01", "1e400", "null", "{}", "true"} {
-		payload := `{"rate_limits":{"five_hour":{"used_percentage":` + bad + `,"resets_at":1789491600},` +
-			`"seven_day":{"used_percentage":1,"resets_at":1793631600}}}`
+		payload := `{"rate_limits":{"seven_day":{"used_percentage":` + bad + `,"resets_at":1793631600}}}`
 		in := parse(t, payload)
 		if !in.Invalid() {
-			t.Errorf("used_percentage %s: want invalid, got %+v", bad, in.Session)
+			t.Errorf("used_percentage %s: want invalid, got %+v", bad, in.Week)
 		}
 	}
 	for _, bad := range []string{`"soon"`, "1.5", "0", "-5", "null"} {
-		payload := `{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":1789491600},` +
-			`"seven_day":{"used_percentage":1,"resets_at":` + bad + `}}}`
+		payload := `{"rate_limits":{"seven_day":{"used_percentage":1,"resets_at":` + bad + `}}}`
 		in := parse(t, payload)
 		if !in.Invalid() {
 			t.Errorf("resets_at %s: want invalid, got %+v", bad, in.Week)
@@ -106,7 +119,7 @@ func TestParseInvalidWindows(t *testing.T) {
 			t.Errorf("rate_limits %s: want invalid", bad)
 		}
 	}
-	in := parse(t, `{"rate_limits":{"five_hour":"x","seven_day":{"used_percentage":1,"resets_at":1}}}`)
+	in := parse(t, `{"rate_limits":{"seven_day":"x"}}`)
 	if !in.Invalid() {
 		t.Errorf("non-object window: want invalid")
 	}
@@ -118,16 +131,15 @@ func TestParseInvalidWindows(t *testing.T) {
 func TestParseClampsUsageAbove100(t *testing.T) {
 	cases := map[string]float64{"100": 100, "100.04": 100, "100.5": 100, "150": 100, "1e6": 100, "99.96": 100, "99.94": 99.9}
 	for raw, want := range cases {
-		payload := `{"rate_limits":{"five_hour":{"used_percentage":` + raw + `,"resets_at":1789491600},` +
-			`"seven_day":{"used_percentage":` + raw + `,"resets_at":1793631600}}}`
+		payload := `{"rate_limits":{"seven_day":{"used_percentage":` + raw + `,"resets_at":1793631600}}}`
 		in := parse(t, payload)
 		if !in.Complete() || in.Invalid() {
-			t.Fatalf("%s: windows = %+v %+v, want OK", raw, in.Session, in.Week)
+			t.Fatalf("%s: week = %+v, want OK", raw, in.Week)
 		}
-		if in.Session.Used != want || in.Week.Used != want {
-			t.Errorf("%s: used = %v / %v, want %v", raw, in.Session.Used, in.Week.Used, want)
+		if in.Week.Used != want {
+			t.Errorf("%s: used = %v, want %v", raw, in.Week.Used, want)
 		}
-		if got := FormatPercent(in.Session.Used); want == 100 && got != "100" {
+		if got := FormatPercent(in.Week.Used); want == 100 && got != "100" {
 			t.Errorf("%s: formatted = %q, want 100", raw, got)
 		}
 		if sig := in.RateLimitsSignature(); strings.ContainsAny(sig, "0123456789") {
@@ -148,30 +160,31 @@ func TestParseRejectsOutOfRangeResets(t *testing.T) {
 		"99999999999999999999", // more digits than float64 can hold exactly
 	}
 	for _, v := range bad {
-		payload := `{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":` + v + `},` +
-			`"seven_day":{"used_percentage":1,"resets_at":1793631600}}}`
+		payload := `{"rate_limits":{"seven_day":{"used_percentage":1,"resets_at":` + v + `}}}`
 		in := parse(t, payload)
 		if !in.Invalid() {
-			t.Errorf("resets_at %s: want invalid, got %+v", v, in.Session)
+			t.Errorf("resets_at %s: want invalid, got %+v", v, in.Week)
 		}
-		if in.Session.ResetsAt < 0 {
-			t.Errorf("resets_at %s overflowed to %d", v, in.Session.ResetsAt)
+		if in.Week.ResetsAt < 0 {
+			t.Errorf("resets_at %s overflowed to %d", v, in.Week.ResetsAt)
 		}
 	}
 	// Just under the bound is still accepted.
-	in := parse(t, `{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":1099511627775},`+
-		`"seven_day":{"used_percentage":1,"resets_at":1793631600}}}`)
-	if in.Invalid() || in.Session.ResetsAt != 1099511627775 {
-		t.Errorf("2^40-1 must be valid, got %+v", in.Session)
+	in := parse(t, `{"rate_limits":{"seven_day":{"used_percentage":1,"resets_at":1099511627775}}}`)
+	if in.Invalid() || in.Week.ResetsAt != 1099511627775 {
+		t.Errorf("2^40-1 must be valid, got %+v", in.Week)
 	}
 }
 
 func TestRateLimitsSignature(t *testing.T) {
 	cases := []struct{ payload, want string }{
 		{`{"rate_limits":{"five_hour":{"used_percentage":1,"resets_at":null}}}`,
-			"five_hour={used_percentage:number,resets_at:null} seven_day=absent"},
-		{`{"rate_limits":{"five_hour":{"used_percentage":"12%","resets_at":1,"zeta":[]},"seven_day":null}}`,
-			"five_hour={used_percentage:string,resets_at:number,zeta:array} seven_day=null"},
+			"seven_day=absent other=[five_hour]"},
+		{`{"rate_limits":{"seven_day":{"used_percentage":"12%","resets_at":1,"zeta":[]},"spend_limit":{},"five_hour":null}}`,
+			"seven_day={used_percentage:string,resets_at:number,zeta:array} other=[five_hour spend_limit]"},
+		{`{"rate_limits":{"seven_day":null}}`, "seven_day=null"},
+		{`{"rate_limits":{}}`, "seven_day=absent"},
+		{`{"rate_limits":{"bad\u001b[31m":1}}`, "seven_day=absent other=[bad[31m]"},
 		{`{"rate_limits":"nope"}`, "rate_limits=string"},
 		{`{"rate_limits":[1]}`, "rate_limits=array"},
 		{`{}`, "rate_limits=absent"},
@@ -227,9 +240,9 @@ func TestFormatReset(t *testing.T) {
 		loc  *time.Location
 		want string
 	}{
-		{"today, Istanbul", time.Unix(fiveReset, 0), now, ist, "20:00"},
-		{"today, UTC", time.Unix(fiveReset, 0), now, time.UTC, "17:00"},
-		{"today, New York", time.Unix(fiveReset, 0), now, ny, "13:00"},
+		{"today, Istanbul", time.Unix(todayReset, 0), now, ist, "20:00"},
+		{"today, UTC", time.Unix(todayReset, 0), now, time.UTC, "17:00"},
+		{"today, New York", time.Unix(todayReset, 0), now, ny, "13:00"},
 		{"far future", time.Unix(weekReset, 0), now, ist, "2026-11-02 18:00"},
 		{"within six days", time.Unix(nowEpoch+3*86400, 0), now, ist, "Fri 17:30"},
 		{"sixth day", time.Unix(nowEpoch+6*86400, 0), now, ist, "Mon 17:30"},
@@ -432,7 +445,7 @@ func TestSentCacheRoundTrip(t *testing.T) {
 		t.Fatalf("empty cache = %+v", got)
 	}
 	want := Sent{
-		Payload:     Payload{SessionUsed: 23.5, SessionResets: fiveReset, WeekUsed: 41, WeekResets: weekReset},
+		Payload:     Payload{WeekUsed: 41, WeekResets: weekReset},
 		AttemptedAt: time.Unix(nowEpoch, 0).UTC(),
 		SentAt:      time.Unix(nowEpoch, 0).UTC(),
 	}
@@ -470,14 +483,14 @@ func TestSentCacheRoundTrip(t *testing.T) {
 func TestSaveSentIsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	email := "claude1@sixtynine.agency"
-	base := Sent{Payload: Payload{SessionUsed: 1, SessionResets: fiveReset, WeekUsed: 2, WeekResets: weekReset}}
+	base := Sent{Payload: Payload{WeekUsed: 2, WeekResets: weekReset}}
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for i := 0; i < 200; i++ {
 			s := base
-			s.SessionUsed = float64(i % 100)
+			s.WeekUsed = float64(i % 100)
 			s.AttemptedAt = time.Unix(nowEpoch+int64(i), 0).UTC()
 			if err := SaveSent(dir, email, s); err != nil {
 				t.Errorf("SaveSent: %v", err)
@@ -503,7 +516,7 @@ func TestSaveSentIsAtomic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadSent: %v", err)
 			}
-			if got != nil && got.SessionResets != fiveReset {
+			if got != nil && got.WeekResets != weekReset {
 				t.Fatalf("torn read: %+v", got)
 			}
 		}
@@ -588,7 +601,7 @@ func TestAcquireInflight(t *testing.T) {
 
 func TestShouldSend(t *testing.T) {
 	now := time.Unix(nowEpoch, 0)
-	base := Payload{SessionUsed: 20, SessionResets: fiveReset, WeekUsed: 30, WeekResets: weekReset}
+	base := Payload{WeekUsed: 30, WeekResets: weekReset}
 	sent := func(ago time.Duration, p Payload) *Sent {
 		at := now.Add(-ago)
 		return &Sent{Payload: p, AttemptedAt: at, SentAt: at}
@@ -598,9 +611,9 @@ func TestShouldSend(t *testing.T) {
 		return &Sent{Payload: p, AttemptedAt: now.Add(-ago)}
 	}
 	changed := base
-	changed.SessionUsed = 25
+	changed.WeekUsed = 35
 	newWindow := base
-	newWindow.SessionResets = fiveReset + 18000
+	newWindow.WeekResets = weekReset + 7*24*3600
 
 	cases := []struct {
 		name string

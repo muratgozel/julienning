@@ -259,7 +259,7 @@ describe("records from before nicknames", () => {
     expect(listed).toHaveProperty("nickname", null);
     expect((await getJson(A)).nickname).toBeNull();
     await putUsage(A);
-    expect(byEmail(await listJson(), A).session!.used).toBe(50);
+    expect(byEmail(await listJson(), A).week!.used).toBe(28);
   });
 
   it("show '-' in the text NICK column", async () => {

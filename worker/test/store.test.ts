@@ -47,7 +47,7 @@ const D = "claude4@sixtynine.agency";
 const E = "claude5@sixtynine.agency";
 
 function validUsage(): UsageRecord {
-  return JSON.parse(usageBody(MURAT, 40, 30, iso(-1))) as UsageRecord;
+  return JSON.parse(usageBody(MURAT, 30, iso(-1))) as UsageRecord;
 }
 
 function byEmailSorted(accounts: StoredAccount[]): StoredAccount[] {
@@ -102,7 +102,6 @@ describe("KV size limits", () => {
     const holder = { dev: "d".repeat(32), machine_id: "f".repeat(12) };
     const stamp = "2026-09-16T14:30:00.123Z";
     const usage: UsageRecord = {
-      session: { used: 99.9, resets_at: stamp },
       week: { used: 99.9, resets_at: stamp },
       collected_at: stamp,
       reporter: holder,
@@ -111,7 +110,7 @@ describe("KV size limits", () => {
       [`share:${email}`, { added_by: holder, added_at: stamp, nickname: "n".repeat(32) }],
       [`usage:${email}`, usage],
       [`claim:${email}:${holder.dev}:${holder.machine_id}`, { at: stamp }],
-      [`exhausted:${email}:${holder.dev}:${holder.machine_id}`, { window: "session", resets_at: stamp, at: stamp }],
+      [`exhausted:${email}:${holder.dev}:${holder.machine_id}`, { window: "week", resets_at: stamp, at: stamp }],
     ] as const;
     for (const [key, meta] of worst) {
       expect(() => checkKvLimits(key, meta)).not.toThrow();
@@ -223,7 +222,7 @@ describe("list pagination", () => {
     expect(paged.map((a) => a.email).sort()).toEqual([A, B, C]);
     for (const account of paged) {
       expect(holders(account.claims)).toEqual(holders([MURAT, MURAT_LAPTOP, ALI, CAN]));
-      expect(account.session?.used).toBe(50);
+      expect(account.week?.used).toBe(28);
     }
   });
 
@@ -299,7 +298,7 @@ describe("per-key validation", () => {
   it("shows an account with an invalid usage record without windows", async () => {
     await shared(A);
     await putClaim(A, ALI);
-    await seed(usageKey(A), { ...validUsage(), session: { used: -5, resets_at: iso(60) } });
+    await seed(usageKey(A), { ...validUsage(), week: { used: -5, resets_at: iso(60) } });
 
     for (const account of [byEmail(await listJson("&dev=murat"), A), await getJson(A, "murat")]) {
       expect(account.added_by).toEqual(MURAT);
@@ -312,8 +311,27 @@ describe("per-key validation", () => {
     }
 
     // The next report replaces it.
-    await putUsage(A, CAN, 12, 13);
-    expect((await getJson(A)).session!.used).toBe(12);
+    await putUsage(A, CAN, 13);
+    expect((await getJson(A)).week!.used).toBe(13);
+  });
+
+  it("lists usage and probe records the previous Worker stored with a session window, without it", async () => {
+    await shared(A, B);
+    // Written before Claude dropped the five-hour window; even a bad session must not hide them.
+    await seed(usageKey(A), { ...validUsage(), session: { used: -5, resets_at: "soon" } });
+    await seed(probeKey(B), {
+      session: { used: 12, resets_at: iso(60) },
+      week: { used: 34, resets_at: iso(4000) },
+      collected_at: iso(-1),
+      reporter: MURAT,
+    });
+    const listing = await listJson("&dev=murat");
+    for (const account of [byEmail(listing, A), await getJson(A, "murat")]) {
+      expect(account).not.toHaveProperty("session");
+      expect(account).toMatchObject({ source: "statusline", week: { used: 30 } });
+    }
+    expect(byEmail(listing, B)).toMatchObject({ source: "probe", week: { used: 34 } });
+    expect(byEmail(listing, B)).not.toHaveProperty("session");
   });
 
   it("hides only the account whose share record is invalid, until it is shared again", async () => {
@@ -333,7 +351,7 @@ describe("per-key validation", () => {
     expect((await share(B, CAN)).status).toBe(201);
     const repaired = byEmail(await listJson(), B);
     expect(repaired.added_by).toEqual(CAN);
-    expect(repaired.session!.used).toBe(40);
+    expect(repaired.week!.used).toBe(30);
     expect(holders(repaired.claims)).toEqual(holders([ALI]));
   });
 });

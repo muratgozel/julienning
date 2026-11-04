@@ -31,7 +31,7 @@ func TestNextAndUseWarnWhenSetupIsDue(t *testing.T) {
 			a := f.addConfig("julienning3", email1)
 			b := f.addConfig("julienning4", email2)
 			f.save()
-			f.fake.Listing = listing(nacct(email1, "alpha", 12, 28), nacct(email2, "beta", 50, 60))
+			f.fake.Listing = listing(nacct(email1, "alpha", 28), nacct(email2, "beta", 60))
 			for _, cd := range []string{a.Dir, b.Dir} {
 				if err := os.WriteFile(filepath.Join(cd, "settings.json"), []byte(olderPatch), 0o644); err != nil {
 					t.Fatal(err)

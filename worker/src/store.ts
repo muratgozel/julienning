@@ -28,11 +28,11 @@ import {
  * described on the rename handler in src/index.ts).
  *
  *   share:<email>                         share / rename / unshare {added_by, added_at, nickname}
- *   usage:<email>                         PUT usage                {session, week, collected_at, reporter}, 8-day TTL
- *   probe:<email>                         POST /probes             {session, week, collected_at, reporter}, 8-day TTL
+ *   usage:<email>                         PUT usage                {week, collected_at, reporter}, 8-day TTL
+ *   probe:<email>                         POST /probes             {week, collected_at, reporter}, 8-day TTL
  *   claim:<email>:<dev>:<machine_id>      that holder's claim PUT/DELETE, and its own usage refresh   {at}, claim TTL
  *   exhausted:<email>:<dev>:<machine_id>  that reporter's PUT exhausted   {window, resets_at, at}, TTL until resets_at
- *                                         (min 60 s), or one window length (5 h / 7 d) when resets_at is null
+ *                                         (min 60 s), or one window length (7 d) when resets_at is null
  *
  * All data lives in KV *metadata* (the value is a constant) because `list()`
  * returns metadata: GET /accounts is one paginated list with no per-key reads.
@@ -41,8 +41,10 @@ import {
  * ignored and expire on their own. Emails, devs and machine ids never contain
  * ':', so key names split unambiguously. `nickname` is missing on share records
  * written before nicknames existed; such accounts list with `nickname: null`.
- * A reporter's second `exhausted:` report replaces its first, whichever window
- * each named (one key per reporter, like claims).
+ * A reporter's second `exhausted:` report replaces its first (one key per
+ * reporter, like claims). Records written before the five-hour session window
+ * was dropped may still carry `session` (usage/probe; ignored) or window
+ * "session" (exhausted; read as "week"), until their TTL removes them.
  *
  * KV is still eventually consistent (another location can see a write up to
  * ~60 s late); this layout removes lost updates, not staleness.
@@ -265,7 +267,7 @@ export class Store {
     return out;
   }
 
-  /** Overwrites this reporter's previous report, whichever window it named. */
+  /** Overwrites this reporter's previous report. */
   async putExhausted(
     email: string,
     reporter: Identity,

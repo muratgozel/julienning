@@ -36,8 +36,9 @@ func (f *fixture) useDir(dir string) {
 
 func payload(rateLimits string) string {
 	if rateLimits == "" {
-		rateLimits = fmt.Sprintf(`{"five_hour":{"used_percentage":23.54,"resets_at":%d},`+
-			`"seven_day":{"used_percentage":41,"resets_at":%d}}`, fiveReset, weekReset)
+		// The shape Claude Code sends since the five-hour window went away
+		// (~2026-10-31): seven_day only.
+		rateLimits = fmt.Sprintf(`{"seven_day":{"used_percentage":41.04,"resets_at":%d}}`, weekReset)
 	}
 	return `{"model":{"id":"claude-opus-5","display_name":"Opus 5"},` +
 		`"context_window":{"used_percentage":8.4},"rate_limits":` + rateLimits + `}`
@@ -74,8 +75,6 @@ func TestStatuslineHappyPath(t *testing.T) {
 	want := []string{
 		"send-usage",
 		"--email", email1,
-		"--session-used", "23.5",
-		"--session-resets", "1789491600",
 		"--week-used", "41",
 		"--week-resets", "1793631600",
 		"--collected-at", "1789482657",
@@ -95,10 +94,10 @@ func TestStatuslinePendingWindows(t *testing.T) {
 	cases := map[string]struct{ in, signature string }{
 		"no rate_limits":   {`{"model":{"display_name":"Opus 5"}}`, "rate_limits=absent"},
 		"null rate_limits": {`{"model":{"display_name":"Opus 5"},"rate_limits":null}`, "rate_limits=null"},
-		"missing seven_day": {payload(fmt.Sprintf(`{"five_hour":{"used_percentage":23.54,"resets_at":%d}}`, fiveReset)),
-			"five_hour={used_percentage:number,resets_at:number} seven_day=absent"},
-		"null five_hour": {payload(fmt.Sprintf(`{"five_hour":null,"seven_day":{"used_percentage":41,"resets_at":%d,"extra":"x"}}`, weekReset)),
-			"five_hour=null seven_day={used_percentage:number,resets_at:number,extra:string}"},
+		"only five_hour": {payload(fmt.Sprintf(`{"five_hour":{"used_percentage":23.54,"resets_at":%d}}`, todayReset)),
+			"seven_day=absent other=[five_hour]"},
+		"null seven_day": {payload(`{"seven_day":null,"spend_limit":{"used_percentage":41}}`),
+			"seven_day=null other=[spend_limit]"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -137,7 +136,7 @@ func TestStatuslinePendingWindows(t *testing.T) {
 // line reports it as 100 instead of calling the payload malformed.
 func TestStatuslineReportsUsageAbove100As100(t *testing.T) {
 	f, spawn, _ := statuslineFixture(t)
-	rl := fmt.Sprintf(`{"five_hour":{"used_percentage":112.5,"resets_at":%d},"seven_day":{"used_percentage":64,"resets_at":%d}}`, fiveReset, weekReset)
+	rl := fmt.Sprintf(`{"seven_day":{"used_percentage":112.5,"resets_at":%d}}`, weekReset)
 	got := f.run(payload(rl), "statusline")
 	assertCode(t, got, 0)
 	if got.stdout != "Opus 5 · ctx 8%\n" {
@@ -146,18 +145,44 @@ func TestStatuslineReportsUsageAbove100As100(t *testing.T) {
 	if f.errorLog() != "" {
 		t.Errorf("errors.log = %q", f.errorLog())
 	}
-	if spawn.calls != 1 || !strings.Contains(strings.Join(spawn.args, " "), "--session-used 100 --session-resets") {
-		t.Errorf("argv = %v, want --session-used 100", spawn.args)
+	if spawn.calls != 1 || !strings.Contains(strings.Join(spawn.args, " "), "--week-used 100 --week-resets") {
+		t.Errorf("argv = %v, want --week-used 100", spawn.args)
+	}
+}
+
+// Regression: Claude stopped sending five_hour around 2026-10-31 and the
+// status line said "usage pending" forever without reporting. A five_hour
+// key, valid or broken, now neither holds back nor invalidates the report.
+func TestStatuslineIgnoresFiveHour(t *testing.T) {
+	week := fmt.Sprintf(`"seven_day":{"used_percentage":41,"resets_at":%d}`, weekReset)
+	for name, rl := range map[string]string{
+		"absent":    `{` + week + `}`,
+		"valid":     fmt.Sprintf(`{"five_hour":{"used_percentage":23.54,"resets_at":%d},`, todayReset) + week + `}`,
+		"malformed": `{"five_hour":"x",` + week + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, spawn, _ := statuslineFixture(t)
+			got := f.run(payload(rl), "statusline")
+			assertCode(t, got, 0)
+			if got.stdout != "Opus 5 · ctx 8%\n" || f.errorLog() != "" {
+				t.Errorf("stdout = %q, errors.log = %q", got.stdout, f.errorLog())
+			}
+			want := "send-usage --email " + email1 + " --week-used 41 --week-resets 1793631600 --collected-at 1789482657"
+			if spawn.calls != 1 || strings.Join(spawn.args, " ") != want {
+				t.Errorf("argv = %v, want %s", spawn.args, want)
+			}
+		})
 	}
 }
 
 func TestStatuslineUsageInvalid(t *testing.T) {
 	cases := map[string]string{
-		"percentage is a string":  fmt.Sprintf(`{"five_hour":{"used_percentage":"abc","resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":%d}}`, fiveReset, weekReset),
-		"percentage negative":     fmt.Sprintf(`{"five_hour":{"used_percentage":-1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":%d}}`, fiveReset, weekReset),
-		"reset is a string":       fmt.Sprintf(`{"five_hour":{"used_percentage":1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":"soon"}}`, fiveReset),
-		"reset is fractional":     fmt.Sprintf(`{"five_hour":{"used_percentage":1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":1.5}}`, fiveReset),
-		"reset is zero":           fmt.Sprintf(`{"five_hour":{"used_percentage":1,"resets_at":%d},"seven_day":{"used_percentage":1,"resets_at":0}}`, fiveReset),
+		"percentage is a string":  fmt.Sprintf(`{"seven_day":{"used_percentage":"abc","resets_at":%d}}`, weekReset),
+		"percentage negative":     fmt.Sprintf(`{"seven_day":{"used_percentage":-1,"resets_at":%d}}`, weekReset),
+		"reset is a string":       `{"seven_day":{"used_percentage":1,"resets_at":"soon"}}`,
+		"reset is fractional":     `{"seven_day":{"used_percentage":1,"resets_at":1.5}}`,
+		"reset is zero":           `{"seven_day":{"used_percentage":1,"resets_at":0}}`,
+		"window is a string":      `{"seven_day":"y"}`,
 		"rate_limits is a string": `"nope"`,
 	}
 	for name, rl := range cases {
@@ -176,7 +201,7 @@ func TestStatuslineUsageInvalid(t *testing.T) {
 				t.Errorf("errors.log = %q", log)
 			}
 			// The type signature is what makes an unknown shape debuggable.
-			if !strings.Contains(log, "five_hour=") && !strings.Contains(log, "rate_limits=") {
+			if !strings.Contains(log, "seven_day=") && !strings.Contains(log, "rate_limits=") {
 				t.Errorf("no type signature in %q", log)
 			}
 			if spawn.calls != 0 {

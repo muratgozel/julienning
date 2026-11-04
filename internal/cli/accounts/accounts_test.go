@@ -24,13 +24,13 @@ import (
 )
 
 const (
-	nowEpoch  = 1789482657 // 2026-09-15T14:30:57Z = Tue 17:30:57 +03:00
-	friReset  = 1789714800 // 2026-09-18T07:00:00Z = Fri 10:00 +03:00
-	lateReset = 1789504800 // 2026-09-15T20:40:00Z = 23:40 +03:00
-	fiveReset = 1789491600 // 2026-09-15T17:00:00Z = 20:00 +03:00
-	weekReset = 1793631600 // 2026-11-02T15:00:00Z = 18:00 +03:00
-	email1    = "claude1@sixtynine.agency"
-	email2    = "claude2@sixtynine.agency"
+	nowEpoch   = 1789482657 // 2026-09-15T14:30:57Z = Tue 17:30:57 +03:00
+	friReset   = 1789714800 // 2026-09-18T07:00:00Z = Fri 10:00 +03:00
+	lateReset  = 1789504800 // 2026-09-15T20:40:00Z = 23:40 +03:00
+	todayReset = 1789491600 // 2026-09-15T17:00:00Z = 20:00 +03:00
+	weekReset  = 1793631600 // 2026-11-02T15:00:00Z = 18:00 +03:00
+	email1     = "claude1@sixtynine.agency"
+	email2     = "claude2@sixtynine.agency"
 )
 
 type fixture struct {
@@ -240,7 +240,7 @@ func listing() *remote.Listing {
 		Accounts: []remote.Account{
 			{
 				Rank: 1, Email: email1, Nickname: "alpha",
-				Session: win(12, fiveReset), Week: win(28, weekReset),
+				Week:        win(28, weekReset),
 				CollectedAt: ts(nowEpoch - 120),
 				Reporter:    &remote.Identity{Dev: "murat", MachineID: "3fa9c2d1e07b"},
 				State:       "free",
@@ -248,7 +248,7 @@ func listing() *remote.Listing {
 			{
 				// A legacy record: shared before nicknames existed.
 				Rank: 2, Email: email2,
-				Session: win(50, fiveReset), Week: win(60, weekReset),
+				Week:        win(60, weekReset),
 				CollectedAt: ts(nowEpoch - 720),
 				Reporter:    &remote.Identity{Dev: "ali", MachineID: "bbbbbbbbbbbb"},
 				State:       "in_use", BusyBy: []string{"ali", "can"},
@@ -353,7 +353,7 @@ func TestCurrentWithUsage(t *testing.T) {
 	got := f.run("", "current")
 	assertCode(t, got, 0)
 	// The Worker's nickname names the account even when shared.json has none.
-	want := "alpha (" + email1 + ") in ~/.claude-sixtynine1\nusage: session 12% → 20:00, week 28% → 2026-11-02 18:00\n"
+	want := "alpha (" + email1 + ") in ~/.claude-sixtynine1\nusage: week 28% → 2026-11-02 18:00\n"
 	if got.stdout != want {
 		t.Errorf("stdout = %q, want %q", got.stdout, want)
 	}
@@ -487,12 +487,12 @@ func TestAccountsTable(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "#  NICK   ACCOUNT") || !strings.Contains(lines[0], "UPDATED") {
 		t.Errorf("header = %q", lines[0])
 	}
-	for _, want := range []string{"1", "alpha", email1, "12% → 20:00", "28% → 2026-11-02 18:00", "in use by you", "2m ago"} {
+	for _, want := range []string{"1", "alpha", email1, "28% → 2026-11-02 18:00", "in use by you", "2m ago"} {
 		if !strings.Contains(lines[1], want) {
 			t.Errorf("row 1 = %q, missing %q", lines[1], want)
 		}
 	}
-	for _, want := range []string{"2  -      " + email2, "50% → 20:00", "in use by ali, can (12m)", "12m ago"} {
+	for _, want := range []string{"2  -      " + email2, "60% → 2026-11-02 18:00", "in use by ali, can (12m)", "12m ago"} {
 		if !strings.Contains(lines[2], want) {
 			t.Errorf("row 2 = %q, missing %q", lines[2], want)
 		}
@@ -509,9 +509,10 @@ func TestAccountsRendersResetAndClaimStates(t *testing.T) {
 	f := setup(t)
 	f.save()
 	l := listing()
-	l.Accounts[0].Session = &remote.Window{Used: 80, ResetsAt: ts(nowEpoch - 60), ResetPassed: true}
-	l.Accounts[0].Week = nil
+	l.Accounts[0].Week = &remote.Window{Used: 80, ResetsAt: ts(nowEpoch - 60), ResetPassed: true}
 	l.Accounts[0].CollectedAt = nil
+	l.Accounts[1].Nickname = "beta"
+	l.Accounts[1].Week = nil
 	l.Accounts[1].State = "claimed"
 	l.Accounts[1].BusyBy = []string{"ali", "can"}
 	l.Accounts[1].Claims = []remote.Claim{
@@ -528,10 +529,13 @@ func TestAccountsRendersResetAndClaimStates(t *testing.T) {
 			t.Errorf("stdout = %q, missing %q", got.stdout, want)
 		}
 	}
-	// An absent window renders as "-", not as 0%.
-	row := strings.Split(got.stdout, "\n")[1]
-	if !strings.Contains(row, "reset") || !strings.Contains(row, " - ") {
-		t.Errorf("absent week window: %q", row)
+	// A passed reset renders as 0%; an absent window as "-", not as 0%.
+	rows := strings.Split(got.stdout, "\n")
+	if !strings.Contains(rows[1], "0% → reset") {
+		t.Errorf("passed week window: %q", rows[1])
+	}
+	if !strings.Contains(rows[2], " - ") || strings.Contains(rows[2], "%") {
+		t.Errorf("absent week window: %q", rows[2])
 	}
 }
 
@@ -768,9 +772,9 @@ func TestAccountsTableFormat(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             2m ago\n" +
-		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  12m ago\n"
+		"#  NICK   ACCOUNT                   WEEK                    STATE                     UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  28% → 2026-11-02 18:00  in use by you             2m ago\n" +
+		"2  -      claude2@sixtynine.agency  60% → 2026-11-02 18:00  in use by ali, can (12m)  12m ago\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}
@@ -899,7 +903,7 @@ func currentJSON(t *testing.T, f *fixture) map[string]any {
 }
 
 func TestCurrentNicknames(t *testing.T) {
-	usageLine := "usage: session 12% → 20:00, week 28% → 2026-11-02 18:00\n"
+	usageLine := "usage: week 28% → 2026-11-02 18:00\n"
 	reported := func(nick string) *remote.Account {
 		a := listing().Accounts[0]
 		a.Nickname = nick
@@ -1046,10 +1050,10 @@ func TestCommandsRequireSetup(t *testing.T) {
 
 // --- exhausted ---------------------------------------------------------
 
-// exhausted is an account at 100% in one or both windows, with the Worker's
-// exhausted_until (the later reset of the full windows).
-func exhausted(email string, session, week *remote.Window, until int64, busy ...string) remote.Account {
-	a := remote.Account{Email: email, Session: session, Week: week, State: "exhausted", Exhausted: true, BusyBy: busy}
+// exhausted is an account the Worker calls exhausted (its week at 100%, or a
+// refusal for a limit), with the Worker's exhausted_until.
+func exhausted(email string, week *remote.Window, until int64, busy ...string) remote.Account {
+	a := remote.Account{Email: email, Week: week, State: "exhausted", Exhausted: true, BusyBy: busy}
 	if until != 0 {
 		a.ExhaustedUntil = ts(until)
 	}
@@ -1073,38 +1077,39 @@ func TestAccountsExhaustedState(t *testing.T) {
 		a    remote.Account
 		want string
 	}{
-		{"week", exhausted(email1, win(40, lateReset), win(100, friReset), friReset),
+		{"week", exhausted(email1, win(100, friReset), friReset),
 			"exhausted (week resets Fri 10:00)"},
-		{"session", exhausted(email1, win(100, lateReset), win(70, friReset), lateReset),
-			"exhausted (session resets 23:40)"},
-		{"both: the later reset", exhausted(email1, win(100, lateReset), win(100, friReset), friReset),
-			"exhausted (week resets Fri 10:00)"},
-		{"busy", exhausted(email1, win(100, lateReset), win(70, friReset), lateReset, "ali"),
-			"exhausted (session resets 23:40), in use by ali"},
-		{"busy with several devs", exhausted(email1, win(40, lateReset), win(100, friReset), friReset, "ali", "can"),
+		{"refused, week not full", exhausted(email1, win(70, friReset), lateReset),
+			"exhausted (resets 23:40)"},
+		{"busy", exhausted(email1, win(100, friReset), friReset, "ali"),
+			"exhausted (week resets Fri 10:00), in use by ali"},
+		{"busy with several devs", exhausted(email1, win(100, friReset), friReset, "ali", "can"),
 			"exhausted (week resets Fri 10:00), in use by ali, can"},
-		{"window unknown", exhausted(email1, nil, nil, friReset),
+		{"window unknown", exhausted(email1, nil, friReset),
 			"exhausted (resets Fri 10:00)"},
-		{"no reset known", exhausted(email1, win(100, lateReset), nil, 0),
+		{"no reset known", exhausted(email1, win(100, friReset), 0),
 			"exhausted"},
-		{"reset already passed here", exhausted(email1, win(100, nowEpoch-60), nil, nowEpoch-60),
-			"exhausted (session has reset)"},
+		{"reset already passed here", exhausted(email1, win(100, nowEpoch-60), nowEpoch-60),
+			"exhausted (week has reset)"},
 		{"state alone", remote.Account{State: "exhausted", Week: win(100, friReset), ExhaustedUntil: ts(friReset)},
 			"exhausted (week resets Fri 10:00)"},
-		{"flag alone beats in_use", remote.Account{State: "in_use", Exhausted: true, Session: win(100, lateReset), ExhaustedUntil: ts(lateReset), BusyBy: []string{"ali"}},
-			"exhausted (session resets 23:40), in use by ali"},
+		{"flag alone beats in_use", remote.Account{State: "in_use", Exhausted: true, Week: win(100, friReset), ExhaustedUntil: ts(friReset), BusyBy: []string{"ali"}},
+			"exhausted (week resets Fri 10:00), in use by ali"},
 		// Worker exhausted_window (a refusal the StopFailure hook reported).
-		{"window field, reset unknown", withWindow(exhausted(email1, win(40, lateReset), win(70, friReset), 0), "week"),
+		{"window field, reset unknown", withWindow(exhausted(email1, win(70, friReset), 0), "week"),
 			"exhausted (week)"},
-		{"window field, reset unknown, busy", withWindow(exhausted(email1, nil, nil, 0, "ali"), "session"),
-			"exhausted (session), in use by ali"},
-		{"window field with reset", withWindow(exhausted(email1, nil, nil, friReset), "week"),
+		{"window field, reset unknown, busy", withWindow(exhausted(email1, nil, 0, "ali"), "week"),
+			"exhausted (week), in use by ali"},
+		{"window field with reset", withWindow(exhausted(email1, nil, friReset), "week"),
 			"exhausted (week resets Fri 10:00)"},
-		{"window field beats inference", withWindow(exhausted(email1, win(100, friReset), win(40, friReset), friReset), "session"),
-			"exhausted (session resets Fri 10:00)"},
-		{"unknown window value falls back", withWindow(exhausted(email1, win(100, lateReset), nil, lateReset), "opus"),
-			"exhausted (session resets 23:40)"},
-		{"null window, no reset", withWindow(exhausted(email1, nil, nil, 0), ""),
+		{"window field beats inference", withWindow(exhausted(email1, win(40, friReset), lateReset), "week"),
+			"exhausted (week resets 23:40)"},
+		// A Worker not redeployed since the five-hour window went away.
+		{"an older Worker's session window is not shown", withWindow(exhausted(email1, win(70, friReset), lateReset), "session"),
+			"exhausted (resets 23:40)"},
+		{"unknown window value falls back", withWindow(exhausted(email1, win(100, lateReset), lateReset), "opus"),
+			"exhausted (week resets 23:40)"},
+		{"null window, no reset", withWindow(exhausted(email1, nil, 0), ""),
 			"exhausted"},
 	}
 	for _, tc := range cases {
@@ -1121,7 +1126,7 @@ func TestAccountsTableExhausted(t *testing.T) {
 	f.addConfig("sixtynine3", "claude3@sixtynine.agency")
 	f.save()
 	l := listing()
-	ex := exhausted("claude3@sixtynine.agency", win(40, lateReset), win(100, friReset), friReset, "ali")
+	ex := exhausted("claude3@sixtynine.agency", win(100, friReset), friReset, "ali")
 	ex.Rank, ex.Nickname, ex.CollectedAt = 3, "claude3", ts(nowEpoch-300)
 	l.Accounts = append(l.Accounts, ex)
 	f.fake.Listing = l
@@ -1132,7 +1137,7 @@ func TestAccountsTableExhausted(t *testing.T) {
 	if len(lines) != 4 {
 		t.Fatalf("lines = %q", lines)
 	}
-	for _, want := range []string{"3  claude3  claude3@sixtynine.agency", "40% → 23:40", "100% → Fri 10:00",
+	for _, want := range []string{"3  claude3  claude3@sixtynine.agency", "100% → Fri 10:00",
 		"  exhausted (week resets Fri 10:00), in use by ali  ", "5m ago"} {
 		if !strings.Contains(lines[3], want) {
 			t.Errorf("row = %q, missing %q", lines[3], want)
@@ -1156,14 +1161,14 @@ func TestAccountsTableExhausted(t *testing.T) {
 }
 
 func TestCurrentExhausted(t *testing.T) {
-	a := exhausted(email1, win(100, lateReset), win(70, friReset), lateReset, "ali")
+	a := withWindow(exhausted(email1, win(70, friReset), lateReset, "ali"), "week")
 	a.Nickname = "alpha"
 	f := currentFixture(t, "alpha", &a)
 	got := f.run("", "current")
 	assertCode(t, got, 0)
 	want := "alpha (" + email1 + ") in ~/.claude-sixtynine1\n" +
-		"usage: session 100% → 23:40, week 70% → Fri 10:00\n" +
-		"state: exhausted (session resets 23:40), in use by ali\n"
+		"usage: week 70% → Fri 10:00\n" +
+		"state: exhausted (week resets 23:40), in use by ali\n"
 	if got.stdout != want {
 		t.Errorf("stdout = %q, want %q", got.stdout, want)
 	}
@@ -1219,10 +1224,10 @@ func TestAccountsSyncingRows(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK   ACCOUNT                   SESSION      WEEK                    STATE                     UPDATED\n" +
-		"1  alpha  claude1@sixtynine.agency  12% → 20:00  28% → 2026-11-02 18:00  in use by you             2m ago\n" +
-		"2  -      claude2@sixtynine.agency  50% → 20:00  60% → 2026-11-02 18:00  in use by ali, can (12m)  12m ago\n" +
-		"-  gamma  claude3@sixtynine.agency  -            -                       syncing (just shared)     -\n"
+		"#  NICK   ACCOUNT                   WEEK                    STATE                     UPDATED\n" +
+		"1  alpha  claude1@sixtynine.agency  28% → 2026-11-02 18:00  in use by you             2m ago\n" +
+		"2  -      claude2@sixtynine.agency  60% → 2026-11-02 18:00  in use by ali, can (12m)  12m ago\n" +
+		"-  gamma  claude3@sixtynine.agency  -                       syncing (just shared)     -\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}
@@ -1272,7 +1277,7 @@ func TestAccountsSignedOutHereFollowsEveryState(t *testing.T) {
 	f.save()
 	f.writeLocalAdd("claude4@sixtynine.agency", "delta", time.Now().Add(-time.Minute))
 	l := listing()
-	ex := exhausted("Claude3@Sixtynine.Agency", win(40, lateReset), win(100, friReset), friReset, "ali")
+	ex := exhausted("Claude3@Sixtynine.Agency", win(100, friReset), friReset, "ali")
 	ex.Rank, ex.Nickname, ex.CollectedAt = 3, "claude3", ts(nowEpoch-300)
 	l.Accounts = append(l.Accounts, ex)
 	f.fake.Listing = l
@@ -1307,8 +1312,8 @@ func TestAccountsSyncingOnly(t *testing.T) {
 	got := f.run("", "accounts")
 	assertCode(t, got, 0)
 	want := "" +
-		"#  NICK  ACCOUNT                   SESSION  WEEK  STATE                  UPDATED\n" +
-		"-  -     claude3@sixtynine.agency  -        -     syncing (just shared)  -\n"
+		"#  NICK  ACCOUNT                   WEEK  STATE                  UPDATED\n" +
+		"-  -     claude3@sixtynine.agency  -     syncing (just shared)  -\n"
 	if got.stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", got.stdout, want)
 	}
@@ -1376,8 +1381,8 @@ func TestAccountsStateShowsYourOwnUse(t *testing.T) {
 		{"exhausted and you", exhaustedWith(me), "exhausted (week resets Fri 10:00), in use by you"},
 		{"exhausted, window only, and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}}, "week"),
 			"exhausted (week), in use by you"},
-		{"exhausted, window only, someone else and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}, BusyBy: []string{"ali"}}, "session"),
-			"exhausted (session), in use by ali and you"},
+		{"exhausted, window only, someone else and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}, BusyBy: []string{"ali"}}, "week"),
+			"exhausted (week), in use by ali and you"},
 		{"exhausted, nothing known, and you", remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}},
 			"exhausted, in use by you"},
 	}
@@ -1390,7 +1395,7 @@ func TestAccountsStateShowsYourOwnUse(t *testing.T) {
 }
 
 func exhaustedWith(c remote.Claim) remote.Account {
-	a := exhausted(email1, win(40, lateReset), win(100, friReset), friReset)
+	a := exhausted(email1, win(100, friReset), friReset)
 	a.Claims = []remote.Claim{c}
 	return a
 }

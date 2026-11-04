@@ -5,62 +5,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/muratgozel/julienning/internal/remote"
 )
 
-// Window names of an exhausted report, as the Worker spells them.
-const (
-	WindowSession = remote.WindowSession
-	WindowWeek    = remote.WindowWeek
-)
-
-// RefusalWindow decides which window a usage-limit refusal is about. Claude
-// names the weekly limit ("You've hit your weekly limit"), so a text that
-// mentions a week wins. Otherwise the last report this machine sent decides:
-// the window with the higher usage, the session on a tie or without one. A
-// window whose reset has passed since that report counts as empty: the
-// session window rolls over every five hours while the week keeps filling,
-// and a refusal then is about the week.
-func RefusalWindow(text string, sent *Sent, now time.Time) string {
-	if strings.Contains(strings.ToLower(text), "week") {
-		return WindowWeek
-	}
-	if sent == nil || sent.SessionResets <= 0 || sent.WeekResets <= 0 {
-		return WindowSession
-	}
-	session, week := sent.SessionUsed, sent.WeekUsed
-	if !time.Unix(sent.SessionResets, 0).After(now) {
-		session = 0
-	}
-	if !time.Unix(sent.WeekResets, 0).After(now) {
-		week = 0
-	}
-	if week > session {
-		return WindowWeek
-	}
-	return WindowSession
-}
-
-// RefusalReset returns when window frees up again: the reset named in the
-// refusal text (see ParseRefusalReset), else the reset the last sent report
-// had for that window while it is still ahead of now. ok is false when
-// neither is known.
-func RefusalReset(text, window string, sent *Sent, now time.Time) (time.Time, bool) {
+// RefusalReset returns when the account takes work again: the reset named in
+// the refusal text (see ParseRefusalReset), else the weekly reset of the last
+// sent report while it is still ahead of now. ok is false when neither is
+// known. Every refusal is reported against the week, the only usage window
+// left (the five-hour one went away around 2026-10-31), a refusal for a
+// model's own weekly limit ("You've hit your Opus limit") included.
+func RefusalReset(text string, sent *Sent, now time.Time) (time.Time, bool) {
 	if t, ok := ParseRefusalReset(text, now); ok {
 		return t, true
 	}
-	if sent == nil {
+	if sent == nil || sent.WeekResets <= 0 {
 		return time.Time{}, false
 	}
-	epoch := sent.SessionResets
-	if window == WindowWeek {
-		epoch = sent.WeekResets
-	}
-	if epoch <= 0 {
-		return time.Time{}, false
-	}
-	if t := time.Unix(epoch, 0); t.After(now) {
+	if t := time.Unix(sent.WeekResets, 0); t.After(now) {
 		return t, true
 	}
 	return time.Time{}, false

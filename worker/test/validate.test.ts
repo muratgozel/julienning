@@ -7,6 +7,7 @@ import {
   MAX_BODY_BYTES,
   parseClaimRecord,
   parseExhaustedRecord,
+  parseProbeRecord,
   parseShareRecord,
   parseUsageRecord,
   readJsonBody,
@@ -30,7 +31,6 @@ const NOW = new Date("2026-09-16T12:00:00Z");
 
 function goodUsage(): unknown {
   return {
-    session: { used: 50, resets_at: "2026-09-16T14:30:00Z" },
     week: { used: 28, resets_at: "2026-09-22T18:00:00Z" },
     collected_at: "2026-09-16T12:18:57Z",
     reporter: { dev: "murat", machine_id: "3fa9c2d1e07b" },
@@ -103,10 +103,10 @@ describe("dev, machine_id, timestamps", () => {
 describe("used", () => {
   it("rounds to one decimal", () => {
     const body = goodUsage() as Record<string, unknown>;
-    body.session = { used: 49.96, resets_at: "2026-09-16T14:30:00Z" };
-    expect(validateUsageBody(body).session.used).toBe(50);
-    body.session = { used: 49.94, resets_at: "2026-09-16T14:30:00Z" };
-    expect(validateUsageBody(body).session.used).toBe(49.9);
+    body.week = { used: 49.96, resets_at: "2026-09-16T14:30:00Z" };
+    expect(validateUsageBody(body).week.used).toBe(50);
+    body.week = { used: 49.94, resets_at: "2026-09-16T14:30:00Z" };
+    expect(validateUsageBody(body).week.used).toBe(49.9);
   });
 
   it("clamps values above 100 to 100: Claude Code reports more once a limit is exceeded", () => {
@@ -126,12 +126,25 @@ describe("used", () => {
 
   it("accepts 0 and rejects negative, non-finite and non-numeric values", () => {
     const ok = goodUsage() as Record<string, unknown>;
-    ok.session = { used: 0, resets_at: "2026-09-16T14:30:00Z" };
-    expect(validateUsageBody(ok).session.used).toBe(0);
+    ok.week = { used: 0, resets_at: "2026-09-16T14:30:00Z" };
+    expect(validateUsageBody(ok).week.used).toBe(0);
     for (const bad of [-1, -0.01, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "50", null, undefined]) {
       const body = goodUsage() as Record<string, unknown>;
-      body.session = { used: bad, resets_at: "2026-09-16T14:30:00Z" };
-      expect(field(() => validateUsageBody(body)), String(bad)).toBe("session.used");
+      body.week = { used: bad, resets_at: "2026-09-16T14:30:00Z" };
+      expect(field(() => validateUsageBody(body)), String(bad)).toBe("week.used");
+    }
+  });
+
+  it("drops an older CLI's session window without validating it", () => {
+    for (const session of [
+      { used: 50, resets_at: "2026-09-16T14:30:00Z" },
+      { used: -1, resets_at: "nope" },
+      "garbage",
+      null,
+    ]) {
+      const parsed = validateUsageBody({ ...(goodUsage() as object), session });
+      expect(parsed, JSON.stringify(session)).toEqual(goodUsage());
+      expect(parsed).not.toHaveProperty("session");
     }
   });
 });
@@ -139,15 +152,20 @@ describe("used", () => {
 describe("exhausted body", () => {
   const reporter = { dev: "murat", machine_id: "3FA9C2D1E07B" };
 
-  it("accepts both windows, normalizing resets_at and the reporter", () => {
+  it("accepts the week, normalizing resets_at and the reporter", () => {
     expect(validateExhaustedBody({ window: "week", resets_at: "2026-10-13T20:00:00+03:00", reporter })).toEqual({
       window: "week",
       resets_at: "2026-10-13T17:00:00Z",
       reporter: { dev: "murat", machine_id: "3fa9c2d1e07b" },
     });
-    expect(validateExhaustedBody({ window: "session", resets_at: "2026-10-13T17:00:00Z", reporter }).window).toBe(
-      "session",
-    );
+  });
+
+  it("reads an older CLI's session window as the week", () => {
+    expect(validateExhaustedBody({ window: "session", resets_at: "2026-10-13T17:00:00Z", reporter })).toEqual({
+      window: "week",
+      resets_at: "2026-10-13T17:00:00Z",
+      reporter: { dev: "murat", machine_id: "3fa9c2d1e07b" },
+    });
   });
 
   it("reads an absent or null resets_at as unknown, and keeps a past one for the handler", () => {
@@ -161,8 +179,9 @@ describe("exhausted body", () => {
   it("names the failing field", () => {
     expect(field(() => validateExhaustedBody("x"))).toBe("body");
     expect(field(() => validateExhaustedBody({ reporter }))).toBe("window");
-    for (const bad of ["five_hour", "seven_day", "Week", "", null, 1])
+    for (const bad of ["five_hour", "seven_day", "Week", "Session", "day", "", null, 1])
       expect(field(() => validateExhaustedBody({ window: bad, reporter })), String(bad)).toBe("window");
+    expect(() => validateExhaustedBody({ window: "day", reporter })).toThrow("window must be 'week'");
     for (const bad of ["", "soon", "2026-10-13", 1760374800, {}])
       expect(field(() => validateExhaustedBody({ window: "week", resets_at: bad, reporter })), String(bad)).toBe(
         "resets_at",
@@ -402,19 +421,33 @@ describe("stored metadata", () => {
     expect(parseUsageRecord({ ...(goodUsage() as object), extra: true })).toEqual(goodUsage());
     const { week: _week, ...partial } = goodUsage() as Record<string, unknown>;
     expect(parseUsageRecord(partial)).toBeNull();
-    expect(parseUsageRecord({ ...(goodUsage() as object), session: { used: -5, resets_at: "2026-09-16T14:30:00Z" } })).toBeNull();
+    expect(parseUsageRecord({ ...(goodUsage() as object), week: { used: -5, resets_at: "2026-09-16T14:30:00Z" } })).toBeNull();
     expect(parseUsageRecord(null)).toBeNull();
   });
 
+  it("reads a usage or probe record stored with a session window, dropping it", () => {
+    // Written before Claude dropped the five-hour window; a bad session must not hide the record.
+    for (const session of [{ used: 50, resets_at: "2026-09-16T14:30:00Z" }, { used: -5, resets_at: "x" }]) {
+      expect(parseUsageRecord({ ...(goodUsage() as object), session })).toEqual(goodUsage());
+      const probe = { week: { used: 0, resets_at: null }, collected_at: "2026-09-16T12:18:57Z", reporter: { dev: "murat", machine_id: "3fa9c2d1e07b" } };
+      expect(parseProbeRecord({ ...probe, session })).toEqual(probe);
+    }
+  });
+
   it("clamps a stored usage above 100 instead of dropping the record", () => {
-    const record = parseUsageRecord({ ...(goodUsage() as object), session: { used: 500, resets_at: "2026-09-16T14:30:00Z" } });
-    expect(record?.session.used).toBe(100);
+    const record = parseUsageRecord({ ...(goodUsage() as object), week: { used: 500, resets_at: "2026-09-16T14:30:00Z" } });
+    expect(record?.week.used).toBe(100);
   });
 
   it("reads an exhausted record, dropping unknown keys", () => {
-    const record = { window: "session", resets_at: "2026-09-16T14:30:00Z", at: "2026-09-16T12:00:00Z" };
+    const record = { window: "week", resets_at: "2026-09-16T14:30:00Z", at: "2026-09-16T12:00:00Z" };
     expect(parseExhaustedRecord({ ...record, dev: "ignored" })).toEqual(record);
     expect(parseExhaustedRecord({ ...record, resets_at: null })).toEqual({ ...record, resets_at: null });
+  });
+
+  it("reads an exhausted record the previous Worker stored for the session window as the week", () => {
+    const record = { window: "session", resets_at: "2026-09-16T14:30:00Z", at: "2026-09-16T12:00:00Z" };
+    expect(parseExhaustedRecord(record)).toEqual({ ...record, window: "week" });
   });
 
   it("rejects an exhausted record with a bad or missing field", () => {

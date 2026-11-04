@@ -143,8 +143,9 @@ describe("validation", () => {
 
   it("returns 400 {error, field} for bad usage bodies, before the allowlist check", async () => {
     const cases: [unknown, string][] = [
-      [{ ...JSON.parse(usageBody()), session: { used: -1, resets_at: iso(60) } }, "session.used"],
+      [{ ...JSON.parse(usageBody()), week: { used: -1, resets_at: iso(60) } }, "week.used"],
       [{ ...JSON.parse(usageBody()), week: { used: 5, resets_at: "nope" } }, "week.resets_at"],
+      [{ ...JSON.parse(usageBody()), week: undefined }, "week"],
       [{ ...JSON.parse(usageBody()), collected_at: "2026-01-01" }, "collected_at"],
       [{ ...JSON.parse(usageBody()), reporter: { dev: "MURAT", machine_id: "3fa9c2d1e07b" } }, "reporter.dev"],
       [{ ...JSON.parse(usageBody()), reporter: { dev: "murat", machine_id: "xyz" } }, "reporter.machine_id"],
@@ -156,6 +157,21 @@ describe("validation", () => {
       expect(json.field).toBe(fieldName);
       expect(json.error).toBeTruthy();
     }
+  });
+
+  it("accepts and ignores an older CLI's session window, without validating it", async () => {
+    await shared(A);
+    for (const session of [{ used: 50, resets_at: iso(120) }, { used: -1, resets_at: "nope" }, "garbage", null]) {
+      const res = await call(`/accounts/${A}/usage`, {
+        method: "PUT",
+        body: JSON.stringify({ ...JSON.parse(usageBody(MURAT, 33)), session }),
+      });
+      expect(res.status, JSON.stringify(session)).toBe(204);
+      const stored = (await usageOf(A))!;
+      expect(stored).not.toHaveProperty("session");
+      expect(stored.week.used).toBe(33);
+    }
+    expect(await getJson(A, "murat")).not.toHaveProperty("session");
   });
 
   it("rejects a body over 4 KB", async () => {
@@ -200,7 +216,7 @@ describe("share and unshare", () => {
 
   it("returns 204 and writes nothing when the email is already shared", async () => {
     await shared(A);
-    await putUsage(A, MURAT, 42, 7);
+    await putUsage(A, MURAT, 7);
     await putClaim(A, ALI);
     const before = await rawKeys();
 
@@ -246,7 +262,7 @@ describe("share and unshare", () => {
     });
 
     const text = await (await call("/accounts?dev=murat")).text();
-    expect(text.split("\n")[1]).toMatch(new RegExp(`^1\\s+claude1\\s+${A}\\s+-\\s+-\\s+free\\s+never$`));
+    expect(text.split("\n")[1]).toMatch(new RegExp(`^1\\s+claude1\\s+${A}\\s+-\\s+free\\s+never$`));
   });
 
   it("unshares with 204, deleting the share, usage and every claim key", async () => {
@@ -324,7 +340,7 @@ describe("accounts that are not shared", () => {
     expect((await share(A, ALI)).status).toBe(201);
     expect((await shareOf(A)).added_by).toEqual(ALI);
     await putUsage(A);
-    expect((await usageOf(A))!.session.used).toBe(50);
+    expect((await usageOf(A))!.week.used).toBe(28);
   });
 
   it("accepts DELETE claim with 204 and creates nothing", async () => {
@@ -346,10 +362,10 @@ describe("usage round-trip", () => {
     const account = await getJson(A, "murat");
     expect(account.email).toBe(A);
     expect(account.added_by).toEqual(MURAT);
-    expect(account.session!.used).toBe(50);
-    expect(account.session!.effective).toBe(50);
-    expect(account.session!.reset_passed).toBe(false);
+    expect(account.week!.used).toBe(28);
     expect(account.week!.effective).toBe(28);
+    expect(account.week!.reset_passed).toBe(false);
+    expect(account).not.toHaveProperty("session");
     expect(account.reporter).toEqual(MURAT);
     expect(account.state).toBe("free");
     expect(account.busy_by).toEqual([]);
@@ -368,7 +384,6 @@ describe("usage round-trip", () => {
     expect(await claimsOf(A)).toEqual(claimsBefore);
     const usage = await usageOf(A);
     expect(usage).toEqual({
-      session: { used: 50, resets_at: usage!.session.resets_at },
       week: { used: 28, resets_at: usage!.week.resets_at },
       collected_at: usage!.collected_at,
       reporter: MURAT,
@@ -381,50 +396,50 @@ describe("usage round-trip", () => {
   });
 
   it("overwrites the previous report", async () => {
-    await putUsage(A, MURAT, 10, 10);
-    await putUsage(A, ALI, 90, 80);
+    await putUsage(A, MURAT, 10);
+    await putUsage(A, ALI, 80);
     const after = await usageOf(A);
-    expect(after!.session.used).toBe(90);
+    expect(after!.week.used).toBe(80);
     expect(after!.reporter).toEqual(ALI);
   });
 
   it("ignores a report older than the stored one (lagging clock) with a silent 204", async () => {
     const newer = iso(0);
-    await putUsage(A, MURAT, 50, 28, newer);
+    await putUsage(A, MURAT, 28, newer);
     const before = await rawKeys();
 
-    const res = await sendUsage(A, ALI, 90, 80, iso(-10));
+    const res = await sendUsage(A, ALI, 80, iso(-10));
     expect(res.status).toBe(204);
     expect(await rawKeys()).toEqual(before);
   });
 
   it("applies a newer report, and one with an equal collected_at", async () => {
-    await putUsage(A, MURAT, 50, 28, iso(-10));
-    await putUsage(A, ALI, 90, 80, iso(0));
+    await putUsage(A, MURAT, 28, iso(-10));
+    await putUsage(A, ALI, 80, iso(0));
     expect((await usageOf(A))!.reporter).toEqual(ALI);
 
     const same = (await usageOf(A))!.collected_at;
-    await putUsage(A, MURAT, 11, 12, same);
+    await putUsage(A, MURAT, 12, same);
     const after = await usageOf(A);
     expect(after!.reporter).toEqual(MURAT);
-    expect(after!.session.used).toBe(11);
+    expect(after!.week.used).toBe(12);
   });
 
   it("accepts an old snapshot for an account that has no report yet", async () => {
     await putClaim(A, ALI);
-    await putUsage(A, MURAT, 50, 28, iso(-600));
-    expect((await usageOf(A))!.session.used).toBe(50);
+    await putUsage(A, MURAT, 28, iso(-600));
+    expect((await usageOf(A))!.week.used).toBe(28);
   });
 
   it("replaces an invalid stored report instead of comparing against it", async () => {
-    await seed(usageKey(A), { collected_at: iso(60), session: "garbage" });
+    await seed(usageKey(A), { collected_at: iso(60), week: "garbage" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      await putUsage(A, MURAT, 12, 34, iso(-30));
+      await putUsage(A, MURAT, 34, iso(-30));
     } finally {
       warn.mockRestore();
     }
-    expect((await usageOf(A))!.session.used).toBe(12);
+    expect((await usageOf(A))!.week.used).toBe(34);
   });
 });
 
@@ -435,7 +450,7 @@ describe("clock skew", () => {
 
   it("clamps a future collected_at to the Worker's clock before storing it", async () => {
     const before = Date.now();
-    await putUsage(A, ALI, 90, 90, iso(600)); // a reporter clock 10 h fast
+    await putUsage(A, ALI, 90, iso(600)); // a reporter clock 10 h fast
     const stored = Date.parse((await usageOf(A))!.collected_at);
     expect(stored).toBeGreaterThanOrEqual(before - 1000);
     expect(stored).toBeLessThanOrEqual(Date.now());
@@ -445,23 +460,23 @@ describe("clock skew", () => {
   });
 
   it("does not let a fast clock's report block later real reports", async () => {
-    await putUsage(A, ALI, 90, 90, iso(600));
-    await putUsage(A, MURAT, 20, 20, iso(0));
+    await putUsage(A, ALI, 90, iso(600));
+    await putUsage(A, MURAT, 20, iso(0));
     expect((await usageOf(A))!.reporter).toEqual(MURAT);
-    expect((await usageOf(A))!.session.used).toBe(20);
+    expect((await usageOf(A))!.week.used).toBe(20);
   });
 
   it("still orders against the clamped stamp: an older report is ignored", async () => {
-    await putUsage(A, ALI, 90, 90, iso(600));
+    await putUsage(A, ALI, 90, iso(600));
     const before = await rawKeys();
-    await putUsage(A, MURAT, 20, 20, iso(-5));
+    await putUsage(A, MURAT, 20, iso(-5));
     expect(await rawKeys()).toEqual(before);
   });
 
   it("clamps a stored future stamp too when comparing", async () => {
     // As a record written before clamping existed (or by hand) would be.
-    await seed(usageKey(A), JSON.parse(usageBody(ALI, 90, 90, iso(600))));
-    await putUsage(A, MURAT, 20, 20, iso(0));
+    await seed(usageKey(A), JSON.parse(usageBody(ALI, 90, iso(600))));
+    await putUsage(A, MURAT, 20, iso(0));
     expect((await usageOf(A))!.reporter).toEqual(MURAT);
   });
 });
@@ -505,9 +520,9 @@ describe("usage refreshes the reporter's claim", () => {
   });
 
   it("does not refresh anything when the report is stale", async () => {
-    await putUsage(A, ALI, 10, 10, iso(0));
+    await putUsage(A, ALI, 10, iso(0));
     const before = await rawKeys();
-    await putUsage(A, MURAT, 10, 10, iso(-5));
+    await putUsage(A, MURAT, 10, iso(-5));
     expect(await rawKeys()).toEqual(before);
   });
 });
@@ -611,7 +626,7 @@ describe("claims", () => {
   });
 
   it("ranks a claimed-only account in the unknown band", async () => {
-    await putUsage(A, MURAT, 99, 99);
+    await putUsage(A, MURAT, 99);
     await putClaim(B, MURAT);
 
     expect(await usageOf(B)).toBeNull();
@@ -691,9 +706,9 @@ describe("kv hygiene", () => {
 describe("listing perspectives", () => {
   beforeEach(async () => {
     await shared(A, B);
-    await putUsage(A, MURAT, 10, 10);
+    await putUsage(A, MURAT, 10);
     await putClaim(A, MURAT);
-    await putUsage(B, ALI, 90, 90);
+    await putUsage(B, ALI, 90);
   });
 
   it("hides a dev's own claim and activity from them", async () => {
@@ -789,7 +804,6 @@ describe("response formats", () => {
       "numbers_at",
       "rank",
       "reporter",
-      "session",
       "source",
       "state",
       "week",
@@ -800,7 +814,7 @@ describe("response formats", () => {
 
   it("serializes exhausted as a boolean and exhausted_until as null when usable", async () => {
     await shared(A);
-    await putUsage(A, MURAT, 99, 99);
+    await putUsage(A, MURAT, 99);
     const raw = await (await call("/accounts?format=json&dev=murat")).text();
     expect(raw).toContain('"exhausted":false');
     expect(raw).toContain('"exhausted_until":null');
@@ -811,8 +825,8 @@ describe("response formats", () => {
 
   it("sinks an exhausted account below a usable one, end to end", async () => {
     await shared(A, B);
-    await putUsage(A, ALI, 0, 100);
-    await putUsage(B, MURAT, 4, 13);
+    await putUsage(A, ALI, 100);
+    await putUsage(B, MURAT, 13);
 
     const res = await listJson("&dev=murat");
     expect(res.accounts.map((a) => a.email)).toEqual([B, A]);
@@ -838,30 +852,29 @@ describe("response formats", () => {
 
   it("defaults to an aligned text table in UTC", async () => {
     await shared(A);
-    await putUsage(A, MURAT, 50, 28);
+    await putUsage(A, MURAT, 28);
     const res = await call("/accounts?dev=murat");
     expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     const text = await res.text();
-    expect(text.split("\n")[0]).toMatch(/^#\s+NICK\s+ACCOUNT\s+SESSION\s+WEEK\s+STATE\s+UPDATED$/);
+    expect(text.split("\n")[0]).toMatch(/^#\s+NICK\s+ACCOUNT\s+WEEK\s+STATE\s+UPDATED$/);
     expect(text).toContain(A);
-    expect(text).toContain("50% →");
+    expect(text).toContain("28% →");
     expect(text.trimEnd().endsWith("(UTC)")).toBe(true);
   });
 
-  it("renders reset-passed windows as reset with 0%", async () => {
+  it("renders a reset-passed week as reset with 0%", async () => {
     await shared(A);
     await call(`/accounts/${A}/usage`, {
       method: "PUT",
       body: JSON.stringify({
-        session: { used: 88, resets_at: iso(-5) },
-        week: { used: 44, resets_at: iso(4000) },
+        week: { used: 88, resets_at: iso(-5) },
         collected_at: iso(0),
         reporter: MURAT,
       }),
     });
 
     const json = await listJson("&dev=murat");
-    expect(byEmail(json, A).session).toMatchObject({ used: 88, effective: 0, reset_passed: true });
+    expect(byEmail(json, A).week).toMatchObject({ used: 88, effective: 0, reset_passed: true });
 
     const text = await (await call("/accounts?dev=murat")).text();
     expect(text).toContain("0% → reset");

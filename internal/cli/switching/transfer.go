@@ -126,7 +126,7 @@ func Choose(target string, loc *time.Location) (Choice, error) {
 
 // MovingLine heads the transfer's session picker:
 //
-//	Moving into alpha (claude1@x.io) in ~/.claude-x on box — session 12% → 17:30, week 28% → Tue 21:00.
+//	Moving into alpha (claude1@x.io) in ~/.claude-x on box — week 28% → Tue 21:00.
 //
 // dir is the account dir as the destination shortens it; machine is "on
 // box" or "on this machine".

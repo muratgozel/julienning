@@ -192,6 +192,14 @@ The Worker requires a nickname when an email is shared for the first time
 `400 nickname is required to share a new account` when sharing a new email
 and has to be updated; everything else it does keeps working.
 
+Claude dropped the five-hour session window (~2026-10-31), and julienning
+now tracks the week only. Deploy the Worker from that release before the
+teammates' CLIs update to it (they update themselves within a day): an older
+Worker requires a `session` window in usage reports and probes and answers a
+newer CLI with `400 session must be an object` (logged as `SEND_FAILED` /
+`PROBE_FAILED`). The newer Worker accepts and ignores an older CLI's
+`session`.
+
 ## 11. Local development
 
 ```sh

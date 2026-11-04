@@ -136,12 +136,12 @@ func localConfigs(cfg *config.Config) (byEmail, signedOut map[string][]config.Co
 	return byEmail, signedOut, unreadable
 }
 
-// summary renders "session 12% → 17:30, week 28% → Tue 21:00" for one account.
+// summary renders "week 28% → Tue 21:00" (the only usage window) for one account.
 func summary(a *remote.Account, now time.Time, loc *time.Location) string {
-	if a == nil || (a.Session == nil && a.Week == nil) {
+	if a == nil || a.Week == nil {
 		return "no usage reported yet"
 	}
-	return "session " + window(a.Session, now, loc) + ", week " + window(a.Week, now, loc)
+	return "week " + window(a.Week, now, loc)
 }
 
 func window(w *remote.Window, now time.Time, loc *time.Location) string {

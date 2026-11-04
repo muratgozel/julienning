@@ -10,7 +10,7 @@ runs. macOS and Linux, zsh and bash; Claude Code must already be installed.
 **Privacy.** julienning never reads, copies or sends Claude credentials; it
 switches accounts only through `CLAUDE_CONFIG_DIR`. Only accounts you share
 with the team report anything, and only to your team's Worker: the email and
-its nickname, session and weekly usage, rate-limit refusals, whether you have
+its nickname, weekly usage, rate-limit refusals, whether you have
 it open, your dev name and a random machine id. Personal accounts and session
 lists stay on your machine. Details: [Policy note](docs/REFERENCE.md#policy-note).
 
@@ -53,13 +53,13 @@ julienning login <nickname>  # sign that account in here (a new dir, or again af
 
 ```
 $ julienning accounts
-#  NICK   ACCOUNT              SESSION      WEEK              STATE                              UPDATED
-1  alpha  claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               2m ago
-2  beta   claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           12m ago
-3  gamma  claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
+#  NICK   ACCOUNT              WEEK              STATE                              UPDATED
+1  alpha  claude1@example.com  11% → Fri 00:28   free                               2m ago
+2  beta   claude2@example.com  40% → Fri 00:28   in use by ali, can (12m)           12m ago
+3  gamma  claude5@example.com  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
 ```
 
-SESSION and WEEK are the used % and reset time in your local zone. STATE
+WEEK is the weekly limit's used % and reset time in your local zone. STATE
 ends in `, signed out here` when this machine lost an account's login
 (`julienning login <nickname>` signs it in again). `next` takes the
 best-ranked account logged in on this machine; `julienning configs` shows

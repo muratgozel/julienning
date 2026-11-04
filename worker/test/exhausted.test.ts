@@ -46,8 +46,8 @@ beforeEach(() => {
 });
 
 const HOUR_SEC = 60 * 60;
-const SESSION_SEC = 5 * HOUR_SEC;
 const WEEK_SEC = 7 * 24 * HOUR_SEC;
+const WEEK_MIN = WEEK_SEC / 60;
 
 /** Asserts `expiration` is `ttlSec` after the request, which ran between `before` and now. */
 function expectExpiresIn(expiration: number | undefined, ttlSec: number, before: number): void {
@@ -70,13 +70,13 @@ describe("PUT /accounts/:email/exhausted: auth, routing and sharing", () => {
   it("needs the Bearer token; ?token= does not authorize a PUT", async () => {
     await shared(A);
     for (const init of [{ auth: false }, { auth: false, headers: { authorization: "Bearer nope" } }]) {
-      const res = await call(`/accounts/${A}/exhausted`, { method: "PUT", body: exhaustedBody("session"), ...init });
+      const res = await call(`/accounts/${A}/exhausted`, { method: "PUT", body: exhaustedBody("week"), ...init });
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ error: "unauthorized" });
     }
     const viaQuery = await SELF.fetch(`${BASE}/accounts/${A}/exhausted?token=${TOKEN}`, {
       method: "PUT",
-      body: exhaustedBody("session"),
+      body: exhaustedBody("week"),
       headers: { "content-type": "application/json" },
     });
     expect(viaQuery.status).toBe(401);
@@ -107,10 +107,13 @@ describe("PUT /accounts/:email/exhausted: auth, routing and sharing", () => {
       [JSON.stringify({ reporter }), "window"],
       [JSON.stringify({ window: "day", reporter }), "window"],
       [JSON.stringify({ window: "Session", reporter }), "window"],
+      [JSON.stringify({ window: "Week", reporter }), "window"],
+      [JSON.stringify({ window: "five_hour", reporter }), "window"],
       [JSON.stringify({ window: 5, reporter }), "window"],
+      // An older CLI's "session" passes the window check (it reads as "week").
       [JSON.stringify({ window: "session", resets_at: "tomorrow", reporter }), "resets_at"],
-      [JSON.stringify({ window: "session", resets_at: "2026-10-13", reporter }), "resets_at"],
-      [JSON.stringify({ window: "session", resets_at: "2026-10-13T17:00:00", reporter }), "resets_at"],
+      [JSON.stringify({ window: "week", resets_at: "2026-10-13", reporter }), "resets_at"],
+      [JSON.stringify({ window: "week", resets_at: "2026-10-13T17:00:00", reporter }), "resets_at"],
       [JSON.stringify({ window: "week", resets_at: 1760374800, reporter }), "resets_at"],
       [JSON.stringify({ window: "week", resets_at: "", reporter }), "resets_at"],
       [JSON.stringify({ window: "week" }), "reporter"],
@@ -133,6 +136,14 @@ describe("PUT /accounts/:email/exhausted: auth, routing and sharing", () => {
       }
     }
     expect(await keyNames()).toEqual([shareKey(B)]);
+  });
+
+  it("names week as the only window in the error", async () => {
+    const res = await call(`/accounts/${A}/exhausted`, {
+      method: "PUT",
+      body: JSON.stringify({ window: "day", reporter: MURAT }),
+    });
+    expect(await res.json()).toEqual({ error: "window must be 'week'", field: "window" });
   });
 
   it("rejects a bad email in the path", async () => {
@@ -178,19 +189,29 @@ describe("PUT /accounts/:email/exhausted: storage", () => {
     const offset =
       `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}` +
       `T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}+03:00`;
-    await putExhausted(A, "session", offset);
+    await putExhausted(A, "week", offset);
     expect((await exhaustedOf(A, MURAT))!.record.resets_at).toBe(reset.toISOString().replace(/\.000Z$/, "Z"));
   });
 
-  it("keeps one record per reporter: a second report replaces the first, whichever window", async () => {
+  it("keeps one record per reporter: a second report replaces the first", async () => {
     await putExhausted(A, "week", iso(3000));
-    await putExhausted(A, "session", iso(60));
-    await putExhausted(A, "session", iso(90), MURAT_LAPTOP);
+    await putExhausted(A, "week", iso(60));
+    await putExhausted(A, "week", iso(90), MURAT_LAPTOP);
     await putExhausted(A, "week", null, ALI);
-    expect((await exhaustedOf(A, MURAT))!.record).toMatchObject({ window: "session", resets_at: iso(60) });
-    expect((await exhaustedOf(A, MURAT_LAPTOP))!.record).toMatchObject({ window: "session", resets_at: iso(90) });
+    expect((await exhaustedOf(A, MURAT))!.record).toMatchObject({ window: "week", resets_at: iso(60) });
+    expect((await exhaustedOf(A, MURAT_LAPTOP))!.record).toMatchObject({ window: "week", resets_at: iso(90) });
     expect((await exhaustedOf(A, ALI))!.record).toMatchObject({ window: "week", resets_at: null });
     expect(await keyNames("exhausted:")).toHaveLength(3);
+  });
+
+  it("stores an older CLI's session refusal as a week refusal", async () => {
+    // Claude dropped the five-hour window; the refusal is real all the same.
+    const before = Date.now();
+    await putExhausted(A, "session", iso(90));
+    const stored = (await exhaustedOf(A, MURAT))!;
+    expect(stored.record).toEqual({ window: "week", resets_at: iso(90), at: stored.record.at });
+    expectExpiresIn(stored.expiration, 90 * 60, before);
+    expect(await getJson(A, "can")).toMatchObject({ exhausted: true, exhausted_until: iso(90), exhausted_window: "week" });
   });
 });
 
@@ -199,84 +220,78 @@ describe("resets_at resolution and expiration", () => {
     await shared(A);
   });
 
-  it.each([
-    ["session", 90],
-    ["week", 3 * 24 * 60],
-  ] as const)("keeps a future %s reset and expires the key then", async (window, inMin) => {
+  it.each([90, 3 * 24 * 60])("keeps a future reset %i minutes out and expires the key then", async (inMin) => {
     const before = Date.now();
-    await putExhausted(A, window, iso(inMin));
+    await putExhausted(A, "week", iso(inMin));
     const stored = (await exhaustedOf(A, MURAT))!;
     expect(stored.record.resets_at).toBe(iso(inMin));
     expectExpiresIn(stored.expiration, inMin * 60, before);
   });
 
-  it.each([
-    ["session", SESSION_SEC],
-    ["week", WEEK_SEC],
-  ] as const)("stores an unknown %s reset as null and expires it after one window length", async (window, ttl) => {
+  it.each(["week", "session"])("stores an unknown reset (window %s) as null and expires it after a week", async (window) => {
     for (const resetsAt of [undefined, null]) {
       const before = Date.now();
       await putExhausted(A, window, resetsAt);
       const stored = (await exhaustedOf(A, MURAT))!;
-      expect(stored.record.resets_at).toBeNull();
-      expectExpiresIn(stored.expiration, ttl, before);
+      expect(stored.record).toMatchObject({ window: "week", resets_at: null });
+      expectExpiresIn(stored.expiration, WEEK_SEC, before);
     }
   });
 
-  it("falls back to the usage record's reset for the same window when the reported one has passed", async () => {
-    await putWindows(A, { used: 40, resets_at: iso(150) }, { used: 70, resets_at: iso(5000) }, ALI);
-    for (const [window, want] of [
-      ["session", iso(150)],
-      ["week", iso(5000)],
-    ] as const) {
+  it("falls back to the usage record's week reset when the reported one has passed", async () => {
+    await putWindows(A, { used: 70, resets_at: iso(5000) }, ALI);
+    const want = iso(5000);
+    for (const window of ["week", "session"]) {
       for (const reported of [iso(-30), undefined, null]) {
         const before = Date.now();
         await putExhausted(A, window, reported);
         const stored = (await exhaustedOf(A, MURAT))!;
-        expect(stored.record, `${window} ${reported}`).toMatchObject({ window, resets_at: want });
+        expect(stored.record, `${window} ${reported}`).toMatchObject({ window: "week", resets_at: want });
         expectExpiresIn(stored.expiration, (Date.parse(want) - before) / 1000, before);
       }
     }
   });
 
   it("prefers a future reported reset over the usage record's", async () => {
-    await putWindows(A, { used: 40, resets_at: iso(150) }, { used: 70, resets_at: iso(5000) });
-    await putExhausted(A, "session", iso(100));
+    await putWindows(A, { used: 70, resets_at: iso(5000) });
+    await putExhausted(A, "week", iso(100));
     expect((await exhaustedOf(A, MURAT))!.record.resets_at).toBe(iso(100));
   });
 
-  it("stores null when neither the report nor the matching usage window has a future reset", async () => {
-    // The session window has reset; only the week's reset is ahead, and it is the other window.
-    await putWindows(A, { used: 100, resets_at: iso(-10) }, { used: 70, resets_at: iso(5000) });
+  it("stores null when neither the report nor the usage record has a future reset", async () => {
+    // The week in the usage record has reset already.
+    await putWindows(A, { used: 70, resets_at: iso(-10) });
     const before = Date.now();
-    await putExhausted(A, "session", iso(-5));
+    await putExhausted(A, "week", iso(-5));
     const stored = (await exhaustedOf(A, MURAT))!;
     expect(stored.record.resets_at).toBeNull();
-    expectExpiresIn(stored.expiration, SESSION_SEC, before);
+    expectExpiresIn(stored.expiration, WEEK_SEC, before);
   });
 
-  it("does not believe a reset further out than the window can last", async () => {
-    // A session reset two days out cannot be the running 5-hour window's
-    // (a misparsed refusal message); the usage record's reset is used instead.
-    await putWindows(A, { used: 40, resets_at: iso(150) }, { used: 70, resets_at: iso(5000) });
-    await putExhausted(A, "session", iso(2 * 24 * 60));
-    expect((await exhaustedOf(A, MURAT))!.record.resets_at).toBe(iso(150));
-    // A week reset 30 days out: the usage record's week reset, and unknown
-    // for an account that has no usage record.
+  it("does not believe a reset further out than a week can last", async () => {
+    // A reset 30 days out (a misparsed refusal message): the usage record's
+    // week reset, and unknown for an account that has no usage record.
+    await putWindows(A, { used: 70, resets_at: iso(5000) });
     await putExhausted(A, "week", iso(30 * 24 * 60), ALI);
     expect((await exhaustedOf(A, ALI))!.record.resets_at).toBe(iso(5000));
     await shared(B);
     await putExhausted(B, "week", iso(30 * 24 * 60), ALI);
     expect((await exhaustedOf(B, ALI))!.record.resets_at).toBeNull();
-    // Within a window length plus an hour of tolerance is still believed.
-    await putExhausted(A, "session", iso(5 * 60 + 30), CAN);
-    expect((await exhaustedOf(A, CAN))!.record.resets_at).toBe(iso(5 * 60 + 30));
+    // Past a week plus an hour of tolerance: not believed either.
+    await putExhausted(A, "week", iso(WEEK_MIN + 90), MURAT);
+    expect((await exhaustedOf(A, MURAT))!.record.resets_at).toBe(iso(5000));
+    // Within a week plus the tolerance is still believed.
+    await putExhausted(A, "week", iso(WEEK_MIN + 30), CAN);
+    expect((await exhaustedOf(A, CAN))!.record.resets_at).toBe(iso(WEEK_MIN + 30));
+    // An older CLI's session refusal two days out is a believable week reset.
+    await putExhausted(A, "session", iso(2 * 24 * 60), MURAT_LAPTOP);
+    expect((await exhaustedOf(A, MURAT_LAPTOP))!.record.resets_at).toBe(iso(2 * 24 * 60));
   });
 
   it("never asks KV for an expiration under 60 s", async () => {
     const soon = new Date(Date.now() + 10_000).toISOString();
     const before = Date.now();
-    await putExhausted(A, "session", soon);
+    await putExhausted(A, "week", soon);
     expectExpiresIn((await exhaustedOf(A, MURAT))!.expiration, 60, before);
   });
 });
@@ -287,9 +302,10 @@ describe("ranking an account refused for a limit", () => {
   });
 
   it("marks it exhausted and ranks it below a busier usable account", async () => {
-    await putUsage(A, ALI, 10, 10);
-    await putUsage(B, CAN, 80, 90);
-    await putExhausted(A, "session", iso(90), ALI);
+    await putUsage(A, ALI, 10);
+    await putUsage(B, CAN, 90);
+    // The usage records' week resets in 4000 minutes; the refusal names the same reset, to the minute.
+    await putExhausted(A, "week", iso(3990), ALI);
 
     const res = await listJson("&dev=murat");
     expect(res.accounts.map((a) => a.email)).toEqual([B, A]);
@@ -297,37 +313,37 @@ describe("ranking an account refused for a limit", () => {
       rank: 2,
       state: "exhausted",
       exhausted: true,
-      exhausted_until: iso(90),
-      exhausted_window: "session",
+      exhausted_until: iso(3990),
+      exhausted_window: "week",
       busy_by: ["ali"],
     });
     expect(byEmail(res, B)).toMatchObject({ exhausted: false, exhausted_until: null, exhausted_window: null });
     // The usage numbers are reported as they are; only the exhaustion fields change.
-    expect(byEmail(res, A).session).toMatchObject({ used: 10, effective: 10 });
+    expect(byEmail(res, A).week).toMatchObject({ used: 10, effective: 10 });
 
     const { rank: _rank, ...listed } = byEmail(res, A);
     expect(await getJson(A, "murat")).toEqual(listed);
   });
 
-  it("is not cleared by a newer usage report under 100% for the same window", async () => {
+  it("is not cleared by a newer usage report under 100%", async () => {
     // After a refusal Claude Code keeps feeding the status line stale numbers.
-    await putExhausted(A, "session", iso(90));
-    await putWindows(A, { used: 62, resets_at: iso(90) }, { used: 40, resets_at: iso(5000) });
-    await putUsage(A, ALI, 0, 0);
-    expect(await getJson(A, "murat")).toMatchObject({ exhausted: true, exhausted_until: iso(90) });
+    await putExhausted(A, "week", iso(4000));
+    await putWindows(A, { used: 40, resets_at: iso(4000) });
+    await putUsage(A, ALI, 0);
+    expect(await getJson(A, "murat")).toMatchObject({ exhausted: true, exhausted_until: iso(4000) });
   });
 
-  it("is not cleared by a same-window usage reset a little later than the reported one", async () => {
+  it("is not cleared by a usage reset a little later than the reported one", async () => {
     // The refusal text gives the reset to the minute; the status line to the second.
-    await putExhausted(A, "session", iso(90));
-    await putWindows(A, { used: 62, resets_at: iso(92) }, { used: 40, resets_at: iso(5000) });
+    await putExhausted(A, "week", iso(3990));
+    await putWindows(A, { used: 40, resets_at: iso(3990 + 59) });
     expect((await getJson(A, "murat")).exhausted).toBe(true);
   });
 
-  it("ignores a record superseded by a later usage window of the same name", async () => {
-    await putExhausted(A, "session", iso(30));
-    // A new 5-hour window has started since the refusal.
-    await putWindows(A, { used: 3, resets_at: iso(30 + 5 * 60) }, { used: 40, resets_at: iso(5000) });
+  it("ignores a record superseded by a later week", async () => {
+    await putExhausted(A, "week", iso(30));
+    // A new week has started since the refusal.
+    await putWindows(A, { used: 40, resets_at: iso(30 + WEEK_MIN) });
     expect(await getJson(A, "murat")).toMatchObject({
       state: "free",
       exhausted: false,
@@ -336,55 +352,56 @@ describe("ranking an account refused for a limit", () => {
     });
   });
 
-  it("is not superseded by the other window's later reset", async () => {
-    await putExhausted(A, "session", iso(30));
-    await putWindows(A, { used: 3, resets_at: iso(20) }, { used: 40, resets_at: iso(5000) });
-    expect((await getJson(A, "murat")).exhausted_window).toBe("session");
-  });
-
   it("ignores a record whose reset has passed, even before KV expires it", async () => {
     await seed(exhaustedKey(A, MURAT), { window: "week", resets_at: iso(-1), at: iso(-600) });
-    await seed(exhaustedKey(A, ALI), { window: "session", resets_at: null, at: iso(-5 * 60 - 1) });
+    // An old Worker's session record with no reset counts for a week, like any other.
+    await seed(exhaustedKey(A, ALI), { window: "session", resets_at: null, at: iso(-WEEK_MIN - 1) });
     expect(await getJson(A, "can")).toMatchObject({ state: "free", exhausted: false, exhausted_window: null });
+  });
+
+  it("reads a session record stored by the previous Worker as a week refusal", async () => {
+    await seed(exhaustedKey(A, ALI), { window: "session", resets_at: iso(60), at: iso(-10) });
+    for (const account of [byEmail(await listJson(), A), await getJson(A, "can")])
+      expect(account).toMatchObject({ exhausted: true, exhausted_until: iso(60), exhausted_window: "week" });
   });
 
   it("reports an unknown reset as null and sorts it after known ones", async () => {
     await putExhausted(A, "week", null);
-    await putExhausted(B, "session", iso(200));
+    await putExhausted(B, "week", iso(200));
     const res = await listJson("&dev=murat");
     expect(res.accounts.map((a) => a.email)).toEqual([B, A]);
     expect(byEmail(res, A)).toMatchObject({ exhausted: true, exhausted_until: null, exhausted_window: "week" });
     expect(stateLine(await textListing(), A)).toMatch(/\sexhausted \(week\)\s/);
   });
 
-  it("waits on the later of a window at 100% and a record", async () => {
-    // Week at 100% resets last: it decides.
-    await putWindows(A, { used: 20, resets_at: iso(120) }, { used: 100, resets_at: iso(4000) });
-    await putExhausted(A, "session", iso(120));
+  it("waits on the later of the week at 100% and a record", async () => {
+    // The week at 100% resets last: it decides.
+    await putWindows(A, { used: 100, resets_at: iso(4000) });
+    await putExhausted(A, "week", iso(3990));
     expect(await getJson(A)).toMatchObject({ exhausted_until: iso(4000), exhausted_window: "week" });
 
-    // Session at 100%, refused for the week, which resets later: the record decides.
-    await putWindows(B, { used: 100, resets_at: iso(120) }, { used: 70, resets_at: iso(3000) });
-    await putExhausted(B, "week", iso(3000));
-    expect(await getJson(B)).toMatchObject({ exhausted_until: iso(3000), exhausted_window: "week" });
+    // The refusal names a slightly later reset: the record decides.
+    await putWindows(B, { used: 100, resets_at: iso(3000) });
+    await putExhausted(B, "week", iso(3030));
+    expect(await getJson(B)).toMatchObject({ exhausted_until: iso(3030), exhausted_window: "week" });
     expect(stateLine(await textListing(), B)).toMatch(/\sexhausted \(week resets [^)]+\)\s/);
   });
 
   it("takes the latest known reset when one record has none", async () => {
-    // No usage, so the week record cannot learn its reset.
+    // No usage, so ali's record cannot learn its reset.
     await putExhausted(A, "week", null, ALI);
-    await putExhausted(A, "session", iso(100), CAN);
-    expect(await getJson(A)).toMatchObject({ exhausted_until: iso(100), exhausted_window: "session" });
+    await putExhausted(A, "week", iso(100), CAN);
+    expect(await getJson(A)).toMatchObject({ exhausted_until: iso(100), exhausted_window: "week" });
   });
 
-  it("names the week when only unknown resets remain for both windows", async () => {
+  it("names the week when only unknown resets remain, old session records included", async () => {
     await putExhausted(A, "session", null, ALI);
     await putExhausted(A, "week", null, CAN);
     expect(await getJson(A)).toMatchObject({ exhausted_until: null, exhausted_window: "week" });
   });
 
   it("keeps exhausted_window null and the field present when usable", async () => {
-    await putUsage(A, MURAT, 99, 99);
+    await putUsage(A, MURAT, 99);
     const raw = await (await call(`/accounts/${A}?dev=murat`)).text();
     expect(raw).toContain('"exhausted_window":null');
   });
@@ -396,9 +413,9 @@ describe("usage above 100%", () => {
   });
 
   it("is stored as 100 and marks the account exhausted", async () => {
-    await putWindows(A, { used: 100.4, resets_at: iso(60) }, { used: 250, resets_at: iso(4000) });
+    await putWindows(A, { used: 250, resets_at: iso(4000) });
     const usage = (await usageOf(A))!;
-    expect(usage.session.used).toBe(100);
+    expect(usage).not.toHaveProperty("session");
     expect(usage.week.used).toBe(100);
     expect(await getJson(A)).toMatchObject({ exhausted: true, exhausted_until: iso(4000), exhausted_window: "week" });
   });
@@ -408,14 +425,13 @@ describe("usage above 100%", () => {
       const res = await call(`/accounts/${A}/usage`, {
         method: "PUT",
         body: JSON.stringify({
-          session: { used, resets_at: iso(60) },
-          week: { used: 1, resets_at: iso(4000) },
+          week: { used, resets_at: iso(4000) },
           collected_at: iso(0),
           reporter: MURAT,
         }),
       });
       expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ field: "session.used" });
+      expect(await res.json()).toMatchObject({ field: "week.used" });
     }
   });
 });
@@ -433,7 +449,7 @@ describe("unshare and stray keys", () => {
 
   it("deletes every exhausted key of the account and no other", async () => {
     await shared(A, B);
-    await putExhausted(A, "session", iso(60), MURAT);
+    await putExhausted(A, "week", iso(60), MURAT);
     await putExhausted(A, "week", null, ALI);
     await putExhausted(B, "week", null, CAN);
     expect((await unshare(A)).status).toBe(204);
@@ -460,7 +476,7 @@ describe("unshare and stray keys", () => {
 
   it("drops only a corrupt record, warning about it", async () => {
     await shared(A);
-    await putExhausted(A, "session", iso(60), CAN);
+    await putExhausted(A, "week", iso(60), CAN);
     const corrupt: [string, unknown][] = [
       [exhaustedKey(A, ALI), { window: "day", resets_at: null, at: iso(0) }],
       [exhaustedKey(A, MURAT), { window: "week", resets_at: "soon", at: iso(0) }],
@@ -471,7 +487,7 @@ describe("unshare and stray keys", () => {
     for (const [key, meta] of corrupt) await seed(key, meta);
 
     for (const account of [byEmail(await listJson(), A), await getJson(A)])
-      expect(account).toMatchObject({ exhausted: true, exhausted_until: iso(60), exhausted_window: "session" });
+      expect(account).toMatchObject({ exhausted: true, exhausted_until: iso(60), exhausted_window: "week" });
     const warned = warn.mock.calls.flat().join("\n");
     for (const [key] of corrupt) expect(warned).toContain(key);
   });

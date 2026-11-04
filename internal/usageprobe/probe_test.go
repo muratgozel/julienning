@@ -137,8 +137,9 @@ func usageOut(limits string) string {
 		`{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0,"num_turns":0}` + "\n"
 }
 
+// realLimits has the rows Claude sends since the five-hour window went away
+// (~2026-10-31: weekly_all and weekly_scoped, no session row).
 const realLimits = `[
- {"kind":"session","group":"session","percent":7,"resets_at":"2026-10-19T13:40:00.345468+00:00","scope":null,"severity":"normal","is_active":false},
  {"kind":"weekly_all","group":"weekly","percent":83,"resets_at":"2026-10-24T14:00:00.345489+00:00","scope":null,"severity":"warning","is_active":true},
  {"kind":"weekly_scoped","group":"weekly","percent":0,"resets_at":"2026-10-24T14:00:00+00:00","scope":{"model":{"display_name":"Fable"},"surface":null},"severity":"normal","is_active":false}
 ]`
@@ -154,13 +155,28 @@ func TestRunReadsTheUsageReport(t *testing.T) {
 	if r.Outcome != OK || r.Err != nil {
 		t.Fatalf("outcome %v err %v", r.Outcome, r.Err)
 	}
-	wantS := time.Date(2026, 10, 19, 13, 40, 0, 0, time.UTC)
 	wantW := time.Date(2026, 10, 24, 14, 0, 0, 0, time.UTC)
-	if r.Session.Used != 7 || !r.Session.ResetsAt.Equal(wantS) || r.Week.Used != 83 || !r.Week.ResetsAt.Equal(wantW) {
-		t.Fatalf("windows: %+v %v / %+v %v", r.Session, r.Session.ResetsAt, r.Week, r.Week.ResetsAt)
+	if r.Week.Used != 83 || !r.Week.ResetsAt.Equal(wantW) {
+		t.Fatalf("week: %+v %v", r.Week, r.Week.ResetsAt)
 	}
 	if !r.At.Equal(probeNow.Truncate(time.Second)) {
 		t.Fatalf("at: %v", r.At)
+	}
+}
+
+// A session row, as Claude sent before ~2026-10-31, is ignored whatever it
+// says: only weekly_all counts.
+func TestRunIgnoresASessionRow(t *testing.T) {
+	h := newHarness(t)
+	d := h.dir("j1", "a@x.io")
+	for _, session := range []string{
+		`{"kind":"session","group":"session","percent":7,"resets_at":"2026-10-19T13:40:00.345468+00:00"}`,
+		`{"kind":"session","percent":"x","resets_at":5}`,
+	} {
+		h.write(d, "out.jsonl", usageOut(`[`+session+`,{"kind":"weekly_all","percent":12,"resets_at":"2026-10-24T14:00:00Z"}]`))
+		if r := Run(context.Background(), d, probeNow); r.Outcome != OK || r.Week.Used != 12 {
+			t.Fatalf("%s: %+v", session, r)
+		}
 	}
 }
 
@@ -221,15 +237,15 @@ func TestEnvUnsetsTheVariableForTheDefaultDir(t *testing.T) {
 func TestRunWindowNotRunning(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", usageOut(`[{"kind":"session","percent":0,"resets_at":null},{"kind":"weekly_all","percent":12,"resets_at":"2026-10-24T14:00:00Z"}]`))
+	h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_all","percent":0,"resets_at":null}]`))
 	r := Run(context.Background(), d, probeNow)
-	if r.Outcome != OK || r.Session.ResetsAt != nil || r.Session.Used != 0 || r.Week.Used != 12 {
+	if r.Outcome != OK || r.Week.ResetsAt != nil || r.Week.Used != 0 {
 		t.Fatalf("%+v", r)
 	}
 
-	h.write(d, "out.jsonl", usageOut(`[{"kind":"session","percent":5,"resets_at":null},{"kind":"weekly_all","percent":12,"resets_at":"2026-10-24T14:00:00Z"}]`))
+	h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_all","percent":5,"resets_at":null}]`))
 	r = Run(context.Background(), d, probeNow)
-	if r.Outcome != Failed || !strings.Contains(r.Shape, "session={percent:number,resets_at:null}") {
+	if r.Outcome != Failed || !strings.Contains(r.Shape, "weekly_all={percent:number,resets_at:null}") {
 		t.Fatalf("usage without a reset must fail with a signature: %+v", r)
 	}
 }
@@ -238,20 +254,23 @@ func TestRunRoundsResetsToTheNearestSecond(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
 	// What two machines got for the same reset on 2026-10-19 (Linux, macOS).
-	h.write(d, "out.jsonl", usageOut(`[{"kind":"session","percent":9,"resets_at":"2026-10-19T13:39:59.706945+00:00"},{"kind":"weekly_all","percent":83,"resets_at":"2026-10-24T14:00:00.345489+00:00"}]`))
-	r := Run(context.Background(), d, probeNow)
-	if !r.Session.ResetsAt.Equal(time.Date(2026, 10, 19, 13, 40, 0, 0, time.UTC)) || !r.Week.ResetsAt.Equal(time.Date(2026, 10, 24, 14, 0, 0, 0, time.UTC)) {
-		t.Fatalf("resets: %v %v", r.Session.ResetsAt, r.Week.ResetsAt)
+	for _, raw := range []string{"2026-10-24T13:59:59.706945+00:00", "2026-10-24T14:00:00.345489+00:00"} {
+		h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_all","percent":83,"resets_at":"`+raw+`"}]`))
+		r := Run(context.Background(), d, probeNow)
+		if r.Week.ResetsAt == nil || !r.Week.ResetsAt.Equal(time.Date(2026, 10, 24, 14, 0, 0, 0, time.UTC)) {
+			t.Fatalf("%s: reset %v", raw, r.Week.ResetsAt)
+		}
 	}
 }
 
 func TestRunClampsAndRounds(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", usageOut(`[{"kind":"session","percent":104.2,"resets_at":"2026-10-19T13:40:00Z"},{"kind":"weekly_all","percent":33.333,"resets_at":"2026-10-24T14:00:00Z"}]`))
-	r := Run(context.Background(), d, probeNow)
-	if r.Outcome != OK || r.Session.Used != 100 || r.Week.Used != 33.3 {
-		t.Fatalf("%+v", r)
+	for raw, want := range map[string]float64{"104.2": 100, "33.333": 33.3} {
+		h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_all","percent":`+raw+`,"resets_at":"2026-10-24T14:00:00Z"}]`))
+		if r := Run(context.Background(), d, probeNow); r.Outcome != OK || r.Week.Used != want {
+			t.Fatalf("%s: %+v", raw, r)
+		}
 	}
 }
 
@@ -283,6 +302,7 @@ func TestRunFailures(t *testing.T) {
 		{"endpoint unreachable", initLine + "\n" + `{"type":"assistant","usage_report":{"rate_limits":null}}` + "\n", "", "could not fetch the usage"},
 		{"no rows", usageOut(`null`), "", "could not fetch the usage"},
 		{"row missing", usageOut(`[{"kind":"session","percent":1,"resets_at":"2026-10-19T13:40:00Z"}]`), "", "unexpected usage report"},
+		{"weekly row malformed", usageOut(`[{"kind":"weekly_all","percent":"83%","resets_at":"2026-10-24T14:00:00Z"}]`), "", "unexpected usage report"},
 		{"exit status", "", "exit3", "claude exited with status 3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -341,9 +361,14 @@ func probedLog(log string) bool { return strings.Contains(log, "argv: -p /usage"
 func TestRunRowMissingHasASignature(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", usageOut(`[{"kind":"session","percent":1,"resets_at":"2026-10-19T13:40:00Z"},{"kind":"weekly_scoped","percent":2,"resets_at":null}]`))
+	h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_scoped","percent":2,"resets_at":null},{"kind":"session","percent":1,"resets_at":"2026-10-19T13:40:00Z"}]`))
 	r := Run(context.Background(), d, probeNow)
-	if r.Shape != "kinds=[session weekly_scoped] session={percent:number,resets_at:string}" {
+	if r.Shape != "kinds=[session weekly_scoped]" {
+		t.Fatalf("shape: %q", r.Shape)
+	}
+	h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_all","percent":"83%","resets_at":1}]`))
+	r = Run(context.Background(), d, probeNow)
+	if r.Shape != "kinds=[weekly_all] weekly_all={percent:string,resets_at:number}" {
 		t.Fatalf("shape: %q", r.Shape)
 	}
 }
@@ -376,12 +401,12 @@ func TestRunAllKeepsOrder(t *testing.T) {
 	var dirs []string
 	for i, pct := range []string{"1", "2", "3", "4", "5", "6"} {
 		d := h.dir("j"+pct, "a"+pct+"@x.io")
-		h.write(d, "out.jsonl", usageOut(`[{"kind":"session","percent":`+pct+`,"resets_at":"2026-10-19T13:40:00Z"},{"kind":"weekly_all","percent":0,"resets_at":null}]`))
+		h.write(d, "out.jsonl", usageOut(`[{"kind":"weekly_all","percent":`+pct+`,"resets_at":"2026-10-24T14:00:00Z"}]`))
 		dirs = append(dirs, d)
 		_ = i
 	}
 	for i, r := range RunAll(context.Background(), dirs, probeNow) {
-		if r.Dir != dirs[i] || r.Session.Used != float64(i+1) {
+		if r.Dir != dirs[i] || r.Week.Used != float64(i+1) {
 			t.Fatalf("result %d: %+v", i, r)
 		}
 	}

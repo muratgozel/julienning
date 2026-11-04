@@ -51,9 +51,8 @@ export function call(
   return via(new Request(`${BASE}${path}`, { ...rest, headers }));
 }
 
-export function usageBody(dev: Who = MURAT, session = 50, week = 28, collectedAt = iso(0)): string {
+export function usageBody(dev: Who = MURAT, week = 28, collectedAt = iso(0)): string {
   return JSON.stringify({
-    session: { used: session, resets_at: iso(120) },
     week: { used: week, resets_at: iso(4000) },
     collected_at: collectedAt,
     reporter: dev,
@@ -103,14 +102,13 @@ export function unshare(email: string): Promise<Response> {
 export function sendUsage(
   email: string,
   dev: Who = MURAT,
-  session = 50,
   week = 28,
   collectedAt = iso(0),
   via: Via = viaSelf,
 ): Promise<Response> {
   return call(
     `/accounts/${email}/usage`,
-    { method: "PUT", body: usageBody(dev, session, week, collectedAt) },
+    { method: "PUT", body: usageBody(dev, week, collectedAt) },
     via,
   );
 }
@@ -118,11 +116,10 @@ export function sendUsage(
 export async function putUsage(
   email: string,
   dev: Who = MURAT,
-  session = 50,
   week = 28,
   collectedAt = iso(0),
 ): Promise<void> {
-  expect((await sendUsage(email, dev, session, week, collectedAt)).status).toBe(204);
+  expect((await sendUsage(email, dev, week, collectedAt)).status).toBe(204);
 }
 
 export function sendClaim(email: string, who: Who, via: Via = viaSelf): Promise<Response> {
@@ -176,17 +173,16 @@ export async function putExhausted(
   expect((await sendExhausted(email, window, resetsAt, who)).status).toBe(204);
 }
 
-/** A usage report with explicit windows, for tests that care about resets. */
+/** A usage report with an explicit week window, for tests that care about resets. */
 export async function putWindows(
   email: string,
-  session: UsageWindow,
   week: UsageWindow,
   who: Who = MURAT,
   collectedAt = iso(0),
 ): Promise<void> {
   const res = await call(`/accounts/${email}/usage`, {
     method: "PUT",
-    body: JSON.stringify({ session, week, collected_at: collectedAt, reporter: who }),
+    body: JSON.stringify({ week, collected_at: collectedAt, reporter: who }),
   });
   expect(res.status).toBe(204);
 }
@@ -194,22 +190,20 @@ export async function putWindows(
 /** One probe report as the CLI sends it in POST /probes. */
 export interface ProbeReportBody {
   email: string;
-  session: { used: number; resets_at: string | null };
   week: { used: number; resets_at: string | null };
   collected_at: string;
 }
 
+/** `weekReset` undefined: four days out; null: the window is not running. */
 export function probeReport(
   email: string,
-  session = 30,
   week = 40,
   collectedAt = iso(0),
-  resets: { session?: string | null; week?: string | null } = {},
+  weekReset?: string | null,
 ): ProbeReportBody {
   return {
     email,
-    session: { used: session, resets_at: resets.session === undefined ? iso(120) : resets.session },
-    week: { used: week, resets_at: resets.week === undefined ? iso(4000) : resets.week },
+    week: { used: week, resets_at: weekReset === undefined ? iso(4000) : weekReset },
     collected_at: collectedAt,
   };
 }

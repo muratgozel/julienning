@@ -250,7 +250,7 @@ func (s selection) pinLine() string {
 
 // summaryLine is the one-liner printed (and used as the picker header):
 //
-//	Now using alpha (claude1@x.io) in ~/.claude-x — session 12% → 17:30, week 28% → Tue 21:00.
+//	Now using alpha (claude1@x.io) in ~/.claude-x — week 28% → Tue 21:00.
 //	Staying on alpha (claude1@x.io) in ~/.claude-x (best available) — …
 //
 // Without a nickname it keeps the v1 form, naming the config dir:
@@ -283,12 +283,12 @@ func summaryLine(sel selection, now time.Time, loc *time.Location) string {
 	return b.String()
 }
 
-// usageSummary renders "session 12% → 17:30, week 28% → Tue 21:00".
+// usageSummary renders "week 28% → Tue 21:00", the only usage window.
 func usageSummary(a *remote.Account, now time.Time, loc *time.Location) string {
-	if a.Session == nil && a.Week == nil {
+	if a.Week == nil {
 		return "no usage reported yet"
 	}
-	return "session " + window(a.Session, now, loc) + ", week " + window(a.Week, now, loc)
+	return "week " + window(a.Week, now, loc)
 }
 
 func window(w *remote.Window, now time.Time, loc *time.Location) string {

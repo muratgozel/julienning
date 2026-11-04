@@ -112,7 +112,7 @@ function stateCell(a: RankedAccount, tz: string, now: Date): string {
   return `claimed by ${who}`;
 }
 
-const HEADERS = ["#", "NICK", "ACCOUNT", "SESSION", "WEEK", "STATE", "UPDATED"] as const;
+const HEADERS = ["#", "NICK", "ACCOUNT", "WEEK", "STATE", "UPDATED"] as const;
 
 export function formatText(res: AccountsResponse, now: Date): string {
   if (res.accounts.length === 0) return "no accounts reported yet\n";
@@ -121,7 +121,6 @@ export function formatText(res: AccountsResponse, now: Date): string {
     String(a.rank),
     a.nickname ?? "-",
     a.email,
-    windowCell(a.session, res.tz, now),
     windowCell(a.week, res.tz, now),
     stateCell(a, res.tz, now),
     ago(a.numbers_at ?? a.collected_at, now),

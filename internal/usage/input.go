@@ -7,7 +7,6 @@ package usage
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"sort"
@@ -43,12 +42,15 @@ type Window struct {
 }
 
 // Input is the validated status line payload.
+//
+// Only rate_limits.seven_day is read. Claude stopped sending the five-hour
+// window (rate_limits.five_hour) around 2026-10-31; if it ever comes back it
+// is ignored, malformed or not, so it can never block a weekly report.
 type Input struct {
-	Model   string // "" when absent or not a string
-	Ctx     float64
-	HasCtx  bool
-	Session Window // rate_limits.five_hour
-	Week    Window // rate_limits.seven_day
+	Model  string // "" when absent or not a string
+	Ctx    float64
+	HasCtx bool
+	Week   Window // rate_limits.seven_day
 
 	rateLimits any
 	hasLimits  bool
@@ -79,27 +81,26 @@ func Parse(r io.Reader) (Input, error) {
 	in.rateLimits, in.hasLimits = rl, present
 	switch {
 	case !present || rl == nil:
-		in.Session, in.Week = Window{State: WindowAbsent}, Window{State: WindowAbsent}
+		in.Week = Window{State: WindowAbsent}
 	default:
 		obj, ok := rl.(map[string]any)
 		if !ok {
-			in.Session, in.Week = Window{State: WindowInvalid}, Window{State: WindowInvalid}
+			in.Week = Window{State: WindowInvalid}
 			break
 		}
-		in.Session = parseWindow(obj, "five_hour")
 		in.Week = parseWindow(obj, "seven_day")
 	}
 	return in, nil
 }
 
-// Invalid reports whether either window has an unexpected shape.
+// Invalid reports whether the weekly window has an unexpected shape.
 func (in Input) Invalid() bool {
-	return in.Session.State == WindowInvalid || in.Week.State == WindowInvalid
+	return in.Week.State == WindowInvalid
 }
 
-// Complete reports whether both windows are usable.
+// Complete reports whether the weekly window is usable.
 func (in Input) Complete() bool {
-	return in.Session.State == WindowOK && in.Week.State == WindowOK
+	return in.Week.State == WindowOK
 }
 
 func parseWindow(rl map[string]any, key string) Window {
@@ -148,7 +149,8 @@ func validReset(reset float64) bool {
 
 // RateLimitsSignature describes the shape (not the values) of the rate_limits
 // payload, so errors.log can teach us about shapes we have not seen without
-// ever recording usage numbers or the account.
+// ever recording usage numbers or the account: seven_day's shape, then the
+// names (only) of any other keys, e.g. `seven_day=absent other=[five_hour]`.
 func (in Input) RateLimitsSignature() string {
 	if !in.hasLimits {
 		return "rate_limits=absent"
@@ -157,7 +159,19 @@ func (in Input) RateLimitsSignature() string {
 	if !ok {
 		return "rate_limits=" + typeName(in.rateLimits)
 	}
-	return fmt.Sprintf("five_hour=%s seven_day=%s", windowSignature(obj, "five_hour"), windowSignature(obj, "seven_day"))
+	sig := "seven_day=" + windowSignature(obj, "seven_day")
+	other := make([]string, 0, len(obj))
+	for k := range obj {
+		if k != "seven_day" {
+			// Key names come from the payload: no control characters in the log.
+			other = append(other, cleanString(k))
+		}
+	}
+	if len(other) > 0 {
+		sort.Strings(other)
+		sig += " other=[" + strings.Join(other, " ") + "]"
+	}
+	return sig
 }
 
 func windowSignature(rl map[string]any, key string) string {

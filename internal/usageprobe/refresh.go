@@ -194,14 +194,14 @@ func Logins(cfg *config.Config) map[string]string {
 }
 
 // stale reports whether an account's numbers need a probe: none yet, older
-// than after, or a window whose reset has passed (its numbers say nothing
+// than after, or a weekly reset that has passed (its numbers say nothing
 // about the window running now).
 func stale(a *remote.Account, now time.Time, after time.Duration) bool {
 	at := a.UsageAt()
-	if a.Session == nil || a.Week == nil || at == nil {
+	if a.Week == nil || at == nil {
 		return true
 	}
-	if a.Session.ResetPassed || a.Week.ResetPassed {
+	if a.Week.ResetPassed {
 		return true
 	}
 	return !within(now, *at, after)
@@ -256,7 +256,6 @@ func batch(fresh, cached []State, listed map[string]*remote.Account) []remote.Pr
 		}
 		out = append(out, remote.ProbeReport{
 			Email:       email,
-			Session:     remote.ProbeWindow{Used: p.s.Session.Used, ResetsAt: p.s.Session.ResetsAt},
 			Week:        remote.ProbeWindow{Used: p.s.Week.Used, ResetsAt: p.s.Week.ResetsAt},
 			CollectedAt: p.s.ProbedAt,
 		})
@@ -276,7 +275,7 @@ func shows(a *remote.Account, s State) bool {
 		}
 		return w.ResetsAt.Equal(*p.ResetsAt)
 	}
-	return a.Source == "probe" && same(a.Session, s.Session) && same(a.Week, s.Week)
+	return a.Source == "probe" && same(a.Week, s.Week)
 }
 
 // SignedOutDirs reports, per registered dir (cleaned path), whether it is

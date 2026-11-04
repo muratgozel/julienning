@@ -59,10 +59,10 @@ entered at `julienning setup` and shared out of band.
   `~/.claude`, see [Default dir](#default-dir)). It reads the account email
   (`oauthAccount.emailAddress` in `~/.claude.json` for `~/.claude`,
   `<dir>/.claude.json` otherwise) and the JSON Claude Code pipes to status line
-  scripts (model, context %, `rate_limits.five_hour` / `seven_day` used % and
-  reset time), and of the `/usage` report it reads only the session and
-  weekly used % with their reset times (the rest, which describes your local
-  sessions, is thrown away), plus `loggedIn` from `claude auth status`. For
+  scripts (model, context %, `rate_limits.seven_day` used % and reset
+  time), and of the `/usage` report it reads only the weekly used % with its
+  reset time (the rest, which describes your local sessions, is thrown
+  away), plus `loggedIn` from `claude auth status`. For
   the session picker it reads Claude Code's live-session
   registry (`<dir>/sessions/<pid>.json`) and the first and last 256 KB of recent
   transcripts; a session you pick from another dir is moved between your
@@ -70,8 +70,8 @@ entered at `julienning setup` and shared out of band.
   parent that has one) is read to find the repository whose project memory
   goes with it. All of this stays local.
 - **What leaves the machine**, and only for accounts on the team allowlist: the
-  email and its team nickname, session and week used % with their reset times,
-  when they were read, your dev name and a random machine id. An email reaches
+  email and its team nickname, the week's used % with its reset time,
+  when it was read, your dev name and a random machine id. An email reaches
   the Worker only when you share it (the `setup` prompt, `setup --share`, or
   `julienning share`).
 - **Personal accounts never report.** A dir logged into an email that is not on
@@ -578,8 +578,9 @@ stale), then takes the best account that has a registered, logged-in dir
 here that is not signed out. If several dirs are logged
 into it, the selected one wins, else the first by config name. If your current
 account ranks level with the winner, you stay. The Worker ranks exhausted
-accounts (a window at 100%) after every usable one, so `next` only lands on
-one when every shared account logged in here is exhausted; it then still
+accounts (the week at 100%, or refused by Claude) after every usable one, so
+`next` only lands on one when every shared account logged in here is
+exhausted; it then still
 switches, to the one that becomes usable first, and warns before the summary
 line:
 `julienning: warning: every usable shared account on this machine is exhausted; claude3 becomes usable at Fri 10:00`
@@ -602,8 +603,8 @@ With `--no-launch`, or when stdin or stdout is not a terminal, they print one
 line and exit:
 
 ```
-Now using alpha (claude1@example.com) in ~/.claude-julienning1 — session 4% → 23:38, week 11% → Fri 00:28.
-Staying on alpha (claude1@example.com) in ~/.claude-julienning1 (best available) — session 4% → 23:38, week 11% → Fri 00:28.
+Now using alpha (claude1@example.com) in ~/.claude-julienning1 — week 11% → Fri 00:28.
+Staying on alpha (claude1@example.com) in ~/.claude-julienning1 (best available) — week 11% → Fri 00:28.
 Now using delta (claude4@example.com) in ~/.claude-work — no usage reported yet.
 Selection cleared; plain claude uses your default config.
 ```
@@ -625,7 +626,7 @@ is left out, so its sessions are never offered or moved):
 With no sessions, a new `claude` starts directly.
 
 ```
-Now using alpha (claude1@example.com) in ~/.claude-julienning1 — session 4% → 23:38, week 11% → Fri 00:28.
+Now using alpha (claude1@example.com) in ~/.claude-julienning1 — week 11% → Fri 00:28.
 3 sessions in ~/Code/shop · type to filter
 > New session  in alpha
   Fix the release script  delta · 20m ago · 3f2a9c1b (open in another terminal)
@@ -863,20 +864,21 @@ refreshes the usage of stale accounts logged in here through Claude Code
 (see [Usage probes](#usage-probes)) and prints the ranking:
 
 ```
-#  NICK     ACCOUNT              SESSION      WEEK              STATE                              UPDATED
-1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28   free                               2m ago
-2  claude3  claude3@example.com  -            -                 free                               never
-3  delta    claude4@example.com  -            -                 free                               never
-4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28   in use by ali, can (12m)           12m ago
-5  gamma    claude5@example.com  23% → 22:40  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
--  epsilon  claude6@example.com  -            -                 syncing (just shared)              -
+#  NICK     ACCOUNT              WEEK              STATE                              UPDATED
+1  alpha    claude1@example.com  11% → Fri 00:28   free                               2m ago
+2  claude3  claude3@example.com  -                 free                               never
+3  delta    claude4@example.com  -                 free                               never
+4  beta     claude2@example.com  40% → Fri 00:28   in use by ali, can (12m)           12m ago
+5  gamma    claude5@example.com  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
+-  epsilon  claude6@example.com  -                 syncing (just shared)              -
 ```
 
 - NICK: the team nickname; `-` for an account shared before nicknames that
   nobody has named yet.
-- SESSION / WEEK: used % and reset time in your local zone: `HH:MM` today,
-  `Mon HH:MM` within six days, else `YYYY-MM-DD HH:MM`; `0% → reset` once the
-  reset has passed; `-` when never reported.
+- WEEK: the weekly limit's used % and reset time in your local zone (Claude
+  has no five-hour session window any more, so there is no SESSION column):
+  `HH:MM` today, `Mon HH:MM` within six days, else `YYYY-MM-DD HH:MM`;
+  `0% → reset` once the reset has passed; `-` when never reported.
 - STATE: `free`; `in use by …` when another dev reported usage in the last 15
   minutes (with the age of that report); `claimed by … (3m)` when other devs
   only hold claims (with the age of the oldest one). Every other dev is listed.
@@ -884,12 +886,11 @@ refreshes the usage of stale accounts logged in here through Claude Code
   in the last 15 minutes, or `… and you` after other devs. The Worker leaves
   your own use out of its `state`/`busy_by` on purpose, so `next` never avoids
   the account you are on; the table adds it back for you.
-  `exhausted (week resets Fri 10:00)` or `exhausted (session resets 23:40)`
-  when a window is at 100%, so Claude refuses work on it until then: the
-  window named is the one that resets last (week on a tie), in your local
-  zone (`exhausted (resets …)` when the Worker's reset matches neither
-  window), and `exhausted (week)` when Claude refused a request for that
-  limit and no reset time is known (see
+  `exhausted (week resets Fri 10:00)` when the week is at 100% or Claude
+  refused a request for a limit, so it refuses work on it until then, in
+  your local zone (`exhausted (resets …)` from an older Worker whose reset
+  is not the week's), and `exhausted (week)` when Claude refused a request
+  and no reset time is known (see
   [How exhaustion is detected](#how-exhaustion-is-detected)). Exhausted wins
   over the other states; anyone else on the account follows,
   `exhausted (week resets Fri 10:00), in use by ali`.
@@ -908,7 +909,7 @@ refreshes the usage of stale accounts logged in here through Claude Code
   [usage probe](#usage-probes), whichever is newer.
 - Order: not exhausted first (exhausted accounts last, the one that frees up
   first on top), then not busy, then accounts with usage before those
-  without, then session %, week %, session reset, email.
+  without, then week %, week reset (the sooner first), email.
 - `--json`: the Worker document (each account's `nickname` is `null` when it
   has none; `exhausted`, `exhausted_until` and `exhausted_window`, `null`
   unless exhausted) with
@@ -924,12 +925,12 @@ refreshes the usage of stale accounts logged in here through Claude Code
 
 ```
 alpha (claude1@example.com) in ~/.claude-julienning1
-usage: session 4% → 23:38, week 11% → Fri 00:28
+usage: week 11% → Fri 00:28
 ```
 
 An exhausted account gets a third line with the same text as the STATE
 column of `accounts`:
-`state: exhausted (session resets 23:40), in use by ali`.
+`state: exhausted (week resets Fri 10:00), in use by ali`.
 
 A dir whose account has no nickname shows its config name
 (`julienning3 in ~/.claude-julienning3`). The usage line becomes
@@ -1281,7 +1282,7 @@ from this machine by default (`--host box`: from box), to `--to box` (or
 1. The account it goes into is chosen on the destination like
    [`next`](#daily-use) (TARGET names one, like `use TARGET`; team accounts
    only) and becomes that machine's selection:
-   `Moving into alpha (claude1@example.com) in ~/.claude-x on box — session 12% → 17:30, week 28% → Tue 21:00.`
+   `Moving into alpha (claude1@example.com) in ~/.claude-x on box — week 28% → Tue 21:00.`
 2. The picker lists the sessions of your shared accounts on the source, in
    this directory's project there (`--all`: every project). Personal
    accounts never show up; open ones cannot be picked.
@@ -1389,11 +1390,13 @@ container or Flatpak terminal sharing the dir), until it exits there.
 
 1. Claude Code runs `julienning statusline` and pipes it JSON. It prints
    `<model> · ctx <n>%` (for example `Opus 4.6 · ctx 31%`), adds
-   ` · usage pending` until both rate-limit windows are present (normal before
-   the first reply; it also logs `USAGE_PENDING` once an hour with the shape
-   of what it got, never the numbers), always exits 0 and does no network
-   I/O. A `used_percentage` above 100, which Claude Code reports once a limit
-   is exceeded, counts as 100.
+   ` · usage pending` until the weekly rate-limit window (`seven_day`) is
+   present (normal before the first reply; it also logs `USAGE_PENDING` once
+   an hour with the shape of what it got, never the numbers), always exits 0
+   and does no network I/O. The week is the only window: Claude no longer
+   sends the five-hour one, and one that shows up is ignored. A
+   `used_percentage` above 100, which Claude Code reports once a limit is
+   exceeded, counts as 100.
 2. Gate, all local: set up, `CLAUDE_CONFIG_DIR` (or `~/.claude` when unset) is
    a registered dir, its email is readable and is in `shared.json`. Otherwise
    it prints the line and stops.
@@ -1432,10 +1435,11 @@ reports to the Worker, which then shows it to the whole team.
   them, with its own login. julienning never reads credentials, and only the
   numbers are kept (the rest of the /usage report, which describes your
   local sessions, is thrown away). It is a local command: no model request,
-  no quota used, no 5-hour window started.
+  no quota used. Only the all-models weekly row is read; per-model weekly
+  rows are ignored.
 - Only shared accounts logged in on this machine are probed, never a
   personal one. An account is stale when its numbers are older than 15
-  minutes (an hour for the background), a window's reset has passed, or it
+  minutes (an hour for the background), its weekly reset has passed, or it
   has none. A login is never probed twice within 5 minutes.
 - It takes about 1.5 seconds; up to four accounts are probed at once, each
   for at most 10 seconds, and the commands wait for all of them before
@@ -1457,20 +1461,22 @@ A probe that fails says why and what the numbers are based on instead:
 ## How exhaustion is detected
 
 Two signals mark an account exhausted; either is enough, and the account
-ranks last until the window resets.
+ranks last until the week resets (or the reset the refusal names).
 
-1. A usage report at 100% for a window (see above).
+1. A usage report with the week at 100% (see above).
 2. Claude refusing a request for a limit. Claude Code runs the `StopFailure`
    hook (matcher `rate_limit`) when a turn ends on that error;
    `julienning hook stop-failure` checks locally that the dir is registered
-   and its account shared, reads which window the refusal names (`weekly`
-   → week, otherwise the window closest to 100% in the last report here) and
-   the reset time in the message (`resets Oct 13 at 8pm (Europe/Istanbul)`),
+   and its account shared, and reads the reset time in the message
+   (`resets Oct 13 at 8pm (Europe/Istanbul)`; else the weekly reset of the
+   last report sent from here, while it is still ahead). Every refusal is
+   reported for the week, the only window, a model's own weekly limit
+   (`You've hit your Opus limit`) included. It
    then starts a detached `julienning send-exhausted`, which sends
    `PUT /accounts/<email>/exhausted`. Nothing else from the message leaves the
    machine. The Worker keeps that fact until the reset (or, when no reset is
-   known, for the window's length: 5 hours or 7 days), and ignores it once a
-   later report shows a new window. A later report with the old, lower
+   known, for a week), and ignores it once a later report shows a new
+   weekly window. A later report with the old, lower
    numbers does not clear it: after a refusal, Claude Code keeps showing the
    numbers from before it.
 
@@ -1648,11 +1654,11 @@ curl "$W/healthz"                                   # ok
 ```
 
 ```
-#  NICK     ACCOUNT              SESSION      WEEK             STATE                     UPDATED
-1  alpha    claude1@example.com  4% → 23:38   11% → Fri 00:28  free                      2m ago
-2  claude3  claude3@example.com  -            -                free                      never
-3  delta    claude4@example.com  -            -                free                      never
-4  beta     claude2@example.com  62% → 22:13  40% → Fri 00:28  in use by ali, can (12m)  12m ago
+#  NICK     ACCOUNT              WEEK             STATE                     UPDATED
+1  alpha    claude1@example.com  11% → Fri 00:28  free                      2m ago
+2  claude3  claude3@example.com  -                free                      never
+3  delta    claude4@example.com  -                free                      never
+4  beta     claude2@example.com  40% → Fri 00:28  in use by ali, can (12m)  12m ago
 
 generated 2026-09-29 20:28 (UTC)
 ```
@@ -1761,8 +1767,8 @@ newest 500 lines once it passes 1 MB.
 | `ACCOUNT_FILE_UNREADABLE` | the account file (`~/.claude.json` or `<dir>/.claude.json`) is missing, unreadable or not JSON, or the dir cannot be resolved; sign in with `julienning login <config>` |
 | `EMAIL_INVALID` | the account file has no valid `oauthAccount.emailAddress`; sign in again |
 | `INVALID_STDIN` | the status line input was not a JSON object (the status line shows `julienning: status line input is not valid JSON`) |
-| `USAGE_INVALID` | `rate_limits` had an unexpected shape; the line ends with a type signature such as `five_hour=string seven_day=absent`. Claude Code changed its format: report it |
-| `USAGE_PENDING` | the status line input lacked a rate-limit window (normal before the first reply of a session); the rest of the line is the shape it got, such as `five_hour=absent seven_day={used_percentage:number,resets_at:number}`. Hourly, diagnostic only |
+| `USAGE_INVALID` | `rate_limits` had an unexpected shape; the line ends with a type signature such as `seven_day=string` (with ` other=[…]` naming any other `rate_limits` keys). Claude Code changed its format: report it |
+| `USAGE_PENDING` | the status line input lacked the weekly rate limit window (normal before the first reply of a session); the rest of the line is the shape it got, such as `seven_day=absent other=[five_hour]` (the week's shape, then the names of any other `rate_limits` keys). Hourly, diagnostic only |
 | `CLOCK_INVALID` | `JULIENNING_NOW_EPOCH` is not integer epoch seconds; unset it |
 | `SPAWN_FAILED` | the detached `send-usage` or `claim-sync` could not be started |
 | `SEND_FAILED` | the usage PUT failed; the rest of the line says why (`401 unauthorized`, `request timed out after 5s`, `request failed: …`, `500 internal error`). At most every 10 minutes per account |
@@ -1846,6 +1852,11 @@ Common messages:
 - **`SEND_FAILED … 500 internal error`**: the Worker threw; `cd worker && npx wrangler tail`
   shows why (for example KV's free-tier daily write limit, see
   [docs/CLOUDFLARE.md](CLOUDFLARE.md#14-kv-limits)).
+- **`SEND_FAILED 400 session must be an object (field: session)`** (for
+  probes `PROBE_FAILED … 400 reports[0].session must be an object …`): the
+  Worker predates the
+  removal of the five-hour window and still requires it; redeploy it
+  (GitHub Actions, workflow `deploy-worker`).
 
 ### Files in `~/.julienning`
 

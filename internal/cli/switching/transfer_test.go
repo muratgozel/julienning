@@ -17,9 +17,9 @@ func TestChooseRanksLikeNextAndSelects(t *testing.T) {
 	b := f.addConfig("julienning2", email2)
 	f.addConfig("mine", personal)
 	f.save()
-	busy := acct(email1, 90, 50)
+	busy := acct(email1, 50)
 	busy.BusyBy = []string{"ali"}
-	f.fake.Listing = listing(acct(email2, 10, 20), busy)
+	f.fake.Listing = listing(acct(email2, 20), busy)
 	f.fake.Listing.Accounts[0].Nickname = "bravo"
 	f.fake.Listing.Accounts[1].Nickname = "alpha"
 
@@ -34,7 +34,7 @@ func TestChooseRanksLikeNextAndSelects(t *testing.T) {
 		t.Error("the chosen account did not become the selection")
 	}
 	line := MovingLine(c, "~/.claude-julienning2", "on box", nowT, location())
-	if line != "Moving into bravo (claude2@x.io) in ~/.claude-julienning2 on box — session 10% → 20:00, week 20% → Fri 20:00." {
+	if line != "Moving into bravo (claude2@x.io) in ~/.claude-julienning2 on box — week 20% → Fri 20:00." {
 		t.Errorf("moving line: %s", line)
 	}
 
@@ -59,8 +59,8 @@ func TestChooseWarnsAndRefuses(t *testing.T) {
 	f := setup(t)
 	f.addConfig("julienning1", email1)
 	f.save()
-	tired := acct(email1, 100, 50)
-	tired.Exhausted, tired.ExhaustedUntil = true, ts(fiveReset)
+	tired := acct(email1, 50)
+	tired.Exhausted, tired.ExhaustedUntil = true, ts(todayReset)
 	tired.BusyBy = []string{"ali"}
 	f.fake.Listing = listing(tired)
 	c, err := Choose("", location())
@@ -70,7 +70,7 @@ func TestChooseWarnsAndRefuses(t *testing.T) {
 	if len(c.Warnings) != 2 || !strings.Contains(c.Warnings[0], "exhausted; claude1@x.io becomes usable at 20:00") || c.Warnings[1] != "claude1@x.io is also in use by ali" {
 		t.Errorf("warnings: %q", c.Warnings)
 	}
-	f.fake.Listing = listing(acct(email2, 1, 1))
+	f.fake.Listing = listing(acct(email2, 1))
 	if _, err := Choose("", location()); !errors.Is(err, ErrNoneLoggedIn) {
 		t.Errorf("none logged in: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestTransferSessionsListsSharedAccountsOnly(t *testing.T) {
 	a := f.addConfig("julienning1", email1)
 	m := f.addConfig("mine", personal)
 	f.save()
-	f.fake.Listing = listing(acct(email1, 1, 1))
+	f.fake.Listing = listing(acct(email1, 1))
 	f.fake.Listing.Accounts[0].Nickname = "alpha"
 	if _, err := sharedcache.SaveEntries([]sharedcache.Entry{{Email: email1, Nickname: "alpha"}}, nowT); err != nil {
 		t.Fatal(err)

@@ -11,12 +11,12 @@ import type { ExhaustedReport, ProbeWindow, WindowName } from "./types";
  */
 
 /**
- * How long each window lasts. A refusal cannot outlast its window, so this is
- * the expiration of a record whose reset is unknown, how long such a record
- * counts, and the furthest a believable reset can lie from now.
+ * How long the window lasts (the week is the only one since Claude dropped
+ * the five-hour session window). A refusal cannot outlast its window, so this
+ * is the expiration of a record whose reset is unknown, how long such a
+ * record counts, and the furthest a believable reset can lie from now.
  */
 export const WINDOW_SEC: Record<WindowName, number> = {
-  session: 5 * 60 * 60,
   week: 7 * 24 * 60 * 60,
 };
 
@@ -50,7 +50,7 @@ function believableReset(ts: string | null, window: WindowName, nowMs: number): 
 export function resolveExhaustedResetsAt(
   window: WindowName,
   reported: string | null,
-  usage: { session: ProbeWindow; week: ProbeWindow } | null,
+  usage: { week: ProbeWindow } | null,
   now: Date,
 ): string | null {
   const nowMs = now.getTime();
@@ -82,7 +82,7 @@ function latestReset(r: ExhaustedReport): number {
  */
 export function liveExhausted(
   reports: readonly ExhaustedReport[],
-  usage: { session?: ProbeWindow | undefined; week?: ProbeWindow | undefined; at?: string | undefined },
+  usage: { week?: ProbeWindow | undefined; at?: string | undefined },
   nowMs: number,
 ): ExhaustedReport[] {
   return reports.filter((r) => {

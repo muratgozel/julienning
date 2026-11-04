@@ -177,10 +177,12 @@ Env overrides are read at runtime and never written to `config.json`.
   whose sources are only dirs logged into shared accounts
   (`switching.sharedSources`).
 - Ranking (Worker `rank.ts`, mirrored in REFERENCE.md): not exhausted, then
-  not busy, then known usage before unknown, then session used ascending, week
-  ascending, reset ascending, email. The Worker leaves the querying dev's own
-  claims out of `state`, on purpose, so `next` never avoids your own account;
-  the CLI adds `in use by you` back.
+  not busy, then known usage before unknown, then week used ascending, week
+  reset ascending, email. The week is the only usage window: Claude dropped
+  the five-hour one (~2026-10-31); the Worker still accepts and ignores an
+  older CLI's `session` and stores its `session` refusals as `week`. The
+  Worker leaves the querying dev's own claims out of `state`, on purpose, so
+  `next` never avoids your own account; the CLI adds `in use by you` back.
 
 ## Claude Code internals we depend on
 
@@ -226,13 +228,15 @@ Each item names the only package that touches it.
   only on request, in `teamsync.Settings` and both docs together. The
   installed claude binary embeds its settings schema (`strings` on it and
   grep `<key>:()=>`) when a key needs checking.
-- Usage probe (`internal/usageprobe`, 2.1.301-2.1.303, macOS and Linux):
+- Usage probe (`internal/usageprobe`, 2.1.301-2.1.318, macOS and Linux):
   `claude -p "/usage" --safe-mode --no-session-persistence --name
   julienning-usage-probe --output-format stream-json --verbose` is a local
   command (no model request). Its `assistant` message carries
-  `usage_report.rate_limits.limits[]`: `kind` `session`/`weekly_all`/
-  `weekly_scoped`, `percent` 0-100, `resets_at` ISO 8601 whose fractional
-  seconds jitter around the real boundary (13:39:59.707 and 13:40:00.345 for
+  `usage_report.rate_limits.limits[]`: `kind` `weekly_all` (the one row
+  julienning reads) and `weekly_scoped` (per model, ignored); the `session`
+  row is gone since ~2026-10-31 (2.1.318) and ignored if it returns.
+  `percent` 0-100, `resets_at` ISO 8601 whose fractional seconds jitter
+  around the real boundary (13:39:59.707 and 13:40:00.345 for
   one reset; round, never floor), and null, presumably, for a window that is
   not running (not observed yet; accepted only at 0%). No
   `usage_report` at all means no subscription login; `claude auth status
@@ -244,15 +248,16 @@ Each item names the only package that touches it.
   one dir out; login and new-config run it only on a dir they chose moments
   ago (unused or just created) that got the wrong account (assumed to clear
   `oauthAccount`, not yet observed).
-- Status line stdin JSON: `rate_limits.five_hour` and `seven_day` with
-  `used_percentage` and `resets_at`; an unexpected shape is reported as
-  `USAGE_INVALID` with a type signature (`internal/usage`).
+- Status line stdin JSON: `rate_limits.seven_day` with `used_percentage`
+  and `resets_at`; `five_hour` is no longer sent (~2026-10-31) and ignored
+  if it is. An unexpected shape is reported as `USAGE_INVALID` with a type
+  signature (`internal/usage`).
 - Hooks `SessionStart` and `SessionEnd` drive claims (`internal/claims`); the
   `StopFailure` hook with matcher `rate_limit` (stdin: `error`,
   `error_details`, `last_assistant_message`) drives exhausted reports
-  (`internal/cli/accounts/hook.go`); the refusal text it parses for the window
-  and reset (`You've hit your weekly limit · resets Oct 13 at 8pm
-  (Europe/Istanbul)`) lives in `internal/usage/refusal.go`. Claude Code
+  (`internal/cli/accounts/hook.go`), always for the week window; the refusal
+  text it parses for the reset (`You've hit your weekly limit · resets Oct 13
+  at 8pm (Europe/Istanbul)`) lives in `internal/usage/refusal.go`. Claude Code
   reports `used_percentage` above 100 once a limit is exceeded; never reject
   such values, clamp them.
 

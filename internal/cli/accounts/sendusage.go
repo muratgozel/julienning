@@ -21,18 +21,15 @@ func init() {
 	cli.Register(&cli.Command{
 		Name:    "send-usage",
 		Summary: "report one usage snapshot to the Worker, then background upkeep (spawned by statusline)",
-		Usage: "send-usage --email E --session-used P --session-resets EPOCH " +
-			"--week-used P --week-resets EPOCH --collected-at EPOCH [--now]",
-		Hidden: true,
-		Run:    runSendUsage,
+		Usage:   "send-usage --email E --week-used P --week-resets EPOCH --collected-at EPOCH [--now]",
+		Hidden:  true,
+		Run:     runSendUsage,
 	})
 }
 
 func runSendUsage(env cli.Env) error {
 	fs := cli.NewFlagSet("send-usage", env)
 	email := fs.String("email", "", "account email")
-	sessionUsed := fs.Float64("session-used", -1, "five-hour window usage percentage")
-	sessionResets := fs.Int64("session-resets", 0, "five-hour window reset, unix epoch seconds")
 	weekUsed := fs.Float64("week-used", -1, "seven-day window usage percentage")
 	weekResets := fs.Int64("week-resets", 0, "seven-day window reset, unix epoch seconds")
 	collectedAt := fs.Int64("collected-at", 0, "when the numbers were read, unix epoch seconds")
@@ -49,13 +46,7 @@ func runSendUsage(env cli.Env) error {
 		return cli.Usagef("--email must be a valid email address")
 	}
 	var err error
-	if *sessionUsed, err = checkPercent("--session-used", *sessionUsed); err != nil {
-		return err
-	}
 	if *weekUsed, err = checkPercent("--week-used", *weekUsed); err != nil {
-		return err
-	}
-	if err := checkEpoch("--session-resets", *sessionResets); err != nil {
 		return err
 	}
 	if err := checkEpoch("--week-resets", *weekResets); err != nil {
@@ -92,13 +83,10 @@ func runSendUsage(env cli.Env) error {
 	client := newClient(cfg, reportTimeout)
 	addr := strings.ToLower(*email)
 	payload := usage.Payload{
-		SessionUsed:   *sessionUsed,
-		SessionResets: *sessionResets,
-		WeekUsed:      *weekUsed,
-		WeekResets:    *weekResets,
+		WeekUsed:   *weekUsed,
+		WeekResets: *weekResets,
 	}
 	report := remote.UsageReport{
-		Session:     remote.UsageWindow{Used: *sessionUsed, ResetsAt: time.Unix(*sessionResets, 0).UTC()},
 		Week:        remote.UsageWindow{Used: *weekUsed, ResetsAt: time.Unix(*weekResets, 0).UTC()},
 		CollectedAt: time.Unix(*collectedAt, 0).UTC(),
 		Reporter:    remote.Identity{Dev: cfg.Dev, MachineID: cfg.MachineID},

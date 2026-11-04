@@ -37,8 +37,6 @@ func sendArgs(overrides ...string) []string {
 	args := []string{
 		"send-usage",
 		"--email", email1,
-		"--session-used", "23.5",
-		"--session-resets", strconv.FormatInt(fiveReset, 10),
 		"--week-used", "41",
 		"--week-resets", strconv.FormatInt(weekReset, 10),
 		"--collected-at", strconv.FormatInt(nowEpoch, 10),
@@ -63,9 +61,6 @@ func TestSendUsageReportsAndCaches(t *testing.T) {
 	if c.Op != "usage" || c.Email != email1 {
 		t.Fatalf("call = %+v", c)
 	}
-	if c.Usage.Session.Used != 23.5 || c.Usage.Session.ResetsAt.Unix() != fiveReset {
-		t.Errorf("session = %+v", c.Usage.Session)
-	}
 	if c.Usage.Week.Used != 41 || c.Usage.Week.ResetsAt.Unix() != weekReset {
 		t.Errorf("week = %+v", c.Usage.Week)
 	}
@@ -84,7 +79,7 @@ func TestSendUsageReportsAndCaches(t *testing.T) {
 	if err := json.Unmarshal(raw, &cached); err != nil {
 		t.Fatalf("cache json: %v", err)
 	}
-	if cached.SessionUsed != 23.5 || cached.WeekResets != weekReset || cached.SentAt.Unix() != nowEpoch {
+	if cached.WeekUsed != 41 || cached.WeekResets != weekReset || cached.SentAt.Unix() != nowEpoch {
 		t.Errorf("cache = %+v", cached)
 	}
 	if cached.AttemptedAt.Unix() != nowEpoch {
@@ -124,12 +119,12 @@ func TestSendUsageDebounce(t *testing.T) {
 		f.share(email1)
 		assertCode(t, f.run("", sendArgs()...), 0)
 		t.Setenv("JULIENNING_NOW_EPOCH", strconv.Itoa(nowEpoch+60))
-		assertCode(t, f.run("", sendArgs("--session-used", "30")...), 0)
+		assertCode(t, f.run("", sendArgs("--week-used", "45")...), 0)
 		if len(f.fake.Calls) != 1 {
 			t.Errorf("calls = %d, want 1", len(f.fake.Calls))
 		}
 		t.Setenv("JULIENNING_NOW_EPOCH", strconv.Itoa(nowEpoch+301))
-		assertCode(t, f.run("", sendArgs("--session-used", "30")...), 0)
+		assertCode(t, f.run("", sendArgs("--week-used", "45")...), 0)
 		if len(f.fake.Calls) != 2 {
 			t.Errorf("calls = %d, want 2", len(f.fake.Calls))
 		}
@@ -139,7 +134,7 @@ func TestSendUsageDebounce(t *testing.T) {
 		f.save()
 		f.share(email1)
 		assertCode(t, f.run("", sendArgs()...), 0)
-		assertCode(t, f.run("", sendArgs("--session-resets", strconv.FormatInt(fiveReset+18000, 10))...), 0)
+		assertCode(t, f.run("", sendArgs("--week-resets", strconv.FormatInt(weekReset+7*24*3600, 10))...), 0)
 		if len(f.fake.Calls) != 2 {
 			t.Errorf("calls = %d, want 2", len(f.fake.Calls))
 		}
@@ -165,9 +160,9 @@ func TestSendUsageValidation(t *testing.T) {
 		{"missing email", []string{"send-usage"}, "--email must be a valid email address"},
 		{"bad email", sendArgs("--email", "nope"), "--email must be a valid email address"},
 		{"week negative", sendArgs("--week-used", "-2"), "--week-used must be a finite, non-negative percentage"},
-		{"session NaN", sendArgs("--session-used", "NaN"), "--session-used must be a finite, non-negative percentage"},
+		{"week NaN", sendArgs("--week-used", "NaN"), "--week-used must be a finite, non-negative percentage"},
 		{"week infinite", sendArgs("--week-used", "+Inf"), "--week-used must be a finite, non-negative percentage"},
-		{"zero session reset", sendArgs("--session-resets", "0"), "--session-resets must be positive"},
+		{"zero week reset", sendArgs("--week-resets", "0"), "--week-resets must be positive"},
 		{"negative week reset", sendArgs("--week-resets", "-1"), "--week-resets must be positive"},
 		{"zero collected at", sendArgs("--collected-at", "0"), "--collected-at must be positive"},
 		{"positional argument", sendArgs("extra"), "no positional arguments"},
@@ -195,16 +190,16 @@ func TestSendUsageClampsAbove100(t *testing.T) {
 	f := setup(t)
 	f.save()
 	f.share(email1)
-	got := f.run("", sendArgs("--session-used", "104.5", "--week-used", "100")...)
+	got := f.run("", sendArgs("--week-used", "104.5")...)
 	assertCode(t, got, 0)
 	calls := f.fake.CallsFor("usage")
 	if len(calls) != 1 {
 		t.Fatalf("calls = %+v (stderr %q, errors.log %q)", f.fake.Calls, got.stderr, f.errorLog())
 	}
-	if s, w := calls[0].Usage.Session.Used, calls[0].Usage.Week.Used; s != 100 || w != 100 {
-		t.Errorf("sent session %v, week %v; want 100, 100", s, w)
+	if w := calls[0].Usage.Week.Used; w != 100 {
+		t.Errorf("sent week %v, want 100", w)
 	}
-	if c := f.sent(email1); c == nil || c.SessionUsed != 100 {
+	if c := f.sent(email1); c == nil || c.WeekUsed != 100 {
 		t.Errorf("cache = %+v, want the clamped value", c)
 	}
 }

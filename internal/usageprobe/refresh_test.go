@@ -14,24 +14,20 @@ import (
 	"github.com/muratgozel/julienning/internal/remote"
 )
 
-func tp(t time.Time) *time.Time { return &t }
-
 // account is a listed account whose numbers were collected ago before now.
 func account(email string, ago time.Duration, now time.Time) remote.Account {
 	at := now.Add(-ago)
-	reset := now.Add(2 * time.Hour)
 	week := now.Add(72 * time.Hour)
 	return remote.Account{
 		Email:       email,
-		Session:     &remote.Window{Used: 10, ResetsAt: &reset},
 		Week:        &remote.Window{Used: 20, ResetsAt: &week},
 		CollectedAt: &at,
 	}
 }
 
-func okOut(session, week int) string {
-	return usageOut(`[{"kind":"session","percent":` + strconv.Itoa(session) + `,"resets_at":"2026-10-19T13:40:00Z"},` +
-		`{"kind":"weekly_all","percent":` + strconv.Itoa(week) + `,"resets_at":"2026-10-24T14:00:00Z"}]`)
+func okOut(week int) string {
+	return usageOut(`[{"kind":"weekly_all","percent":` + strconv.Itoa(week) + `,"resets_at":"2026-10-24T14:00:00Z"},` +
+		`{"kind":"weekly_scoped","percent":3,"resets_at":"2026-10-24T14:00:00Z","scope":{"model":{"display_name":"Fable"}}}]`)
 }
 
 func probed(log string) bool { return strings.Contains(log, "argv: -p /usage") }
@@ -57,10 +53,10 @@ func TestRefreshProbesOnlyStaleSharedLogins(t *testing.T) {
 	personal := h.dir("j5", "me@personal.io")
 	empty := h.dir("j6", "")
 	for _, d := range []string{stale, fresh, reset, never, personal} {
-		h.write(d, "out.jsonl", okOut(5, 6))
+		h.write(d, "out.jsonl", okOut(6))
 	}
 	passed := account("reset@x.io", time.Minute, now)
-	passed.Session.ResetPassed = true
+	passed.Week.ResetPassed = true
 	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{
 		account("stale@x.io", 20*time.Minute, now),
 		account("fresh@x.io", 2*time.Minute, now),
@@ -87,7 +83,7 @@ func TestRefreshProbesOnlyStaleSharedLogins(t *testing.T) {
 	var emails []string
 	for _, r := range calls[0].Probes {
 		emails = append(emails, r.Email)
-		if r.Session.Used != 5 || r.Week.Used != 6 || !r.CollectedAt.Equal(now.Truncate(time.Second)) {
+		if r.Week.Used != 6 || !r.CollectedAt.Equal(now.Truncate(time.Second)) {
 			t.Errorf("report %+v", r)
 		}
 	}
@@ -102,7 +98,7 @@ func TestRefreshProbesOnlyStaleSharedLogins(t *testing.T) {
 func TestRefreshCacheWindowResendsInsteadOfProbing(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{account("a@x.io", time.Hour, probeNow)}}
 	fake := &remote.Fake{}
 	refreshWith(t, fake, listing, probeNow, "", InteractiveStale)
@@ -116,7 +112,7 @@ func TestRefreshCacheWindowResendsInsteadOfProbing(t *testing.T) {
 		t.Fatal("a login probed less than CacheWindow ago must not be probed again")
 	}
 	calls := fake.CallsFor("probes")
-	if len(calls) != 1 || len(calls[0].Probes) != 1 || calls[0].Probes[0].Session.Used != 5 {
+	if len(calls) != 1 || len(calls[0].Probes) != 1 || calls[0].Probes[0].Week.Used != 6 {
 		t.Fatalf("the cached result must be re-sent: %+v", calls)
 	}
 
@@ -138,7 +134,7 @@ func TestRefreshCacheWindowResendsInsteadOfProbing(t *testing.T) {
 func TestRefreshBackgroundIsLessEager(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{account("a@x.io", 30*time.Minute, probeNow)}}
 	refreshWith(t, &remote.Fake{}, listing, probeNow, "", BackgroundStale)
 	if probed(h.log(d)) {
@@ -151,7 +147,7 @@ func TestRefreshOnly(t *testing.T) {
 	a := h.dir("j1", "a@x.io")
 	b := h.dir("j2", "b@x.io")
 	for _, d := range []string{a, b} {
-		h.write(d, "out.jsonl", okOut(5, 6))
+		h.write(d, "out.jsonl", okOut(6))
 	}
 	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}, {Email: "b@x.io"}}}
 	refreshWith(t, &remote.Fake{}, listing, probeNow, "b@x.io", InteractiveStale)
@@ -183,7 +179,7 @@ func TestRefreshSignedOutDirs(t *testing.T) {
 	// Signed out is re-checked after the cache window even when a teammate's
 	// status line keeps the account's numbers fresh: the user may have signed
 	// in again with plain claude.
-	h.write(d, "out.jsonl", okOut(1, 2))
+	h.write(d, "out.jsonl", okOut(2))
 	os.Remove(filepath.Join(d, "probe.log"))
 	freshListing := &remote.Listing{Probes: true, Accounts: []remote.Account{account("claude2@x.io", time.Minute, probeNow)}}
 	refreshWith(t, fake, freshListing, probeNow.Add(6*time.Minute), "", InteractiveStale)
@@ -229,7 +225,7 @@ func TestRefreshRecordsLoginChanges(t *testing.T) {
 func TestRefreshPostFailures(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}
 
 	old := &remote.Fake{ProbesErr: &remote.Error{Status: 404, Message: "not found"}}
@@ -258,12 +254,12 @@ func TestRefreshReportsProblems(t *testing.T) {
 
 func TestStateRoundTripAndGuards(t *testing.T) {
 	newHarness(t)
-	s := State{Dir: "/d/one", Email: "a@x.io", Outcome: OK, ProbedAt: probeNow, Session: &Window{Used: 1, ResetsAt: tp(probeNow)}, Week: &Window{Used: 2}}
+	s := State{Dir: "/d/one", Email: "a@x.io", Outcome: OK, ProbedAt: probeNow, Week: &Window{Used: 2}}
 	if err := SaveState(s); err != nil {
 		t.Fatal(err)
 	}
 	got := LoadState("/d/one/")
-	if got == nil || got.Session.Used != 1 || got.Week.ResetsAt != nil {
+	if got == nil || got.Week.Used != 2 || got.Week.ResetsAt != nil {
 		t.Fatalf("%+v", got)
 	}
 	p, _ := StatePath("/d/one")
@@ -277,6 +273,18 @@ func TestStateRoundTripAndGuards(t *testing.T) {
 	os.WriteFile(p, []byte(`{nope`), 0o600)
 	if LoadState("/d/one") != nil {
 		t.Fatal("a corrupt file reads as never probed")
+	}
+	// Written while the five-hour window existed: the session is dropped,
+	// the week still counts. An OK state without a week is not trusted.
+	os.WriteFile(p, []byte(`{"dir":"/d/one","email":"a@x.io","outcome":"ok","probed_at":"2026-10-19T11:00:00Z",`+
+		`"session":{"used":7,"resets_at":"2026-10-19T13:40:00Z"},"week":{"used":83,"resets_at":"2026-10-24T14:00:00Z"}}`), 0o600)
+	if got := LoadState("/d/one"); got == nil || got.Week.Used != 83 {
+		t.Fatalf("a state file with a session window: %+v", got)
+	}
+	os.WriteFile(p, []byte(`{"dir":"/d/one","email":"a@x.io","outcome":"ok","probed_at":"2026-10-19T11:00:00Z",`+
+		`"session":{"used":7,"resets_at":"2026-10-19T13:40:00Z"}}`), 0o600)
+	if LoadState("/d/one") != nil {
+		t.Fatal("an OK state without a week must not be trusted")
 	}
 	SaveState(State{Dir: "/d/one", Email: "a@x.io", Outcome: Failed, ProbedAt: probeNow})
 	ClearSignedOut("/d/one")
@@ -301,7 +309,7 @@ func mustLoad(t *testing.T) *config.Config {
 func TestRefreshSkipsAnOldWorker(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	fake := &remote.Fake{}
 	rep := refreshWith(t, fake, &remote.Listing{Accounts: []remote.Account{{Email: "a@x.io"}}}, probeNow, "", InteractiveStale)
 	if !rep.OldWorker || probed(h.log(d)) || len(fake.Calls) != 0 {
@@ -318,7 +326,7 @@ func TestRefreshProbesOneDirPerAccount(t *testing.T) {
 	b := h.dir("j2", "a@x.io")
 	gone := h.dir("j3", "a@x.io")
 	for _, d := range []string{a, b, gone} {
-		h.write(d, "out.jsonl", okOut(5, 6))
+		h.write(d, "out.jsonl", okOut(6))
 	}
 	if err := SaveState(State{Dir: gone, Email: "a@x.io", Outcome: SignedOut, ProbedAt: probeNow.Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
@@ -335,7 +343,7 @@ func TestRefreshProbesOneDirPerAccount(t *testing.T) {
 func TestRefreshDoesNotCacheProbesThatDidNotRun(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	cfg := mustLoad(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -349,7 +357,7 @@ func TestRefreshDoesNotCacheProbesThatDidNotRun(t *testing.T) {
 func TestRefreshDoesNotResendWhatTheListingShows(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	stale := &remote.Listing{Probes: true, Accounts: []remote.Account{account("a@x.io", time.Hour, probeNow)}}
 	refreshWith(t, &remote.Fake{}, stale, probeNow, "", InteractiveStale)
 
@@ -359,7 +367,6 @@ func TestRefreshDoesNotResendWhatTheListingShows(t *testing.T) {
 	shown := account("a@x.io", 3*time.Minute, probeNow)
 	shown.Source = "probe"
 	shown.NumbersAt = shown.CollectedAt
-	shown.Session = &remote.Window{Used: st.Session.Used, ResetsAt: st.Session.ResetsAt}
 	shown.Week = &remote.Window{Used: st.Week.Used, ResetsAt: st.Week.ResetsAt}
 	fake := &remote.Fake{}
 	refreshWith(t, fake, &remote.Listing{Probes: true, Accounts: []remote.Account{shown}}, probeNow.Add(time.Minute), "", InteractiveStale)
@@ -371,7 +378,7 @@ func TestRefreshDoesNotResendWhatTheListingShows(t *testing.T) {
 func TestRefreshInTheBackground(t *testing.T) {
 	h := newHarness(t)
 	d := h.dir("j1", "a@x.io")
-	h.write(d, "out.jsonl", okOut(5, 6))
+	h.write(d, "out.jsonl", okOut(6))
 	listing := &remote.Listing{Probes: true, Accounts: []remote.Account{{Email: "a@x.io"}}}
 	fake := &remote.Fake{}
 	rep := Refresh(context.Background(), Options{Config: mustLoad(t), Client: fake, Listing: listing, Now: probeNow,

@@ -19,7 +19,7 @@ func init() {
 	cli.Register(&cli.Command{
 		Name:    "send-exhausted",
 		Summary: "report that Claude refused a request for a usage limit (spawned by the StopFailure hook)",
-		Usage:   "send-exhausted --email E --window session|week [--resets EPOCH]",
+		Usage:   "send-exhausted --email E [--resets EPOCH]",
 		Hidden:  true,
 		Run:     runSendExhausted,
 	})
@@ -31,8 +31,7 @@ func init() {
 func runSendExhausted(env cli.Env) error {
 	fs := cli.NewFlagSet("send-exhausted", env)
 	email := fs.String("email", "", "account email")
-	window := fs.String("window", "", "the exhausted window: session or week")
-	resets := fs.Int64("resets", 0, "when the window resets, unix epoch seconds (omit when unknown)")
+	resets := fs.Int64("resets", 0, "when the weekly window resets, unix epoch seconds (omit when unknown)")
 	if err := fs.Parse(env.Args); err != nil {
 		return err
 	}
@@ -41,9 +40,6 @@ func runSendExhausted(env cli.Env) error {
 	}
 	if !claudecfg.ValidEmail(*email) {
 		return cli.Usagef("--email must be a valid email address")
-	}
-	if *window != remote.WindowSession && *window != remote.WindowWeek {
-		return cli.Usagef("--window must be session or week")
 	}
 	var resetsAt *time.Time
 	if flagSet(fs, "resets") {
@@ -89,7 +85,7 @@ func runSendExhausted(env cli.Env) error {
 	ctx, cancel := context.WithTimeout(context.Background(), backgroundBudget)
 	defer cancel()
 	err = newClient(cfg, reportTimeout).PutExhausted(ctx, addr, remote.ExhaustedReport{
-		Window:   *window,
+		Window:   remote.WindowWeek,
 		ResetsAt: resetsAt,
 		Reporter: remote.Identity{Dev: cfg.Dev, MachineID: cfg.MachineID},
 	})
