@@ -1726,12 +1726,15 @@ CI (`.github/workflows/ci.yml`, every push and PR): gofmt, `go vet`,
 `go test -race`; `bash -n` and shellcheck on `scripts/install.sh` plus
 `goreleaser check`; worker `npm ci`, typecheck and tests.
 
-**Releasing:** tag `vX.Y.Z` and push it. `make release` does that with
-guards: it refuses a malformed version, a dirty tree, a branch other than
-`main` or an existing tag, and runs the tests first.
+**Releasing:** tag `vX.Y.Z` and push it together with main. `make release`
+does that with guards: it refuses a malformed version, a dirty tree, a
+branch other than `main` or an existing tag, runs `make lint test` first,
+and pushes main and the tag atomically (a failed push publishes nothing and
+removes the local tag, so it can be rerun). The whole flow, version rules and
+the Worker deploy included, is `.claude/skills/release/SKILL.md`.
 
 ```sh
-make release VERSION=0.3.0     # == git tag -a v0.3.0 && git push origin v0.3.0, guarded
+make release VERSION=0.3.0     # == git tag -a v0.3.0 && git push --atomic origin main v0.3.0, guarded
 ```
 
 `.github/workflows/release.yml` runs `go test -race` and goreleaser

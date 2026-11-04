@@ -72,9 +72,12 @@ lint:
 clean:
 	rm -rf bin dist
 
-# release VERSION=0.2.0: tag vVERSION and push it; GitHub Actions builds the
-# archives. Refuses a malformed version, a dirty tree, a branch other than
-# main, an existing tag, or failing tests.
+# release VERSION=0.2.0: tag vVERSION and push main and the tag together
+# (atomic: both or neither); GitHub Actions builds the archives. Refuses a
+# malformed version, a dirty tree, a branch other than main, an existing tag,
+# or failing lint/tests. A failed push removes the local tag, so the same
+# command can simply be run again. The full flow (branch, version, Worker
+# deploy) is .claude/skills/release/SKILL.md.
 release:
 	@v='$(VERSION_ARG)'; \
 	case "$$v" in \
@@ -85,6 +88,7 @@ release:
 	[ -z "$$(git status --porcelain)" ] || { echo "working tree is not clean; commit or stash first" >&2; exit 1; }; \
 	[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || { echo "release from main (on $$(git rev-parse --abbrev-ref HEAD))" >&2; exit 1; }; \
 	! git rev-parse -q --verify "refs/tags/v$$v" >/dev/null || { echo "tag v$$v already exists" >&2; exit 1; }; \
-	$(MAKE) test && \
-	git tag -a "v$$v" -m "julienning $$v" && git push origin "v$$v" && \
-	echo "tagged and pushed v$$v; watch: gh run list --workflow release"
+	$(MAKE) lint test && \
+	git tag -a "v$$v" -m "julienning $$v" && \
+	{ git push --atomic origin main "v$$v" || { git tag -d "v$$v" >/dev/null; echo "push failed; nothing was published and the local tag v$$v is removed: fix the cause (or retry) and run make release again" >&2; exit 1; }; } && \
+	echo "pushed main and v$$v; watch: gh run list --workflow release"

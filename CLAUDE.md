@@ -263,11 +263,26 @@ Each item names the only package that touches it.
 
 ## Releasing and docs
 
-- CLI: `make release VERSION=X.Y.Z` (clean tree, on main, tests pass) tags and
-  pushes; GitHub Actions builds and publishes. Check CI is green first.
-- Worker: manual only, Actions tab, workflow `deploy-worker` (or
-  `npm run deploy` in `worker/`). Whenever a change needs a Worker redeploy,
-  say so explicitly in the final message; nothing deploys on merge.
+- Release protocol: `.claude/skills/release/SKILL.md` (branch, commit, local
+  merge, version, `make release`, Worker deploy). Follow it whenever you
+  ship. A pushed main reaches nobody: teammates run releases, and the Worker
+  deploys only when the workflow runs.
+- When a `fix`, `feat`, `perf` or breaking change is done and verified,
+  offer a release in the final message (version, whether the Worker deploy
+  is needed) and run the protocol on a yes. A request to merge, push, ship
+  or put changes live includes that offer; never push a fix or feature and
+  leave the release out without saying so.
+- Versions: `feat` minor, `fix`/`perf` patch, breaking major (ask first); a
+  host agent protocol or transfer archive change is at least minor.
+- CLI: `make release VERSION=X.Y.Z` (clean tree, on main, `make lint test`
+  pass) tags and pushes main with the tag atomically; GitHub Actions builds
+  and publishes.
+- Worker: the `deploy-worker` workflow is manual on purpose (never add a
+  push trigger); nothing deploys on merge. The protocol runs it with `gh
+  workflow run deploy-worker --ref main` when `worker/src`,
+  `worker/wrangler.jsonc` or `worker/package*.json` changed since the last
+  successful deploy. Whenever a change needs a Worker redeploy and it was
+  not done, say so explicitly in the final message.
 - A behaviour change updates `docs/SPEC.md`, `docs/REFERENCE.md` and, if a
   teammate would notice it, `README.md`, in the same commit.
 - Conventional commits. Reviews so far found most bugs at boundaries: clock
