@@ -53,10 +53,10 @@ julienning login <nickname>  # sign that account in here (a new dir, or again af
 
 ```
 $ julienning accounts
-#  NICK   ACCOUNT              WEEK              STATE                              UPDATED
-1  alpha  claude1@example.com  11% → Fri 00:28   free                               2m ago
-2  beta   claude2@example.com  40% → Fri 00:28   in use by ali, can (12m)           12m ago
-3  gamma  claude5@example.com  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
+#  NICK   ACCOUNT              WEEK              STATE                     UPDATED
+1  alpha  claude1@example.com  11% → Fri 00:28   free                      2m ago
+2  beta   claude2@example.com  40% → Fri 00:28   in use by ali, can (12m)  12m ago
+3  gamma  claude5@example.com  100% → Fri 10:00  exhausted                 5m ago
 ```
 
 WEEK is the weekly limit's used % and reset time in your local zone. STATE

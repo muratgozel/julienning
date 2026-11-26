@@ -735,7 +735,8 @@ else
 fi
 printf '{"session_id":"e2e-session-1","hook_event_name":"StopFailure","error":"rate_limit","error_details":"You have hit your weekly limit · resets %s (Europe/Istanbul) (error type rate_limit)","last_assistant_message":"You have hit your weekly limit · resets %s (Europe/Istanbul)"}' "$resets" "$resets" |
   CLAUDE_CONFIG_DIR="$HOME/.claude-work" julienning hook stop-failure
-wait_for "a rate-limit refusal marks the account exhausted" 15 "exhausted (week" row alpha
+wait_for "a rate-limit refusal marks the account exhausted" 15 "exhausted" row alpha
+expect_missing "STATE leaves out the reset WEEK already shows" "(resets" "$(row alpha)"
 [ "$(row alpha | awk '{ print $1 }')" = "3" ] || fail "the exhausted account should rank last, got:" "$(julienning accounts 2>&1)"
 ok "the exhausted account ranks last"
 expect_contains "the Worker names the exhausted window" '"exhausted_window": "week"' "$(account_json alpha)"

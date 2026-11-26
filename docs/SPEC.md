@@ -1081,16 +1081,18 @@ same wording follows `and` and the exhausted state (`viewer.you`). The JSON
 passes the Worker document through unchanged.
 
 STATE of an exhausted account (`exhausted` true or `state` `exhausted`;
-wins over every other state): `exhausted (<window> resets <time>)`, the
-window being the Worker's `exhausted_window` (`week`), else the week when it
-is at ≥ 100% with `resets_at` equal to `exhausted_until`
-(`Account.ExhaustedWindow`; an older Worker's `session` is not shown),
-`<time>` in local time via
-`usage.FormatReset`; `exhausted (resets <time>)` when no window matches,
-`exhausted` when `exhausted_until` is null, `(… has reset)` when the local
-clock is already past it. A non-empty `busy_by` appends
-`, in use by ali, can` (no age). Examples: `exhausted (week resets Fri 10:00)`,
-`exhausted (week resets Fri 10:00), in use by ali`.
+wins over every other state): `exhausted`, with `(resets <time>)` only
+when `exhausted_until` does not read the same as the week's `resets_at` in
+WEEK (and in `current`'s usage line), both through `usage.FormatReset` in
+local time and compared as printed, to the minute (a refusal names its reset
+to the minute, the status line to the second). They differ after a refusal
+for a model's own limit, and when the week is absent or not running. Nothing
+is added when `exhausted_until` is null; `(has reset)` when the local clock
+is already past it (skew) and WEEK does not read `reset` too. No window is named and
+`exhausted_window` is not read (week is the only one; through 0.13.3 STATE
+read `exhausted (week resets Fri 10:00)`, shortened on request). A non-empty
+`busy_by` appends `, in use by ali, can` (no age). Examples: `exhausted`,
+`exhausted, in use by ali`, `exhausted (resets 23:40)`.
 
 Syncing rows: after the listing refreshes `shared.json`
 (`sharedcache.FromListing`, which keeps this machine's `local_adds` younger

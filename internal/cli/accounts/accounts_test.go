@@ -1060,57 +1060,51 @@ func exhausted(email string, week *remote.Window, until int64, busy ...string) r
 	return a
 }
 
-// withWindow sets the Worker's exhausted_window; "" stands for null.
-func withWindow(a remote.Account, w string) remote.Account {
-	if w != "" {
-		a.ExhaustedWin = &w
-	}
-	return a
-}
-
+// STATE names an exhausted account's reset only when the week beside it does
+// not already show it (the WEEK column, current's usage line).
 func TestAccountsExhaustedState(t *testing.T) {
 	t.Setenv("TZ", "Europe/Istanbul") // expectations are in +03; CI runs in UTC
 	n := time.Unix(nowEpoch, 0)
 	loc := location()
+	notRunning := &remote.Window{Used: 0}
 	cases := []struct {
 		name string
 		a    remote.Account
 		want string
 	}{
-		{"week", exhausted(email1, win(100, friReset), friReset),
-			"exhausted (week resets Fri 10:00)"},
-		{"refused, week not full", exhausted(email1, win(70, friReset), lateReset),
+		{"week at 100%", exhausted(email1, win(100, friReset), friReset),
+			"exhausted"},
+		{"refused at the week's reset, week not full", exhausted(email1, win(92, friReset), friReset),
+			"exhausted"},
+		// The refusal names its reset to the minute, the status line to the second.
+		{"same minute as the week's reset", exhausted(email1, win(92, friReset+37), friReset),
+			"exhausted"},
+		{"a model's limit frees up before the week", exhausted(email1, win(70, friReset), lateReset),
 			"exhausted (resets 23:40)"},
+		{"the same time a week later", exhausted(email1, win(100, friReset), friReset+7*86400),
+			"exhausted (resets 2026-09-25 10:00)"},
 		{"busy", exhausted(email1, win(100, friReset), friReset, "ali"),
-			"exhausted (week resets Fri 10:00), in use by ali"},
+			"exhausted, in use by ali"},
 		{"busy with several devs", exhausted(email1, win(100, friReset), friReset, "ali", "can"),
-			"exhausted (week resets Fri 10:00), in use by ali, can"},
-		{"window unknown", exhausted(email1, nil, friReset),
+			"exhausted, in use by ali, can"},
+		{"busy, a model's limit", exhausted(email1, win(70, friReset), lateReset, "ali"),
+			"exhausted (resets 23:40), in use by ali"},
+		{"no week reported", exhausted(email1, nil, friReset),
+			"exhausted (resets Fri 10:00)"},
+		{"week not running", exhausted(email1, notRunning, friReset),
 			"exhausted (resets Fri 10:00)"},
 		{"no reset known", exhausted(email1, win(100, friReset), 0),
 			"exhausted"},
-		{"reset already passed here", exhausted(email1, win(100, nowEpoch-60), nowEpoch-60),
-			"exhausted (week has reset)"},
-		{"state alone", remote.Account{State: "exhausted", Week: win(100, friReset), ExhaustedUntil: ts(friReset)},
-			"exhausted (week resets Fri 10:00)"},
-		{"flag alone beats in_use", remote.Account{State: "in_use", Exhausted: true, Week: win(100, friReset), ExhaustedUntil: ts(friReset), BusyBy: []string{"ali"}},
-			"exhausted (week resets Fri 10:00), in use by ali"},
-		// Worker exhausted_window (a refusal the StopFailure hook reported).
-		{"window field, reset unknown", withWindow(exhausted(email1, win(70, friReset), 0), "week"),
-			"exhausted (week)"},
-		{"window field, reset unknown, busy", withWindow(exhausted(email1, nil, 0, "ali"), "week"),
-			"exhausted (week), in use by ali"},
-		{"window field with reset", withWindow(exhausted(email1, nil, friReset), "week"),
-			"exhausted (week resets Fri 10:00)"},
-		{"window field beats inference", withWindow(exhausted(email1, win(40, friReset), lateReset), "week"),
-			"exhausted (week resets 23:40)"},
-		// A Worker not redeployed since the five-hour window went away.
-		{"an older Worker's session window is not shown", withWindow(exhausted(email1, win(70, friReset), lateReset), "session"),
-			"exhausted (resets 23:40)"},
-		{"unknown window value falls back", withWindow(exhausted(email1, win(100, lateReset), lateReset), "opus"),
-			"exhausted (week resets 23:40)"},
-		{"null window, no reset", withWindow(exhausted(email1, nil, 0), ""),
+		{"nothing known", exhausted(email1, nil, 0, "ali"),
+			"exhausted, in use by ali"},
+		{"both resets already passed here", exhausted(email1, win(100, nowEpoch-60), nowEpoch-60),
 			"exhausted"},
+		{"reset passed here, the week's has not", exhausted(email1, win(70, friReset), nowEpoch-60),
+			"exhausted (has reset)"},
+		{"state alone", remote.Account{State: "exhausted", Week: win(100, friReset), ExhaustedUntil: ts(friReset)},
+			"exhausted"},
+		{"flag alone beats in_use", remote.Account{State: "in_use", Exhausted: true, Week: win(70, friReset), ExhaustedUntil: ts(lateReset), BusyBy: []string{"ali"}},
+			"exhausted (resets 23:40), in use by ali"},
 	}
 	for _, tc := range cases {
 		if got := state(&tc.a, "murat", n, loc); got != tc.want {
@@ -1138,7 +1132,7 @@ func TestAccountsTableExhausted(t *testing.T) {
 		t.Fatalf("lines = %q", lines)
 	}
 	for _, want := range []string{"3  claude3  claude3@sixtynine.agency", "100% → Fri 10:00",
-		"  exhausted (week resets Fri 10:00), in use by ali  ", "5m ago"} {
+		"  exhausted, in use by ali  ", "5m ago"} {
 		if !strings.Contains(lines[3], want) {
 			t.Errorf("row = %q, missing %q", lines[3], want)
 		}
@@ -1161,14 +1155,26 @@ func TestAccountsTableExhausted(t *testing.T) {
 }
 
 func TestCurrentExhausted(t *testing.T) {
-	a := withWindow(exhausted(email1, win(70, friReset), lateReset, "ali"), "week")
+	a := exhausted(email1, win(70, friReset), lateReset, "ali")
 	a.Nickname = "alpha"
 	f := currentFixture(t, "alpha", &a)
 	got := f.run("", "current")
 	assertCode(t, got, 0)
 	want := "alpha (" + email1 + ") in ~/.claude-sixtynine1\n" +
 		"usage: week 70% → Fri 10:00\n" +
-		"state: exhausted (week resets 23:40), in use by ali\n"
+		"state: exhausted (resets 23:40), in use by ali\n"
+	if got.stdout != want {
+		t.Errorf("stdout = %q, want %q", got.stdout, want)
+	}
+	// The reset the usage line already shows is not repeated.
+	full := exhausted(email1, win(100, friReset), friReset, "ali")
+	full.Nickname = "alpha"
+	f.fake.Accounts = map[string]*remote.Account{email1: &full}
+	got = f.run("", "current")
+	assertCode(t, got, 0)
+	want = "alpha (" + email1 + ") in ~/.claude-sixtynine1\n" +
+		"usage: week 100% → Fri 10:00\n" +
+		"state: exhausted, in use by ali\n"
 	if got.stdout != want {
 		t.Errorf("stdout = %q, want %q", got.stdout, want)
 	}
@@ -1288,7 +1294,7 @@ func TestAccountsSignedOutHereFollowsEveryState(t *testing.T) {
 	if len(lines) != 5 {
 		t.Fatalf("lines = %q", lines)
 	}
-	if !strings.Contains(lines[3], "  exhausted (week resets Fri 10:00), in use by ali, signed out here  5m ago") {
+	if !strings.Contains(lines[3], "  exhausted, in use by ali, signed out here  5m ago") {
 		t.Errorf("exhausted row = %q", lines[3])
 	}
 	if !strings.Contains(lines[4], "  syncing (just shared), signed out here  ") || !strings.HasSuffix(lines[4], "  -") {
@@ -1378,11 +1384,11 @@ func TestAccountsStateShowsYourOwnUse(t *testing.T) {
 		{"own stale report", remote.Account{State: "free", Reporter: &remote.Identity{Dev: "murat"}, CollectedAt: &stale}, "free"},
 		{"someone else only", remote.Account{State: "in_use", BusyBy: []string{"ali"}, CollectedAt: &recent}, "in use by ali (1m)"},
 		{"someone else and you", remote.Account{State: "in_use", BusyBy: []string{"ali"}, CollectedAt: &recent, Claims: []remote.Claim{me}}, "in use by ali (1m) and you"},
-		{"exhausted and you", exhaustedWith(me), "exhausted (week resets Fri 10:00), in use by you"},
-		{"exhausted, window only, and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}}, "week"),
-			"exhausted (week), in use by you"},
-		{"exhausted, window only, someone else and you", withWindow(remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}, BusyBy: []string{"ali"}}, "week"),
-			"exhausted (week), in use by ali and you"},
+		{"exhausted and you", exhaustedWith(me), "exhausted, in use by you"},
+		{"exhausted by a model's limit and you", remote.Account{State: "exhausted", Exhausted: true, Week: win(70, friReset), ExhaustedUntil: ts(lateReset), Claims: []remote.Claim{me}},
+			"exhausted (resets 23:40), in use by you"},
+		{"exhausted, someone else and you", remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}, BusyBy: []string{"ali"}},
+			"exhausted, in use by ali and you"},
 		{"exhausted, nothing known, and you", remote.Account{State: "exhausted", Exhausted: true, Claims: []remote.Claim{me}},
 			"exhausted, in use by you"},
 	}

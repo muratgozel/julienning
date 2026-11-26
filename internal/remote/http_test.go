@@ -602,7 +602,7 @@ func TestFakeRecordsCalls(t *testing.T) {
 // contract that claims and busy_by are always arrays.
 func TestAccountTags(t *testing.T) {
 	raw, _ := json.Marshal(Account{Email: "a@b.com", State: "free"})
-	if string(raw) != `{"email":"a@b.com","claims":[],"state":"free","busy_by":[],"exhausted":false,"exhausted_until":null,"exhausted_window":null}` {
+	if string(raw) != `{"email":"a@b.com","claims":[],"state":"free","busy_by":[],"exhausted":false,"exhausted_until":null}` {
 		t.Errorf("marshal = %s", raw)
 	}
 	a := &Account{Email: "a@b.com", State: "claimed", BusyBy: []string{"ali"},
@@ -648,11 +648,11 @@ func TestExhaustedDecoding(t *testing.T) {
 	if a.ExhaustedUntil.Location() != time.UTC || a.ExhaustedUntil.Format(time.RFC3339) != "2026-09-18T07:00:00Z" {
 		t.Errorf("exhausted_until not normalised to UTC: %v", a.ExhaustedUntil)
 	}
-	if a.ExhaustedWindow() != "week" || strings.Join(a.BusyBy, ",") != "ali" {
-		t.Errorf("window = %q, busy_by = %v", a.ExhaustedWindow(), a.BusyBy)
+	if strings.Join(a.BusyBy, ",") != "ali" {
+		t.Errorf("busy_by = %v", a.BusyBy)
 	}
 	for _, b := range l.Accounts[1:] {
-		if b.Exhausted || b.IsExhausted() || b.ExhaustedUntil != nil || b.ExhaustedWindow() != "" {
+		if b.Exhausted || b.IsExhausted() || b.ExhaustedUntil != nil {
 			t.Errorf("%s: exhausted = %v until %v, want false/nil", b.Email, b.Exhausted, b.ExhaustedUntil)
 		}
 	}
@@ -673,8 +673,8 @@ func TestExhaustedDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
-	if one.ExhaustedUntil == nil || one.ExhaustedUntil.Location() != time.UTC || one.ExhaustedWindow() != "week" {
-		t.Errorf("GetAccount = %+v (window %q)", one, one.ExhaustedWindow())
+	if one.ExhaustedUntil == nil || one.ExhaustedUntil.Location() != time.UTC {
+		t.Errorf("GetAccount = %+v", one)
 	}
 
 	c, _ = newServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -685,68 +685,39 @@ func TestExhaustedDecoding(t *testing.T) {
 	}
 }
 
-// exhausted_window: present wins over the inference, null, absent (an
-// older Worker) and an unknown value (an older Worker's "session") fall back
-// to it, and exhausted_until may be null while exhausted is true.
+// exhausted_window is not decoded (week is the only window, and STATE names
+// none): any value, an older Worker's "session" included, or none at all
+// decodes, exhausted_until may be null while exhausted is true, and --json
+// still passes the field through.
 func TestExhaustedWindowField(t *testing.T) {
 	body := `{"generated_at":"2026-09-16T12:20:00Z","tz":"UTC","accounts":[
 	  {"email":"a@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":"week"},
 	  {"email":"b@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":"session",
 	   "session":{"used":40,"resets_at":"2026-09-16T23:40:00Z"},"week":{"used":100,"resets_at":"2026-09-16T23:40:00Z"}},
-	  {"email":"c@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":"2026-09-16T23:40:00Z","exhausted_window":"session",
-	   "session":{"used":100,"resets_at":"2026-09-16T23:40:00Z"}},
-	  {"email":"d@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null},
-	  {"email":"e@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":"opus"},
-	  {"email":"f@x.com","state":"free","busy_by":[],"claims":[],"exhausted":false,"exhausted_until":null,"exhausted_window":"week"}]}`
+	  {"email":"c@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null},
+	  {"email":"d@x.com","state":"exhausted","busy_by":[],"claims":[],"exhausted":true,"exhausted_until":null,"exhausted_window":{"name":"opus"}}]}`
 	c, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) })
 	l, err := c.ListAccounts(context.Background(), "murat")
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
-	want := map[string]string{"a@x.com": "week", "b@x.com": "week", "c@x.com": "", "d@x.com": "", "e@x.com": "", "f@x.com": ""}
+	if len(l.Accounts) != 4 {
+		t.Fatalf("accounts = %d, want 4", len(l.Accounts))
+	}
 	for _, a := range l.Accounts {
-		if got := a.ExhaustedWindow(); got != want[a.Email] {
-			t.Errorf("%s: ExhaustedWindow = %q, want %q", a.Email, got, want[a.Email])
+		if !a.IsExhausted() {
+			t.Errorf("%s: not exhausted", a.Email)
+		}
+		if (a.ExhaustedUntil == nil) != (a.Email != "b@x.com") {
+			t.Errorf("%s: exhausted_until = %v", a.Email, a.ExhaustedUntil)
 		}
 	}
-	if a := l.Accounts[0]; !a.IsExhausted() || a.ExhaustedUntil != nil || a.ExhaustedWin == nil || *a.ExhaustedWin != "week" {
-		t.Errorf("a = %+v", a)
+	obj, err := l.Accounts[0].Object()
+	if err != nil {
+		t.Fatalf("Object: %v", err)
 	}
-	if a := l.Accounts[3]; a.ExhaustedWin != nil {
-		t.Errorf("absent exhausted_window decoded as %q", *a.ExhaustedWin)
-	}
-}
-
-func TestExhaustedWindow(t *testing.T) {
-	at := func(s string) *time.Time {
-		v, err := time.Parse(time.RFC3339, s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &v
-	}
-	otherReset, weekReset := at("2026-09-16T20:40:00Z"), at("2026-09-18T07:00:00Z")
-	full := func(r *time.Time) *Window { return &Window{Used: 100, ResetsAt: r} }
-	half := func(r *time.Time) *Window { return &Window{Used: 50, ResetsAt: r} }
-	cases := []struct {
-		name string
-		a    Account
-		want string
-	}{
-		{"week", Account{Exhausted: true, ExhaustedUntil: weekReset, Week: full(weekReset)}, "week"},
-		{"state only", Account{State: "exhausted", ExhaustedUntil: weekReset, Week: full(weekReset)}, "week"},
-		{"week not full", Account{Exhausted: true, ExhaustedUntil: weekReset, Week: half(weekReset)}, ""},
-		{"until is another reset", Account{Exhausted: true, ExhaustedUntil: otherReset, Week: full(weekReset)}, ""},
-		{"until unknown", Account{Exhausted: true, Week: full(weekReset)}, ""},
-		{"no week", Account{Exhausted: true, ExhaustedUntil: weekReset}, ""},
-		{"window reset passed", Account{Exhausted: true, ExhaustedUntil: weekReset,
-			Week: &Window{Used: 100, ResetsAt: weekReset, ResetPassed: true}}, ""},
-		{"not exhausted", Account{ExhaustedUntil: weekReset, Week: full(weekReset)}, ""},
-	}
-	for _, tc := range cases {
-		if got := tc.a.ExhaustedWindow(); got != tc.want {
-			t.Errorf("%s: ExhaustedWindow = %q, want %q", tc.name, got, tc.want)
-		}
+	if obj["exhausted_window"] != "week" {
+		t.Errorf("--json lost exhausted_window: %v", obj)
 	}
 }
 

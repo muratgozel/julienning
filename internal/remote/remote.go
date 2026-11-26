@@ -100,8 +100,8 @@ type ProbeResult struct {
 
 // WindowWeek is the exhausted window name, as the Worker spells it in
 // ExhaustedReport and in the listing's exhausted_window. It is the only one
-// left; a Worker deployed before the five-hour window went away can still
-// answer "session", which ExhaustedWindow does not recognise.
+// left, so the CLI shows no window and does not decode exhausted_window
+// (`--json` still passes it through).
 const WindowWeek = "week"
 
 // ExhaustedReport is the PUT /accounts/:email/exhausted body: Claude refused
@@ -170,14 +170,10 @@ type Account struct {
 	// Exhausted: the week is at 100%, or Claude refused a request for a
 	// limit, so it refuses work until a reset. ExhaustedUntil is the reset
 	// after which the account is usable again; nil when not known, also
-	// while Exhausted is true. ExhaustedWin is the Worker's exhausted_window
-	// ("week", or null; "session" from a Worker not redeployed since the
-	// five-hour window went away); read it through ExhaustedWindow, which
-	// falls back to inferring it. Workers from before these fields omit them, which reads as
-	// false/nil.
+	// while Exhausted is true. Workers from before these fields omit them,
+	// which reads as false/nil.
 	Exhausted      bool       `json:"exhausted"`
 	ExhaustedUntil *time.Time `json:"exhausted_until"`
-	ExhaustedWin   *string    `json:"exhausted_window"`
 
 	// Raw is the exact JSON object the Worker sent, kept so `--json` output can
 	// pass through fields this binary does not know about yet.
@@ -212,27 +208,6 @@ func (a *Account) UsageAt() *time.Time {
 // still sinks the account.
 func (a *Account) IsExhausted() bool {
 	return a.Exhausted || a.State == "exhausted"
-}
-
-// ExhaustedWindow names the window the account waits on: "week", the only
-// one. The Worker's exhausted_window wins; a Worker without it (or with a
-// value this binary does not know, such as an old Worker's "session") leaves
-// the window inferred: week when it is at 100% and resets at ExhaustedUntil.
-// "" when the account is not exhausted or the window cannot be told.
-func (a *Account) ExhaustedWindow() string {
-	if !a.IsExhausted() {
-		return ""
-	}
-	if w := a.ExhaustedWin; w != nil && *w == WindowWeek {
-		return *w
-	}
-	if a.ExhaustedUntil == nil {
-		return ""
-	}
-	if w := a.Week; w != nil && w.ResetsAt != nil && w.Percent() >= 100 && w.ResetsAt.Equal(*a.ExhaustedUntil) {
-		return WindowWeek
-	}
-	return ""
 }
 
 // Listing is GET /accounts?format=json.

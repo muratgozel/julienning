@@ -864,13 +864,13 @@ refreshes the usage of stale accounts logged in here through Claude Code
 (see [Usage probes](#usage-probes)) and prints the ranking:
 
 ```
-#  NICK     ACCOUNT              WEEK              STATE                              UPDATED
-1  alpha    claude1@example.com  11% → Fri 00:28   free                               2m ago
-2  claude3  claude3@example.com  -                 free                               never
-3  delta    claude4@example.com  -                 free                               never
-4  beta     claude2@example.com  40% → Fri 00:28   in use by ali, can (12m)           12m ago
-5  gamma    claude5@example.com  100% → Fri 10:00  exhausted (week resets Fri 10:00)  5m ago
--  epsilon  claude6@example.com  -                 syncing (just shared)              -
+#  NICK     ACCOUNT              WEEK              STATE                     UPDATED
+1  alpha    claude1@example.com  11% → Fri 00:28   free                      2m ago
+2  claude3  claude3@example.com  -                 free                      never
+3  delta    claude4@example.com  -                 free                      never
+4  beta     claude2@example.com  40% → Fri 00:28   in use by ali, can (12m)  12m ago
+5  gamma    claude5@example.com  100% → Fri 10:00  exhausted                 5m ago
+-  epsilon  claude6@example.com  -                 syncing (just shared)     -
 ```
 
 - NICK: the team nickname; `-` for an account shared before nicknames that
@@ -886,14 +886,14 @@ refreshes the usage of stale accounts logged in here through Claude Code
   in the last 15 minutes, or `… and you` after other devs. The Worker leaves
   your own use out of its `state`/`busy_by` on purpose, so `next` never avoids
   the account you are on; the table adds it back for you.
-  `exhausted (week resets Fri 10:00)` when the week is at 100% or Claude
-  refused a request for a limit, so it refuses work on it until then, in
-  your local zone (`exhausted (resets …)` from an older Worker whose reset
-  is not the week's), and `exhausted (week)` when Claude refused a request
-  and no reset time is known (see
-  [How exhaustion is detected](#how-exhaustion-is-detected)). Exhausted wins
-  over the other states; anyone else on the account follows,
-  `exhausted (week resets Fri 10:00), in use by ali`.
+  `exhausted` when the week is at 100% or Claude refused a request for a
+  limit, so it refuses work on it until a reset (see
+  [How exhaustion is detected](#how-exhaustion-is-detected)). That reset is
+  usually the one WEEK shows; when it is not, STATE names it in your local
+  zone, `exhausted (resets 23:40)`: a refusal for a model's own limit
+  (`You've hit your Opus limit`) that frees the account before the week
+  resets, or a week with no reset to show. Exhausted wins over the other
+  states; anyone else on the account follows, `exhausted, in use by ali`.
   Any state ends in `, signed out here` (`free, signed out here`) when a
   dir on this machine held the account and is signed out of it, and no
   other dir here is logged into it: Claude Code signed the dir out, or a
@@ -929,8 +929,9 @@ usage: week 11% → Fri 00:28
 ```
 
 An exhausted account gets a third line with the same text as the STATE
-column of `accounts`:
-`state: exhausted (week resets Fri 10:00), in use by ali`.
+column of `accounts`: `state: exhausted, in use by ali`, or
+`state: exhausted (resets 23:40)` when the account frees up at another
+time than the usage line's reset.
 
 A dir whose account has no nickname shows its config name
 (`julienning3 in ~/.claude-julienning3`). The usage line becomes
@@ -1480,9 +1481,9 @@ ranks last until the week resets (or the reset the refusal names).
    numbers does not clear it: after a refusal, Claude Code keeps showing the
    numbers from before it.
 
-STATE then reads `exhausted (week resets Tue 20:00)`, or `exhausted (week)`
-when no reset time is known. Failures of the report go to `errors.log` as
-`EXHAUSTED_FAILED`.
+STATE then reads `exhausted`, and `exhausted (resets 20:00)` when the
+refusal names a reset other than the one WEEK shows. Failures of the report
+go to `errors.log` as `EXHAUSTED_FAILED`.
 
 ## Undo
 

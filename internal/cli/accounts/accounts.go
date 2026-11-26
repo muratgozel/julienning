@@ -329,35 +329,46 @@ func stateFor(a *remote.Account, v viewer, n time.Time, loc *time.Location) stri
 	}
 }
 
-// exhaustedState renders `exhausted (week resets Fri 10:00)`: the window the
-// account waits on and its reset in loc. Either part may be unknown:
-// `exhausted (week)` (a refusal reported without its reset), `exhausted
-// (resets …)` (no window matches exhausted_until), bare `exhausted` without
-// both. Other devs on it follow as `, in use by ali, can` (no age: in this
-// state busy_by does not say whether they hold a claim or reported usage).
+// exhaustedState renders `exhausted`, with `(resets 23:40)` only when the
+// account frees up at a time the week does not already show (see
+// exhaustedReset). Other devs on it follow as `, in use by ali, can` (no age:
+// in this state busy_by does not say whether they hold a claim or reported
+// usage). Through 0.13.3 it read `exhausted (week resets Fri 10:00)`; the
+// window name and the repeated reset were dropped on request as too long.
 func exhaustedState(a *remote.Account, n time.Time, loc *time.Location) string {
-	var parts []string
-	if w := a.ExhaustedWindow(); w != "" {
-		parts = append(parts, w)
-	}
-	if until := a.ExhaustedUntil; until != nil {
-		if until.After(n) {
-			parts = append(parts, "resets "+usage.FormatReset(*until, n, loc))
-		} else {
-			// Our clock is past the Worker's exhausted_until (clock skew):
-			// "resets reset" would be nonsense.
-			parts = append(parts, "has reset")
-		}
-	}
 	var b strings.Builder
 	b.WriteString("exhausted")
-	if len(parts) > 0 {
-		b.WriteString(" (" + strings.Join(parts, " ") + ")")
+	if r := exhaustedReset(a, n, loc); r != "" {
+		b.WriteString(" (" + r + ")")
 	}
 	if len(a.BusyBy) > 0 {
 		b.WriteString(", in use by " + strings.Join(a.BusyBy, ", "))
 	}
 	return b.String()
+}
+
+// exhaustedReset is when an exhausted account frees up, in loc: "" when that
+// is unknown or when the week's reset, which the WEEK column and current's
+// usage line print right beside STATE, reads the same. The two are compared
+// as printed (to the minute): a refusal names its reset to the minute while
+// the week's carries seconds. They differ after a refusal for a model's own
+// limit (`resets 23:40` while the week resets Fri) and when the week shows
+// no reset at all.
+func exhaustedReset(a *remote.Account, n time.Time, loc *time.Location) string {
+	until := a.ExhaustedUntil
+	if until == nil {
+		return ""
+	}
+	shown := usage.FormatReset(*until, n, loc)
+	if w := a.Week; w != nil && w.ResetsAt != nil && usage.FormatReset(*w.ResetsAt, n, loc) == shown {
+		return ""
+	}
+	if !until.After(n) {
+		// Our clock is past the Worker's exhausted_until (clock skew):
+		// "resets reset" would be nonsense.
+		return "has reset"
+	}
+	return "resets " + shown
 }
 
 // claimDevs returns the sorted, unique devs other than self holding a claim.
